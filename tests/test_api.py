@@ -62,6 +62,19 @@ class StaticTests(ApiTestCase):
                 self.assertEqual(status, 200)
                 self.assertTrue(body)
 
+    def test_application_icon_is_served(self) -> None:
+        status, body, headers = self.get("/icon.png")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/png")
+        self.assertTrue(body.startswith(b"\x89PNG"))
+
+    def test_favicon_route_returns_the_icon(self) -> None:
+        # 浏览器会直接请求 /favicon.ico，这里返回同一张 PNG，而不是空响应。
+        status, body, headers = self.get("/favicon.ico")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/png")
+        self.assertTrue(body.startswith(b"\x89PNG"))
+
     def test_missing_file_is_a_404(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.get("/js/nope.js")
