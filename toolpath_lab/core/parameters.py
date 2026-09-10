@@ -31,7 +31,7 @@ class ParameterKind(str, Enum):
 class Choice:
     """CHOICE 型参数的一个选项。
 
-    disabled=True 的选项会在界面上显示但不可选，用来表示"这个方向留给拓展"。
+    disabled=True 的选项会在界面上显示但不可选，表示该选项尚未实现。
     """
 
     value: str
