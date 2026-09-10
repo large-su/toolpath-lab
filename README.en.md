@@ -172,11 +172,11 @@ Full details: [docs/extending.md](docs/extending.md); conventions: [CONTRIBUTING
 python -m unittest discover -s tests
 ```
 
-## Background
+## Design notes
 
-The toolpath model (parallel scan lines, one-way and zigzag, feed-rate based timeline) and the 3D
-interaction follow the practice of the robotic machining project ROMP. This repository is an
-independent implementation and does not depend on ROMP.
+The toolpath model uses the usual parallel scan-line form, the time axis accumulates each move's
+own feed rate, and the 3D interaction follows the common CAD conventions (left drag orbits, middle
+wheel zooms, right drag pans).
 
 ## License
 

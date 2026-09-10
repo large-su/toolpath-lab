@@ -26,7 +26,7 @@ const COLORS = {
 //: 刀路画在工件上表面之上一点点，避免与上表面 z-fighting。
 const PATH_LIFT_MM = 0.05;
 
-//: 视图工具条上的按钮，顺序与 ROMP 一致。
+//: 视图工具条上的按钮，按常用顺序排列。
 export const VIEW_BUTTONS = [
   { view: "fit", label: "最佳", sub: "FIT" },
   { view: "front", label: "前", sub: "−Y" },
