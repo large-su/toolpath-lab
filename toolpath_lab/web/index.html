@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ToolpathLab</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./vendor/three.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">TL</span>
+        <span class="brand-name">ToolpathLab</span>
+        <span class="brand-sub">刀路规划基座</span>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-generate" class="button primary" type="button">生成刀路</button>
+        <button id="btn-export" class="button" type="button">导出 NC</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel" id="panel"></aside>
+
+      <section class="stage">
+        <div class="viewport" id="viewport">
+          <div class="view-toolbar" id="view-toolbar" role="toolbar" aria-label="标准视图"></div>
+          <div class="appearance-toolbar" role="toolbar" aria-label="外观">
+            <button type="button" data-appearance="shadows" class="active">实时阴影</button>
+            <button type="button" data-appearance="white">白色背景</button>
+            <button type="button" data-appearance="grid" class="active">网格地面</button>
+          </div>
+          <div class="stats" id="stats"></div>
+          <div class="banner hidden" id="banner"></div>
+        </div>
+
+        <footer class="playbar">
+          <button id="btn-play" class="button round" type="button" title="播放 / 暂停">▶</button>
+          <button id="btn-stop" class="button round" type="button" title="回到起点">■</button>
+          <input id="scrub" class="scrub" type="range" min="0" max="1" step="0.0005" value="0" />
+          <span class="time" id="time">0.00 / 0.00 s</span>
+        </footer>
+      </section>
+    </main>
+
+    <script type="module" src="./js/main.js"></script>
+  </body>
+</html>

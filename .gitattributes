@@ -1,0 +1,14 @@
+# 仓库内统一使用 LF。
+* text=auto eol=lf
+
+# 批处理必须带着 CRLF 存进仓库：ZIP 下载不会做行尾转换，
+# 而 LF 结尾的 .bat 在 Windows 上双击会报一堆"不是内部或外部命令"。
+# 所以这两个模式既要 -text 也要 -eol，才能绕开上面那条通配规则。
+*.bat -text -eol
+*.cmd -text -eol
+
+# 二进制资源不要做换行转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
