@@ -34,7 +34,7 @@ Issues = "https://github.com/large-su/toolpath-lab/issues"
 include = ["toolpath_lab*"]
 
 [tool.setuptools.package-data]
-toolpath_lab = ["web/*.html", "web/*.css", "web/js/*.js", "web/vendor/*.js"]
+toolpath_lab = ["web/*.html", "web/*.css", "web/*.png", "web/*.ico", "web/js/*.js", "web/vendor/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

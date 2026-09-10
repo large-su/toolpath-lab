@@ -133,7 +133,11 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
     def _serve_static(self, path: str) -> Response:
         relative = "index.html" if path in {"", "/"} else path.lstrip("/")
         if relative == "favicon.ico":
-            return Response(int(HTTPStatus.NO_CONTENT), b"", "image/x-icon")
+            # 浏览器和部分工具会直接请求 /favicon.ico，这里返回应用的 PNG 图标。
+            icon = self._resolve_static("icon.png")
+            if icon is None:
+                return Response(int(HTTPStatus.NO_CONTENT), b"", "image/x-icon")
+            return Response(int(HTTPStatus.OK), icon.read_bytes(), "image/png")
         candidate = self._resolve_static(relative)
         if candidate is None:
             return error_response(f"找不到文件：{path}", HTTPStatus.NOT_FOUND)

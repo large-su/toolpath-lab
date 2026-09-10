@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="toolpath_lab/web/icon.png" width="128" alt="ToolpathLab">
+</p>
+
 # ToolpathLab · 刀路规划基座
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

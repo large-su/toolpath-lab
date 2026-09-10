@@ -1,4 +1,4 @@
-/* ToolpathLab —— 深色工业风，配色与控件风格对齐 ROMP。 */
+/* ToolpathLab —— 深色工业风配色与控件样式。 */
 :root {
   color-scheme: dark;
   --bg: #071014;
@@ -57,16 +57,12 @@ input {
   gap: 9px;
 }
 
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  background: var(--teal);
-  color: #071014;
-  font: 700 10px var(--mono);
-  letter-spacing: 0.02em;
+.brand-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px rgba(135, 169, 166, 0.25);
 }
 
 .brand-name {

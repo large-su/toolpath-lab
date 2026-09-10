@@ -13,6 +13,13 @@ import { fileURLToPath } from "node:url";
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STARTUP_TIMEOUT_MS = 30000;
 
+// 应用图标：Windows 用多尺寸 .ico（任务栏小图标更清晰），其它平台用 PNG。
+const WEB_ICON_DIR = path.join(projectRoot, "toolpath_lab", "web");
+const APP_ICON = path.join(
+  WEB_ICON_DIR,
+  process.platform === "win32" ? "icon.ico" : "icon.png"
+);
+
 // 依次尝试：启动脚本传来的解释器、PATH 里的 python / python3 / py。
 // 直接 npm start 时也能自己找到可用的解释器。
 const PYTHON_CANDIDATES = [
@@ -106,6 +113,7 @@ function createWindow(url) {
     show: false,
     backgroundColor: "#071014",
     title: "ToolpathLab",
+    icon: APP_ICON,
     autoHideMenuBar: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
@@ -120,6 +128,9 @@ function createWindow(url) {
 }
 
 app.whenReady().then(async () => {
+  // 独立的 AppUserModelID：否则 Windows 可能把这个窗口归到机器上另一个 Electron 应用的
+  // 任务栏图标下。
+  if (process.platform === "win32") app.setAppUserModelId("com.toolpathlab.desktop");
   try {
     createWindow(await startFirstWorkingBackend());
   } catch (error) {
