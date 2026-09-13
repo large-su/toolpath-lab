@@ -21,14 +21,44 @@
         <span class="brand-name">ToolpathLab</span>
         <span class="brand-sub">刀路规划基座</span>
       </div>
+      <nav class="mode-switch" id="mode-switch" role="tablist" aria-label="工作模式">
+        <button type="button" data-mode="bench" class="active">实验台</button>
+        <button type="button" data-mode="cam">CAM 加工</button>
+      </nav>
       <div class="topbar-actions">
+        <button id="btn-import" class="button" type="button">导入模型</button>
+        <button id="btn-stock" class="button" type="button" hidden>创建毛坯</button>
         <button id="btn-generate" class="button primary" type="button">生成刀路</button>
+        <button id="btn-simulate" class="button" type="button" hidden>切削仿真</button>
         <button id="btn-export" class="button" type="button">导出 NC</button>
+        <button id="btn-project" class="button" type="button" hidden>工程</button>
       </div>
     </header>
 
-    <main class="layout">
-      <aside class="panel" id="panel"></aside>
+    <main class="layout" id="layout">
+      <aside class="sidebar">
+        <section class="tree-panel" id="tree-panel" hidden>
+          <header class="panel-head">
+            <h3>工序树</h3>
+            <div class="panel-head-actions">
+              <button id="btn-op-add" class="button tiny" type="button">新增工序</button>
+              <button id="btn-op-generate" class="button tiny" type="button">全部生成</button>
+            </div>
+          </header>
+          <div class="tree-body" id="tree-body"></div>
+          <footer class="panel-foot">
+            <button id="btn-op-up" class="button tiny" type="button">上移</button>
+            <button id="btn-op-down" class="button tiny" type="button">下移</button>
+            <button id="btn-op-toggle" class="button tiny" type="button">启用/禁用</button>
+            <button id="btn-op-copy" class="button tiny" type="button">复制</button>
+            <button id="btn-op-delete" class="button tiny danger" type="button">删除</button>
+            <button id="btn-op-export" class="button tiny" type="button">导出工序</button>
+          </footer>
+        </section>
+
+        <aside class="panel" id="panel"></aside>
+        <aside class="panel" id="cam-panel" hidden></aside>
+      </aside>
 
       <section class="stage">
         <div class="viewport" id="viewport">
@@ -38,18 +68,46 @@
             <button type="button" data-appearance="white">白色背景</button>
             <button type="button" data-appearance="grid" class="active">网格地面</button>
           </div>
+          <div class="pick-toolbar" id="pick-toolbar" role="toolbar" aria-label="选择模式">
+            <button type="button" data-pick="face">拾取面</button>
+            <button type="button" data-pick="clear">清除</button>
+            <span class="pick-hint" id="pick-hint">未选中任何面</span>
+          </div>
           <div class="stats" id="stats"></div>
           <div class="banner hidden" id="banner"></div>
+          <div class="progress hidden" id="progress"><span></span></div>
         </div>
 
         <footer class="playbar">
           <button id="btn-play" class="button round" type="button" title="播放 / 暂停">▶</button>
           <button id="btn-stop" class="button round" type="button" title="回到起点">■</button>
+          <button id="btn-step" class="button round" type="button" title="单步">⏭</button>
           <input id="scrub" class="scrub" type="range" min="0" max="1" step="0.0005" value="0" />
           <span class="time" id="time">0.00 / 0.00 s</span>
+          <label class="speed" title="仿真播放速度">
+            速度
+            <select id="speed">
+              <option value="0.25">0.25×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+              <option value="4">4×</option>
+              <option value="8">8×</option>
+            </select>
+          </label>
         </footer>
       </section>
     </main>
+
+    <div class="modal hidden" id="modal">
+      <div class="modal-box" role="dialog" aria-modal="true">
+        <header class="modal-head">
+          <h3 id="modal-title">标题</h3>
+          <button id="modal-close" class="button tiny" type="button">关闭</button>
+        </header>
+        <div class="modal-body" id="modal-body"></div>
+        <footer class="modal-foot" id="modal-foot"></footer>
+      </div>
+    </div>
 
     <script type="module" src="./js/main.js"></script>
   </body>

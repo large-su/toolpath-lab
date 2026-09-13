@@ -5,24 +5,25 @@
 ```
    electron/main.mjs           独立窗口（只负责拉起后端并装窗口）
         │  HTTP / JSON
-      server ─────────┐
-        │             │
-   ┌────┴────┐     export
-   │         │        │
-planning ── simulation ┘
-   │            │
-   └──► core ◄──┘
+      server ─────────────┬──────────────┐
+        │                 │              │
+   ┌────┴────┐        export         storage
+   │         │            │              │
+ planning ── simulation ──┴──────────────┤
+   │            │                        │
+   └──► core ◄──┴──── step ── cam ───────┘
         ▲
         │ 静态文件
       web（原生 ES 模块 + three.js）
 ```
 
-依赖只有一个方向。`core` 不认识任何其它层，`planning` / `simulation` / `export` 只依赖 `core`，
-`server` 组装全部，`web` 只通过 HTTP 说话，`electron` 只负责窗口。由此得到三个好处：
+依赖只有一个方向。`core` 不认识任何其它层；`step` / `cam` / `planning` / `simulation` / `export` / `storage`
+只依赖 `core`（`cam` 还用到 `step` 的面拓扑，`storage` 用到 `step` 的模型）；`server` 组装全部，
+`web` 只通过 HTTP 说话，`electron` 只负责窗口。由此得到三个好处：
 
-- 刀路算法可以脱离界面单独跑（`examples/headless_plan.py`）；
+- 刀路算法可以脱离界面单独跑（`examples/headless_plan.py`，CAM 链路见 README 的脚本示例）；
 - 换传输层（CLI、gRPC、ROS 节点）不需要动算法；
-- 把 `core` + `planning` 搬进别的项目不会拖入框架依赖。
+- 把 `core` + `planning` + `cam` 搬进别的项目不会拖入框架依赖。
 
 ## 各层职责
 
@@ -33,33 +34,70 @@ planning ── simulation ┘
 | `parameters.py` | `ParameterSpec` / `ParameterSet`：声明式参数（类型、范围、默认值、单位、中文标签、显隐条件、选项的 disabled），同时驱动界面、校验与文档 |
 | `tool.py` | 刀具：类型、直径、长度，以及由类型推出的**足迹半径**（刀路相对轮廓的偏置量） |
 | `region.py` | 区域形状：方形与圆形，统一输出逆时针边界多边形 |
+| `part.py` | 零件：导入结果 + 面特征摘要（是否平面、法向、平面方程、面积、边界环） |
+| `stock.py` | 毛坯：矩形块 / 圆柱，尺寸计算、坐标定位、预览网格 |
+| `operation.py` | 工序与工序树：类型、参数、状态机、排序、参数模板 |
 | `path.py` | `Move`（切削/连接/快移 + 进给）与 `Toolpath`（统计、载荷） |
-| `registry.py` | 通用能力注册表（区域形状、策略共用） |
+| `registry.py` | 通用能力注册表（区域形状、策略、毛坯共用） |
 | `payload.py` | 请求字典 → 领域对象的拆解工具 |
 
-### planning —— 策略层
+### step —— STEP 读取层
+
+| 模块 | 职责 |
+| --- | --- |
+| `parser.py` | ISO 10303-21 实例表解析（字符串 / 枚举 / 引用 / 嵌套列表、复杂实例、注释、脏数据容错） |
+| `geometry.py` | 实体解释：坐标系变换、平面/圆柱/圆锥/球/环面/B 样条曲面、直线/圆/椭圆/B 样条曲线 |
+| `freeform.py` | B 样条求值：节点展开、Cox-de Boor 基函数、有理曲线/曲面求值（纯 numpy） |
+| `tessellate.py` | 面离散：平面用带孔耳切法，解析曲面/B 样条在参数域裁剪；输出网格 + 面拓扑 + 边界环 |
+| `reader.py` | 入口与校验：体积上限、格式/几何错误分类、坐标系归一 |
+
+设计取舍：**不引入 OpenCASCADE**。覆盖最常见的解析曲面与 B 样条，遇到冷门曲面
+（`OFFSET_SURFACE`、`SWEPT_SURFACE`）跳过并记警告，而不是让整个导入失败。
+
+### cam —— 加工层
+
+| 模块 | 职责 |
+| --- | --- |
+| `boundary.py` | 加工区域：由面的边界环构造栅格掩码与**到轮廓的精确距离**，等距区域与闭合等距轮廓 |
+| `parameters.py` | 加工参数的单一来源（刀具 / 切削 / 安全 / 后处理） |
+| `common.py` | `MillingContext`、运动段构造器、分层切深 |
+| `face_mill.py` / `pocket_mill.py` | 平面铣、型腔铣 |
+| `service.py` | 一次工序的完整流程：校验 → 拾取特征 → 规划 → 统计 |
+
+为什么加工区域用"栅格 + 到轮廓的距离"而不是纯多边形偏置：多边形等距偏置要处理自交、尖角、
+岛屿合并，是最容易出 bug 的一类几何；而栅格上的距离场天然同时处理外轮廓与岛屿，多复杂的型腔
+都不用特判，且与后续仿真共用同一套坐标。等距轮廓由掩码边界跟踪得到（按行行程拼接 + 右转优先，
+保证闭合）。
+
+### planning —— 策略层（原有基座）
 
 - `base.py`：`PlanningContext`（刀具 + 区域 + 参数）与 `Planner` 基类；固定的安全高度与快移速度也在这里；
 - `geometry2d.py`：`scanline_intervals`（直线与多边形求交、偶奇配对）与多边形规范化——
   栅格刀路只靠这一个几何操作就能支持任意形状；
 - `raster.py`：往复与单向两种模式。
 
-### simulation —— 时间层
+### simulation —— 时间层与仿真
 
-`build_timeline` 把每段运动按自己的进给速度换算成时间（t = 弧长 / 进给），在弧长上重采样并限制
-总采样数（默认 4000），同时保留每段边界，所以播放不会跨段插值。载荷里 `times` / `positions`
-是逐采样数组，`kind_runs` / `move_runs` 是游程编码。
+- `timeline.py`：`build_timeline` 把每段运动按自己的进给速度换算成时间（t = 弧长 / 进给），
+  在弧长上重采样并限制总采样数（默认 4000），同时保留每段边界，所以播放不会跨段插值。
+- `cut_sim.py`：**毛坯切除仿真**。Z-Map（每个 XY 位置记录剩余高度）是 2.5 轴铣削最自然的结构：
+  平底刀端面切除时，把"刀轴扫过的胶囊体"内的格点高度压到刀底高度，一条直线段一次向量化算完。
+  逐帧导出高度图，前端按帧重建网格即得到切削动画。
 
-### export / server / web / electron
+### export / storage / server / web / electron
 
 - `export/gcode.py`：G21 / G90 / G17 + G0 / G1 带 F 的最常见 ISO 子集；
-- `server`：标准库 `ThreadingHTTPServer`。`schema.py` 是唯一的请求校验入口，`service.py` 组装响应，
-  `catalog.py` 生成能力目录，`app.py` 只做路由与错误码映射（400 参数错误 / 422 几何不可行 / 404 / 405）；
+- `export/cam_program.py`：CAM 程序的头部与工序注释（程序号、G54–G59、主轴、冷却、工序块）；
+- `storage/repository.py`：工程持久化。JSON（工程 + 工序树）+ npz（网格），原子写入；
+- `server`：标准库 `ThreadingHTTPServer`。`schema.py` 是基座请求校验入口，`multipart.py` 是标准库
+  multipart 解析，`workspace.py` 保存"当前打开的工程"，`service.py` 组装响应，`catalog.py` 生成能力目录，
+  `app.py` 只做路由与错误码映射（400 参数 / 413 体积超限 / 422 几何或文件不可用 / 404 / 405）；
   静态文件只从 `web/` 提供并做了路径穿越防护；
-- `web`：`panel.js` 依据目录生成控件，`viewport.js` 负责 three.js 场景与相机，`playback.js` 是纯逻辑的
-  时间插值器，`main.js` 负责串联；
+- `web`：`panel.js` 依据目录生成控件，`controls.js` 是共用的参数控件，`cam-panel.js` 是 CAM 面板，
+  `tree.js` 是工序树，`modal.js` 是模态框/提示条/进度条，`viewport.js` 负责 three.js 场景、相机与面拾取，
+  `playback.js` 是纯逻辑的时间插值器，`main.js` 负责串联两种模式；
 - `electron/main.mjs`：挑一个空闲端口 → 拉起 `python -m toolpath_lab` → 轮询 `/api/health` →
-  装进原生窗口；关窗时结束后端。前端是普通静态文件，所以不需要打包器。
+  装进原生窗口；关窗时结束后端。`electron/smoke.mjs` 是无头自检，用于验证前端能真的加载。
 
 ## 关键算法
 
@@ -73,6 +111,24 @@ planning ── simulation ┘
 5. 往复模式奇数刀反向、刀间直接连过去；单向模式每刀同向、刀间抬到安全面再回来；
    首尾补"下刀"和"抬刀"。
 
+### 加工区域与等距
+
+1. 选中的平面面给出边界环（外轮廓 + 岛屿）与目标高度（平面方程的 d）；
+2. 把环栅格化成掩码，并**直接对原始多边形**算每个格点到轮廓的最短距离
+   （外轮廓与所有岛屿取最小）——比"栅格化后再做距离变换"精确，不会出现阶梯状距离场；
+3. 刀心可行区域 = 掩码 ∩ (距离 ≥ 刀具半径 + 侧面余量)；
+4. 等距轮廓 = 对该掩码取边界环（按行行程拼接 + 右转优先行走），得到闭合、正交的多段线，
+   正好是环切需要的形状；
+5. 平行扫描则在可行区域里按走刀方向取扫描线区间。
+
+### 毛坯切除仿真（Z-Map）
+
+1. 按毛坯形状建高度图（矩形用规则栅格，圆柱再加径向掩码），初值 = 毛坯顶面；
+2. 对每条直线段求"刀轴扫过的胶囊体"，落在其中的格点高度被压到刀底高度（斜插也正确：
+   按格点到线段最近点的参数插值刀底 Z）；
+3. 每个采样里程导出一帧高度图，前端在三维里把它重建成网格（顶面 + 侧壁）；
+4. 结束时统计剩余体积与零件体积偏差——偏差大说明余量没切净或区域选错了。
+
 ### 时间参数化
 
 每段运动携带自己的进给速度，累计时间就是各段"弧长 / 进给"之和，因此快移段与切削段对"预计工时"
@@ -84,5 +140,7 @@ planning ── simulation ┘
 - 想加**参数**：在对应能力的 `ParameterSet` 里加一行 `spec(...)`，界面与校验自动跟上；
 - 想加**形状**：写一个 `boundary()` 返回逆时针多边形；
 - 想加**策略**：继承 `Planner` 并注册，见 extending.md；
+- 想加**加工类型**：在 `cam/` 写一个规划函数并在 `cam/service.py` 注册，见 extending.md 第 5 节；
+- 想加**毛坯类型 / 模型格式**：见 extending.md 第 6、7 节；
 - 想加**曲面 / 三维区域**：给区域加高度场、给 `Move` 加刀轴字段，再在策略里逐点采样；
 - 想加**导出格式**：在 `export/` 写一个纯函数，在 `server/app.py` 加一个分支。

@@ -21,6 +21,12 @@ const COLORS = {
   trace: 0x54d6c4,
   tool: 0xffcc00,
   holder: 0xb0bcc6,
+  // CAM：零件、毛坯、拾取高亮、仿真后毛坯
+  part: 0x8fa6b8,
+  partSelected: 0xffa726,
+  stock: 0x4a6270,
+  stockCut: 0xb5894a,
+  edge: 0x243642,
 };
 
 //: 刀路画在工件上表面之上一点点，避免与上表面 z-fighting。
@@ -89,6 +95,8 @@ export class Viewport {
     this.bounds = null;
     this.activeView = "fit";
     this._lastTraversed = -1;
+    //: "bench" | "cam"：决定哪一组内容可见（见 _applyVisibility）
+    this.sceneMode = "bench";
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -140,15 +148,30 @@ export class Viewport {
     this.pathGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
     this.toolGroup = new THREE.Group();
+    // CAM 用的组：零件、毛坯、仿真后的毛坯、拾取高亮
+    this.partGroup = new THREE.Group();
+    this.stockGroup = new THREE.Group();
+    this.simulationGroup = new THREE.Group();
+    this.pickGroup = new THREE.Group();
     this.scene.add(
       this.gridGroup, this.workpieceGroup,
-      this.contourGroup, this.pathGroup, this.traceGroup, this.toolGroup
+      this.contourGroup, this.pathGroup, this.traceGroup, this.toolGroup,
+      this.partGroup, this.stockGroup, this.simulationGroup, this.pickGroup
     );
 
     this.tool = null;
     this.toolMesh = null;
     this.traceLine = null;
     this.rapidLine = null;
+    // CAM 状态
+    this.partData = null;          // 导入的零件（{ positions, indices, faces, ... }）
+    this.faceMeshes = [];          // 每个面一个 mesh，用于拾取与高亮
+    this.selectedFaces = new Set();
+    this.pickable = false;
+    this.onFacePick = null;        // (faceId, { additive }) => void
+    this.raycaster = new THREE.Raycaster();
+    this.pointer = new THREE.Vector2();
+    this._pickHandlers = null;
 
     this.resize();
     if (typeof ResizeObserver !== "undefined") {
@@ -158,13 +181,24 @@ export class Viewport {
   }
 
   // ------------------------------------------------------------ 生命周期
+  /**
+   * 按容器尺寸调整画布。
+   *
+   * 这里有两条必须守住的规则，否则会出现"画布无限长高 → 相机被推到天边 → 模型看不见"：
+   *   1. `setSize` 要**更新 CSS**（第三个参数留默认的 true）。以前传 false 再自己写
+   *      `height:100%`，一旦父容器高度是 auto，百分比解析成 auto，画布就退回按自身的
+   *      height 属性排版；而本函数又用 clientHeight 去设那个属性 —— 每触发一次放大一倍。
+   *   2. 尺寸没变就直接返回。ResizeObserver 会因为"自己刚造成的布局变化"再次回调，
+   *      不拦住就是死循环（控制台那条 ResizeObserver loop 警告）。
+   */
   resize() {
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
     if (!width || !height) return;
-    this.renderer.setSize(width, height, false);
-    this.renderer.domElement.style.width = "100%";
-    this.renderer.domElement.style.height = "100%";
+    if (width === this._canvasWidth && height === this._canvasHeight) return;
+    this._canvasWidth = width;
+    this._canvasHeight = height;
+    this.renderer.setSize(width, height);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
   }
@@ -229,8 +263,9 @@ export class Viewport {
   // 只在"工件尺寸变了"或第一次出结果时重新取景：
   // 调一个切宽就把视角拉回默认，是很烦人的体验。
   _autoFrame() {
-    const size = this.bounds.getSize(new THREE.Vector3());
-    const diagonal = size.length();
+    if (!this._usableBox(this.bounds)) return;
+    const diagonal = this.bounds.getSize(new THREE.Vector3()).length();
+    if (!Number.isFinite(diagonal) || diagonal <= 0) return;
     const changed = !this.fittedDiagonal
       || Math.abs(diagonal - this.fittedDiagonal) / this.fittedDiagonal > 0.12;
     if (changed) {
@@ -241,7 +276,22 @@ export class Viewport {
 
   resetView() {
     this.applyView("fit");
-    if (this.bounds) this.fittedDiagonal = this.bounds.getSize(new THREE.Vector3()).length();
+    if (this._usableBox(this.bounds)) {
+      this.fittedDiagonal = this.bounds.getSize(new THREE.Vector3()).length();
+    }
+  }
+
+  /**
+   * 包围盒是否可用：非空、且六个坐标全是有限数。
+   *
+   * 这一步是必需的防线：Box3 一旦被并进一个 NaN 顶点（典型来源是几何算错时产生的
+   * 非有限坐标），`isEmpty()` 会返回 false（NaN 的比较恒为 false），于是相机被摆到
+   * NaN 位置，用户看到的现象就是"模型不见了"或者"只看得见一角"。
+   */
+  _usableBox(box) {
+    if (!box || box.isEmpty()) return false;
+    const { min, max } = box;
+    return [min.x, min.y, min.z, max.x, max.y, max.z].every(Number.isFinite);
   }
 
   setTool(tool) {
@@ -289,12 +339,38 @@ export class Viewport {
 
   setDisplayOptions(options) {
     this.display = Object.assign({}, this.display, options || {});
-    this.workpieceGroup.visible = this.display.showWorkpiece;
-    this.pathGroup.visible = this.display.showPath;
-    this.traceGroup.visible = this.display.showPath && this.display.showTrace;
-    this.toolGroup.visible = this.display.showTool;
-    if (this.rapidLine) this.rapidLine.visible = this.display.showRapid;
-    this.contourGroup.visible = this.display.showWorkpiece;
+    this._applyVisibility();
+  }
+
+  /**
+   * 切换场景模式：实验台（bench）与 CAM 加工（cam）的内容必须严格互斥。
+   *
+   * 以前可见性只在 setMode() 里设一次，而启动时"恢复工程"会再调 setPart / setStockMesh，
+   * 它们各自把分组重新点亮——结果导入的零件与毛坯压在实验台的规则工件上，
+   * 相机也被拉去框住零件+毛坯，用户看到的就是"实验台的基础模型只剩一角"。
+   * 现在所有分组可见性都由这里统一算，谁调 setPart 都破坏不了互斥。
+   */
+  setSceneMode(mode) {
+    this.sceneMode = mode === "cam" ? "cam" : "bench";
+    this._applyVisibility();
+    if (this.sceneMode === "cam") this._updateBounds();
+  }
+
+  /** 按"当前场景模式 + 显示开关 + 是否有仿真网格"算出每个分组的可见性。 */
+  _applyVisibility() {
+    const isCam = this.sceneMode === "cam";
+    const display = this.display || {};
+    this.workpieceGroup.visible = !isCam && display.showWorkpiece !== false;
+    this.contourGroup.visible = !isCam && display.showWorkpiece !== false;
+    this.pathGroup.visible = display.showPath !== false;
+    this.traceGroup.visible = display.showPath !== false && display.showTrace !== false;
+    this.toolGroup.visible = display.showTool !== false;
+    if (this.rapidLine) this.rapidLine.visible = display.showRapid !== false;
+    this.partGroup.visible = isCam && display.showPart !== false;
+    // 仿真一旦出网格就代替原始毛坯，避免两块料重叠
+    const simulating = this.simulationGroup.children.length > 0;
+    this.simulationGroup.visible = isCam && simulating && display.showSimulation !== false;
+    this.stockGroup.visible = isCam && !simulating && display.showStock !== false;
   }
 
   setAppearance(options) {
@@ -316,7 +392,7 @@ export class Viewport {
 
   // ---------------------------------------------------------------- 视角
   applyView(view) {
-    if (!this.bounds || this.bounds.isEmpty()) return;
+    if (!this._usableBox(this.bounds)) return;
     const { direction, up } = orientation(view);
     const center = this.bounds.getCenter(new THREE.Vector3());
     const radius = Math.max(this.bounds.getBoundingSphere(new THREE.Sphere()).radius, 1);
@@ -427,5 +503,347 @@ export class Viewport {
         if (material) material.dispose();
       }
     }
+  }
+
+  // ============================================================== CAM 零件
+  // setPart 之后视口进入"加工模式"：显示零件与毛坯，并可以拾取面。
+  // 与实验台（区域 + 栅格刀路）互不干扰，两套内容各用一组 Group。
+
+  /** 载入导入的零件：按面拆成独立 mesh，因此每一面都能单独高亮与拾取。 */
+  setPart(payload, { frame = true } = {}) {
+    this._clear(this.partGroup);
+    this._clear(this.pickGroup);
+    this.faceMeshes = [];
+    this.selectedFaces = new Set();
+    this.partData = payload;
+    if (!payload || !payload.mesh) return;
+
+    const mesh = payload.mesh;
+    const positions = new Float32Array(mesh.positions.flat());
+    const indices = mesh.indices;
+    const faceOfTriangle = mesh.face_of_triangle || [];
+    const faceMeta = new Map((mesh.faces || []).map((face) => [face.id, face]));
+
+    // 按面收集三角形下标（载荷里已按面排列，这里只做分组）
+    const groups = new Map();
+    for (let triangle = 0; triangle < faceOfTriangle.length; triangle += 1) {
+      const faceId = faceOfTriangle[triangle];
+      if (!groups.has(faceId)) groups.set(faceId, []);
+      groups.get(faceId).push(triangle);
+    }
+
+    const material = new THREE.MeshStandardMaterial({
+      color: COLORS.part, metalness: 0.55, roughness: 0.45,
+      flatShading: false, side: THREE.DoubleSide,
+    });
+    for (const [faceId, triangles] of groups) {
+      const localIndices = [];
+      for (const triangle of triangles) {
+        localIndices.push(indices[triangle * 3], indices[triangle * 3 + 1], indices[triangle * 3 + 2]);
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      geometry.setIndex(localIndices);
+      geometry.computeVertexNormals();
+      const faceMesh = new THREE.Mesh(geometry, material.clone());
+      faceMesh.castShadow = true;
+      faceMesh.receiveShadow = true;
+      faceMesh.userData.faceId = faceId;
+      faceMesh.userData.meta = faceMeta.get(faceId) || null;
+      this.faceMeshes.push(faceMesh);
+      this.partGroup.add(faceMesh);
+    }
+    // 边线：让模型轮廓更清楚，也更容易看清被选中的面。
+    // 注意**不能**把无索引几何交给 EdgesGeometry：它靠索引三角形工作，无索引时会产出
+    // NaN 顶点，而一个 NaN 顶点就会让整场景的包围盒变成 NaN，相机随即失焦
+    //（表现就是"模型不见了"或"只看得见一角"）。这里直接按网格索引提取唯一的边。
+    const edges = new THREE.LineSegments(
+      new THREE.BufferGeometry().setAttribute(
+        "position", new THREE.BufferAttribute(this._uniqueEdgePositions(positions, indices), 3)
+      ),
+      new THREE.LineBasicMaterial({ color: COLORS.edge, transparent: true, opacity: 0.55 })
+    );
+    this.partGroup.add(edges);
+
+    this._applyVisibility();
+    this._updateBounds();
+    if (frame) this._autoFrame();
+  }
+
+  /**
+   * 由（可能不共享顶点的）三角网格提取**唯一的边**，返回线段的顶点坐标数组。
+   *
+   * 为什么要自己算而不用 EdgesGeometry：导入的网格是先焊接顶点再离散的，索引里同一个
+   * 顶点被多个三角形共用，EdgesGeometry 可以直接用；但对无索引几何它会产出 NaN。
+   * 这里按"量化后的顶点对"去重，同一位置的顶点只保留一条边，线框因此更干净。
+   */
+  _uniqueEdgePositions(positions, indices) {
+    const seen = new Set();
+    const output = [];
+    const key = (index) => {
+      const x = Math.round(positions[index * 3] * 1000);
+      const y = Math.round(positions[index * 3 + 1] * 1000);
+      const z = Math.round(positions[index * 3 + 2] * 1000);
+      return `${x},${y},${z}`;
+    };
+    const push = (a, b) => {
+      const keyA = key(a);
+      const keyB = key(b);
+      const marker = keyA < keyB ? `${keyA}|${keyB}` : `${keyB}|${keyA}`;
+      if (seen.has(marker)) return;
+      seen.add(marker);
+      output.push(
+        positions[a * 3], positions[a * 3 + 1], positions[a * 3 + 2],
+        positions[b * 3], positions[b * 3 + 1], positions[b * 3 + 2]
+      );
+    };
+    const vertexCount = positions.length / 3;
+    for (let index = 0; index + 2 < indices.length; index += 3) {
+      const a = indices[index];
+      const b = indices[index + 1];
+      const c = indices[index + 2];
+      if (a >= vertexCount || b >= vertexCount || c >= vertexCount) continue;
+      push(a, b);
+      push(b, c);
+      push(c, a);
+    }
+    // 兜底：没有索引（或全被过滤）时至少给出所有顶点的连续折线
+    if (output.length === 0) {
+      for (let index = 0; index < vertexCount; index += 1) {
+        output.push(positions[index * 3], positions[index * 3 + 1], positions[index * 3 + 2]);
+      }
+    }
+    return new Float32Array(output);
+  }
+
+  setSelectedFaces(ids) {
+    this.selectedFaces = new Set((ids || []).map((item) => Number(item)));
+    for (const mesh of this.faceMeshes) {
+      const selected = this.selectedFaces.has(Number(mesh.userData.faceId));
+      mesh.material.color.setHex(selected ? COLORS.partSelected : COLORS.part);
+      mesh.material.emissive.setHex(selected ? 0x3a2300 : 0x000000);
+    }
+  }
+
+  setPickable(enabled) {
+    if (enabled === this.pickable) return;
+    this.pickable = enabled;
+    if (enabled) {
+      this._pickHandlers = {
+        pointerdown: (event) => this._onPointerDown(event),
+      };
+      this.renderer.domElement.addEventListener("pointerdown", this._pickHandlers.pointerdown);
+      this.renderer.domElement.style.cursor = "crosshair";
+    } else {
+      if (this._pickHandlers) {
+        this.renderer.domElement.removeEventListener("pointerdown", this._pickHandlers.pointerdown);
+      }
+      this._pickHandlers = null;
+      this.renderer.domElement.style.cursor = "";
+    }
+  }
+
+  _onPointerDown(event) {
+    if (!this.pickable) return;
+    // 左键拖动是旋转视角，因此只在"几乎没有移动"的点击上拾取
+    const { clientX, clientY } = event;
+    const element = this.renderer.domElement;
+    const rect = element.getBoundingClientRect();
+    this.pointer.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const start = { x: clientX, y: clientY };
+    const finish = (upEvent) => {
+      element.removeEventListener("pointerup", finish);
+      const moved = Math.hypot(upEvent.clientX - start.x, upEvent.clientY - start.y);
+      if (moved > 4) return;
+      if (event.button !== 0) return;
+      this.raycaster.setFromCamera(this.pointer, this.camera);
+      const hits = this.raycaster.intersectObjects(this.faceMeshes, false);
+      if (!hits.length) return;
+      const faceId = hits[0].object.userData.faceId;
+      if (this.onFacePick) this.onFacePick(faceId, { additive: upEvent.shiftKey });
+    };
+    element.addEventListener("pointerup", finish);
+  }
+
+  // ============================================================== CAM 毛坯
+  /** 载入毛坯网格（矩形块预览或圆柱预览）。 */
+  setStockMesh(payload) {
+    this._clear(this.stockGroup);
+    if (!payload || !payload.positions) return;
+    const mesh = this._meshFromPayload(payload, COLORS.stock, 0.35);
+    mesh.userData.isStock = true;
+    this.stockGroup.add(mesh);
+    this._applyVisibility();
+    // 毛坯换了尺寸就要重算取景范围：否则 bounds 还停在上一个毛坯上，
+    // 导入一个比原来小的零件时相机会被按旧尺寸拉开，模型看着又小又偏。
+    this._updateBounds();
+  }
+
+  /** 仿真结果：按帧的当前高度图绘制"被切过的毛坯"。 */
+  setSimulationMesh(payload, height) {
+    this._clear(this.simulationGroup);
+    if (!payload || !height) return;
+    const geometry = this._heightFieldGeometry(payload, height);
+    if (!geometry) return;
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+      color: COLORS.stockCut, metalness: 0.35, roughness: 0.7,
+      side: THREE.DoubleSide, flatShading: false,
+    }));
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.simulationGroup.add(mesh);
+    this._applyVisibility();
+    this._updateBounds();
+  }
+
+  clearSimulation() {
+    this._clear(this.simulationGroup);
+    this._applyVisibility();
+    this._updateBounds();
+  }
+
+  /** 把高度图（一维数组 + grid 描述）变成三角网格。 */
+  _heightFieldGeometry(grid, height) {
+    const { rows, cols, x0, y0, cell_mm: cell, bottom_z: bottom, active } = grid;
+    if (!rows || !cols || !height || height.length < rows * cols) return null;
+
+    const index = new Int32Array(rows * cols).fill(-1);
+    const vertices = [];
+    const isActive = (i, j) => {
+      const cellIndex = i * cols + j;
+      return !active || active[cellIndex] !== false;
+    };
+    for (let i = 0; i < rows; i += 1) {
+      for (let j = 0; j < cols; j += 1) {
+        if (!isActive(i, j)) continue;
+        const cellIndex = i * cols + j;
+        index[cellIndex] = vertices.length / 3;
+        vertices.push(x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell, height[cellIndex]);
+      }
+    }
+
+    const indices = [];
+    // 顶面
+    for (let i = 0; i < rows - 1; i += 1) {
+      for (let j = 0; j < cols - 1; j += 1) {
+        const a = index[i * cols + j];
+        const b = index[(i + 1) * cols + j];
+        const c = index[(i + 1) * cols + j + 1];
+        const d = index[i * cols + j + 1];
+        if (a < 0 || b < 0 || c < 0 || d < 0) continue;
+        indices.push(a, b, c, a, c, d);
+      }
+    }
+    // 侧壁：只在"相邻格缺失"或"位于毛坯外边界"处向下拉到毛坯底面，
+    // 这样切出来的料看起来是实心的，而不是一张悬空的纸。
+    const neighbours = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    for (let i = 0; i < rows; i += 1) {
+      for (let j = 0; j < cols; j += 1) {
+        if (!isActive(i, j)) continue;
+        const top = index[i * cols + j];
+        if (top < 0) continue;
+        const x = x0 + (i + 0.5) * cell;
+        const y = y0 + (j + 0.5) * cell;
+        const z = height[i * cols + j];
+        if (z <= bottom + 1e-6) continue;
+        const half = cell * 0.5;
+        const corners = [
+          [x - half, y - half], [x + half, y - half], [x + half, y + half], [x - half, y + half],
+        ];
+        for (let side = 0; side < 4; side += 1) {
+          const ni = i + neighbours[side][0];
+          const nj = j + neighbours[side][1];
+          const inside = ni >= 0 && nj >= 0 && ni < rows && nj < cols && isActive(ni, nj);
+          if (inside && height[ni * cols + nj] > bottom + 1e-6) continue;
+          const [ax, ay] = corners[side];
+          const [bx, by] = corners[(side + 1) % 4];
+          const base = vertices.length / 3;
+          vertices.push(ax, ay, z, bx, by, z, bx, by, bottom, ax, ay, bottom);
+          indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+        }
+      }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  _meshFromPayload(payload, color, metalness) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      "position", new THREE.Float32BufferAttribute(Float32Array.from(payload.positions.flat()), 3)
+    );
+    geometry.setIndex(payload.indices);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+      color, metalness, roughness: 0.45, transparent: true, opacity: 0.85,
+      side: THREE.DoubleSide,
+    }));
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geometry, 24),
+      new THREE.LineBasicMaterial({ color: COLORS.contour, transparent: true, opacity: 0.5 })
+    );
+    const group = new THREE.Group();
+    group.add(mesh, edges);
+    return group;
+  }
+
+  /** 在 CAM 模式下把取景范围限制在零件/毛坯/刀路之内。 */
+  _updateBounds() {
+    // 实验台有自己的取景（setResult 里直接算），这里绝不能改它的 bounds
+    if (this.sceneMode !== "cam") return;
+    const box = new THREE.Box3();
+    for (const group of [this.partGroup, this.stockGroup, this.simulationGroup, this.pathGroup]) {
+      if (!group.visible) continue;
+      const groupBox = new THREE.Box3().setFromObject(group);
+      if (this._usableBox(groupBox)) box.union(groupBox);
+    }
+    if (!this._usableBox(box)) return;
+    this.bounds = box;
+    const toolLength = Number((this.tool && this.tool.length_mm) || 0);
+    if (toolLength > 0) this.bounds.expandByPoint(new THREE.Vector3(0, 0, toolLength * 0.5));
+  }
+
+  /** CAM 显示开关：零件 / 毛坯 / 仿真 / 刀路 / 刀具。 */
+  setCamDisplay(options) {
+    this.display = Object.assign({}, this.display, options || {});
+    this._applyVisibility();
+  }
+
+  /** 只画刀路（CAM 模式：没有规则区域，只有导入零件 + 刀路）。 */
+  setPathOnly(toolpath, { includeRapid = true } = {}) {
+    this._clear(this.pathGroup);
+    this._clear(this.traceGroup);
+    if (!toolpath || !toolpath.moves) return;
+    const groups = { cut: [], link: [], rapid: [] };
+    for (const move of toolpath.moves) {
+      (groups[move.kind] || groups.cut).push(move.points);
+    }
+    // 刀路不再抬到 Z=0 上表面：CAM 的刀路本来就在三维空间里
+    this.pathGroup.add(this._line(groups.cut, COLORS.cut, 1));
+    this.pathGroup.add(this._line(groups.link, COLORS.link, 1));
+    this.rapidLine = this._line(groups.rapid, COLORS.rapid, 0.7, true);
+    this.rapidLine.visible = includeRapid && this.display.showRapid !== false;
+    this.pathGroup.add(this.rapidLine);
+    this.pathGroup.visible = this.display.showPath !== false;
+    this._updateBounds();
+  }
+
+  /** 刀路整体清空（CAM 模式切换工序时用）。 */
+  clearToolpath() {
+    this._clear(this.pathGroup);
+    this._clear(this.traceGroup);
+    this._clear(this.toolGroup);
+    this.toolMesh = null;
+    this.traceLine = null;
+    this.rapidLine = null;
   }
 }

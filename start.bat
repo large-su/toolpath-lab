@@ -45,7 +45,7 @@ call :probe_numpy "%USERPROFILE%\miniconda3\python.exe"
 if defined PYTHON goto :python_ready
 call :probe_numpy "%USERPROFILE%\anaconda3\python.exe"
 if defined PYTHON goto :python_ready
-call :probe_numpy "D:\Softwares\anaconda3\envs\py312\python.exe"
+call :probe_numpy "D:\Softwares\anaconda3\envs\py311\python.exe"
 if defined PYTHON goto :python_ready
 for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python3*") do call :probe_numpy "%%D\python.exe"
 if defined PYTHON goto :python_ready

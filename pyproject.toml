@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "toolpath-lab"
-version = "0.0.1"
-description = "A deliberately small toolpath planning base: flat end mill + square/circle region + zigzag/one-way raster toolpaths, with a desktop 3D viewer and feed-rate playback."
+version = "0.1.0"
+description = "A small CAM workbench: import STEP parts, create stock, build an operation tree, mill (face/pocket) with automatic toolpaths, simulate stock removal, and export NC — plus a raster toolpath planning base with a desktop 3D viewer."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "ToolpathLab contributors" }]
-keywords = ["cam", "toolpath", "milling", "raster", "zigzag", "robotics", "manufacturing"]
+keywords = ["cam", "toolpath", "milling", "step", "stl", "stock", "simulation", "raster", "manufacturing"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Science/Research",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Manufacturing",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering",
@@ -35,6 +35,7 @@ include = ["toolpath_lab*"]
 
 [tool.setuptools.package-data]
 toolpath_lab = ["web/*.html", "web/*.css", "web/*.png", "web/*.ico", "web/js/*.js", "web/vendor/*.js"]
+examples = ["*.step"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

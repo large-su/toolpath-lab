@@ -1,35 +1,115 @@
-// 应用装配：目录 -> 参数面板 -> 规划请求 -> 视口与播放。
+// 应用装配：目录 → 参数面板 → 规划请求 → 视口与播放。
+//
+// 两种工作模式共用同一个视口与播放条：
+//   * 实验台（bench）—— 原有功能：区域 + 栅格刀路 + 播放，逻辑完全没变；
+//   * CAM 加工（cam）—— 导入 STEP → 建毛坯 → 工序树 → 自动编程 → 切削仿真 → 出程序。
+// 两套内容各用一组 Group，切换模式只是换掉面板与显示开关，互不干扰。
 
-import { downloadGcode, fetchCatalog, requestPlan } from "./api.js";
+import {
+  addOperation,
+  closeProject,
+  deleteOperation,
+  deleteTemplate,
+  downloadGcode,
+  downloadNc,
+  downloadText,
+  duplicateOperation,
+  fetchCatalog,
+  fetchFeatures,
+  fetchModel,
+  fetchOperations,
+  fetchParameters,
+  fetchProjects,
+  fetchStock,
+  generateAllOperations,
+  generateOperation,
+  importStep,
+  moveOperation,
+  openProject,
+  requestPlan,
+  saveParameters,
+  saveStock,
+  saveTemplate,
+  simulate,
+  updateOperation,
+} from "./api.js";
+import { CamPanel } from "./cam-panel.js";
+import { Banner, Modal, Progress, openImportDialog } from "./modal.js";
 import { ParameterPanel } from "./panel.js";
 import { Playback } from "./playback.js";
+import { OperationTreePanel } from "./tree.js";
 import { VIEW_BUTTONS, Viewport } from "./viewport.js";
 
 const REGENERATE_DEBOUNCE_MS = 200;
 
 const dom = {
   panel: document.getElementById("panel"),
+  camPanel: document.getElementById("cam-panel"),
+  sidebar: document.querySelector(".sidebar"),
+  treePanel: document.getElementById("tree-panel"),
+  treeBody: document.getElementById("tree-body"),
   viewport: document.getElementById("viewport"),
   viewToolbar: document.getElementById("view-toolbar"),
+  pickToolbar: document.getElementById("pick-toolbar"),
+  pickHint: document.getElementById("pick-hint"),
+  modeSwitch: document.getElementById("mode-switch"),
   stats: document.getElementById("stats"),
   banner: document.getElementById("banner"),
+  progress: document.getElementById("progress"),
+  modal: document.getElementById("modal"),
   generate: document.getElementById("btn-generate"),
   exportButton: document.getElementById("btn-export"),
+  importButton: document.getElementById("btn-import"),
+  stockButton: document.getElementById("btn-stock"),
+  simulateButton: document.getElementById("btn-simulate"),
+  projectButton: document.getElementById("btn-project"),
   play: document.getElementById("btn-play"),
   stop: document.getElementById("btn-stop"),
+  step: document.getElementById("btn-step"),
+  speed: document.getElementById("speed"),
   scrub: document.getElementById("scrub"),
   time: document.getElementById("time"),
+  opAdd: document.getElementById("btn-op-add"),
+  opGenerate: document.getElementById("btn-op-generate"),
+  opUp: document.getElementById("btn-op-up"),
+  opDown: document.getElementById("btn-op-down"),
+  opToggle: document.getElementById("btn-op-toggle"),
+  opCopy: document.getElementById("btn-op-copy"),
+  opDelete: document.getElementById("btn-op-delete"),
+  opExport: document.getElementById("btn-op-export"),
 };
 
 let catalog = null;
 let panel = null;
+let camPanel = null;
+let tree = null;
 let viewport = null;
 let playback = null;
+let banner = null;
+let modal = null;
+let progress = null;
+
+let mode = "bench";
 let busy = false;
 let queued = false;
 let debounceTimer = 0;
 let scrubbing = false;
 let lastResult = null;
+
+// CAM 状态
+const cam = {
+  model: null,          // 当前零件的响应（含 mesh / faces / features）
+  features: [],
+  selectedFaces: [],
+  stock: null,
+  operations: [],
+  templates: [],
+  activeOperationId: null,
+  simulation: null,     // 最近一次仿真结果
+  simulationFrame: 0,
+  playing: false,
+  lastResult: null,     // 最近一次 CAM 刀路结果（实验台模式下只缓存，切到 CAM 再画）
+};
 
 // ------------------------------------------------------------------ 工具
 function seconds(value) {
@@ -39,17 +119,20 @@ function seconds(value) {
   return minutes + " min " + (value - minutes * 60).toFixed(0) + " s";
 }
 
-function showBanner(message, kind) {
-  dom.banner.textContent = message;
-  dom.banner.className = "banner" + (kind === "info" ? " info" : "");
-  if (kind === "info") {
-    window.clearTimeout(showBanner.timer);
-    showBanner.timer = window.setTimeout(hideBanner, 4000);
-  }
+function showBanner(message, kind = "error") {
+  banner.show(message, kind, kind === "info" ? 0 : 0);
 }
 
 function hideBanner() {
-  dom.banner.className = "banner hidden";
+  banner.hide();
+}
+
+function setBusy(state, message) {
+  busy = state;
+  dom.generate.disabled = state;
+  dom.simulateButton.disabled = state;
+  if (state && message) progress.start(message);
+  if (!state) progress.stop();
 }
 
 // ------------------------------------------------------------------ 启动
@@ -57,14 +140,22 @@ async function boot() {
   viewport = new Viewport(dom.viewport);
   playback = new Playback();
   playback.onStateChange = (state) => renderPlaybar(state);
+  banner = new Banner({ root: dom.banner });
+  modal = new Modal({ root: dom.modal });
+  progress = new Progress({ root: dom.progress });
+
   buildViewToolbar();
   wireAppearanceToolbar();
+  wireModeSwitch();
+  wirePickToolbar();
   window.addEventListener("resize", () => viewport.resize());
   window.addEventListener("keydown", (event) => {
     const tag = document.activeElement ? document.activeElement.tagName : "";
-    if (event.code === "Space" && !["INPUT", "SELECT", "TEXTAREA"].includes(tag)) {
+    if (["INPUT", "SELECT", "TEXTAREA"].includes(tag)) return;
+    if (event.code === "Space") {
       event.preventDefault();
-      playback.toggle();
+      if (mode === "cam") toggleSimulation();
+      else playback.toggle();
     }
   });
 
@@ -82,10 +173,34 @@ async function boot() {
     onDisplayChange: (options) => viewport.setDisplayOptions(options),
   });
   viewport.setDisplayOptions(panel.displayOptions());
+
+  camPanel = new CamPanel({
+    root: dom.camPanel,
+    catalog: catalog,
+    onChange: () => { /* 参数变化不自动落盘，等用户生成 */ },
+    onStockChange: (payload) => previewStock(payload),
+    onStockCommit: (payload) => commitStock(payload),
+    onDisplayChange: (options) => viewport.setCamDisplay(options),
+    onTemplateSave: (name, body) => handleTemplateSave(name, body),
+    onTemplateApply: (template) => {
+      camPanel.syncValues(template.parameters || {});
+      showBanner(`已应用模板 ${template.name}`, "info");
+    },
+    onParameterCommit: (kind, values) => persistController(values),
+  });
+
+  tree = new OperationTreePanel({
+    root: dom.treeBody,
+    onChange: (id, changes) => handleOperationChange(id, changes),
+    onSelect: (operation) => selectOperation(operation),
+    onGenerate: (operation) => generateOne(operation.id),
+  });
+
   wireButtons();
-  // 控制台入口：想在做实验时直接操作视口/参数，可以在浏览器 DevTools 里用这个对象。
-  window.toolpathLab = { viewport, panel, playback, regenerate };
+  window.toolpathLab = { viewport, panel, camPanel, tree, playback, regenerate, cam, modal };
+
   await regenerate();
+  await loadProjectState();
   requestAnimationFrame(animate);
 }
 
@@ -135,22 +250,156 @@ function wireAppearanceToolbar() {
   }
 }
 
+function wireModeSwitch() {
+  for (const button of dom.modeSwitch.children) {
+    button.addEventListener("click", () => setMode(button.dataset.mode));
+  }
+}
+
+function wirePickToolbar() {
+  const pick = dom.pickToolbar.querySelector("[data-pick='face']");
+  const clear = dom.pickToolbar.querySelector("[data-pick='clear']");
+  pick.addEventListener("click", () => {
+    const next = !pick.classList.contains("active");
+    pick.classList.toggle("active", next);
+    viewport.setPickable(next);
+    showBanner(next ? "已开启面拾取：单击加工面（Shift 多选）" : "已关闭面拾取", "info");
+  });
+  clear.addEventListener("click", () => {
+    cam.selectedFaces = [];
+    viewport.setSelectedFaces([]);
+    updatePickHint();
+    if (cam.activeOperationId) {
+      handleOperationChange(cam.activeOperationId, { faces: [] });
+    }
+  });
+  viewport.onFacePick = (faceId, options) => {
+    const id = Number(faceId);
+    const set = new Set(cam.selectedFaces);
+    if (options && options.additive) {
+      if (set.has(id)) set.delete(id); else set.add(id);
+    } else {
+      set.clear();
+      set.add(id);
+    }
+    cam.selectedFaces = Array.from(set);
+    viewport.setSelectedFaces(cam.selectedFaces);
+    updatePickHint();
+    if (cam.activeOperationId) {
+      handleOperationChange(cam.activeOperationId, { faces: cam.selectedFaces });
+    }
+  };
+}
+
+function updatePickHint() {
+  if (!cam.selectedFaces.length) {
+    dom.pickHint.textContent = "未选中任何面";
+    return;
+  }
+  const labels = cam.selectedFaces.map((id) => "#" + id);
+  dom.pickHint.textContent = `已选 ${cam.selectedFaces.length} 个面：${labels.join("、")}`;
+}
+
 function wireButtons() {
-  dom.generate.addEventListener("click", () => regenerate());
-  dom.exportButton.addEventListener("click", exportGcode);
-  dom.play.addEventListener("click", () => playback.toggle());
-  dom.stop.addEventListener("click", () => playback.stop());
+  dom.generate.addEventListener("click", () => {
+    if (mode === "cam") generateOne(cam.activeOperationId);
+    else regenerate();
+  });
+  dom.exportButton.addEventListener("click", () => {
+    if (mode === "cam") exportNc();
+    else exportGcode();
+  });
+  dom.importButton.addEventListener("click", () => openImport());
+  dom.stockButton.addEventListener("click", () => {
+    setMode("cam");
+    camPanel.root.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  dom.simulateButton.addEventListener("click", () => runSimulation());
+  dom.projectButton.addEventListener("click", () => openProjectDialog());
+  dom.play.addEventListener("click", () => (mode === "cam" ? toggleSimulation() : playback.toggle()));
+  dom.stop.addEventListener("click", () => {
+    if (mode === "cam") seekSimulation(0);
+    else playback.stop();
+  });
+  dom.step.addEventListener("click", () => {
+    if (mode === "cam") seekSimulation(cam.simulationFrame + 1);
+    else playback.stepForward();
+  });
+  dom.speed.addEventListener("change", () => {
+    playback.speed = Number(dom.speed.value) || 1;
+  });
   dom.scrub.addEventListener("input", () => {
     scrubbing = true;
-    playback.seekProgress(Number(dom.scrub.value));
+    if (mode === "cam") {
+      const total = cam.simulation ? cam.simulation.frames.length - 1 : 0;
+      seekSimulation(Math.round(Number(dom.scrub.value) * total));
+    } else {
+      playback.seekProgress(Number(dom.scrub.value));
+    }
   });
   dom.scrub.addEventListener("change", () => {
     scrubbing = false;
   });
+
+  dom.opAdd.addEventListener("click", () => createOperation());
+  dom.opGenerate.addEventListener("click", () => generateAll());
+  dom.opUp.addEventListener("click", () => reorder(-1));
+  dom.opDown.addEventListener("click", () => reorder(1));
+  dom.opToggle.addEventListener("click", () => toggleOperation());
+  dom.opCopy.addEventListener("click", () => copyOperation());
+  dom.opDelete.addEventListener("click", () => removeOperation());
+  dom.opExport.addEventListener("click", () => exportTree());
 }
 
-// ------------------------------------------------------------------ 规划
+// ------------------------------------------------------------------ 模式
+function setMode(next) {
+  if (next === mode) return;
+  mode = next;
+  for (const button of dom.modeSwitch.children) {
+    button.classList.toggle("active", button.dataset.mode === next);
+  }
+  const isCam = next === "cam";
+  dom.panel.hidden = isCam;
+  dom.camPanel.hidden = !isCam;
+  dom.treePanel.hidden = !isCam;
+  dom.pickToolbar.hidden = !isCam;
+  dom.stockButton.hidden = !isCam;
+  dom.simulateButton.hidden = !isCam;
+  dom.projectButton.hidden = !isCam;
+  dom.sidebar.classList.toggle("cam-mode", isCam);
+  // 两套内容互斥显示，避免实验台的规则工件与导入的零件叠在一起。
+  // 可见性统一由 viewport 算（setPart / setStockMesh 也会走同一条逻辑），
+  // 否则启动时"恢复工程"会把导入的零件点亮在实验台场景里，连相机都被带偏。
+  viewport.setSceneMode(next);
+  if (isCam) {
+    viewport.setPickable(true);
+    dom.pickToolbar.querySelector("[data-pick='face']").classList.add("active");
+    viewport.clearToolpath();
+    if (cam.model) viewport.setPart(cam.model, { frame: false });
+    if (cam.stock) viewport.setStockMesh(cam.stock.mesh);
+    // 实验台模式下产生的 CAM 结果只做了缓存，切过来时才画
+    if (cam.lastResult) applyCamResult(cam.lastResult);
+    if (!cam.model) {
+      showBanner("还没有导入模型：点顶部「导入模型」选择 STEP 文件", "info");
+    }
+    viewport.resetView();
+  } else {
+    viewport.setPickable(false);
+    dom.pickToolbar.querySelector("[data-pick='face']").classList.remove("active");
+    viewport.clearSimulation();
+    if (lastResult) {
+      viewport.setResult(lastResult);
+      viewport.setTool(lastResult.tool);
+      viewport.setPlayhead([0, 0, 0], 0);
+    }
+    viewport.resetView();
+  }
+  renderStatsForMode();
+}
+
+// ------------------------------------------------------------------ 实验台
 function scheduleRegenerate() {
+  if (mode !== "bench") return;
   hideBanner();
   window.clearTimeout(debounceTimer);
   debounceTimer = window.setTimeout(() => regenerate(), REGENERATE_DEBOUNCE_MS);
@@ -166,10 +415,16 @@ async function regenerate() {
   try {
     const result = await requestPlan(panel.payload());
     lastResult = result;
-    viewport.setResult(result);
-    viewport.setTool(result.tool);
+    if (mode === "bench") {
+      viewport.setResult(result);
+      viewport.setTool(result.tool);
+    }
     playback.load(result.timeline);
-    renderStats(result);
+    if (mode === "bench") {
+      renderBenchStats(result);
+    } else {
+      renderStats(result);
+    }
     if (result.warnings && result.warnings.length) showBanner(result.warnings.join("；"));
     else hideBanner();
   } catch (error) {
@@ -193,6 +448,551 @@ async function exportGcode() {
   }
 }
 
+// ------------------------------------------------------------------ CAM 加载
+async function loadProjectState() {
+  try {
+    const projects = await fetchProjects();
+    if (projects.current) {
+      setMode("cam");
+      await refreshModel({ frame: true });
+      showBanner(`已恢复工程「${projects.current.name}」`, "info");
+    }
+  } catch (error) {
+    /* 没有工程是正常情况 */
+  }
+}
+
+/**
+ * 拉取当前工程的全部 CAM 状态并刷新界面。
+ *
+ * ``frame`` 为 true 时重新取景，用于**导入新模型**与**启动恢复工程**：
+ * 这两种情况用户都期望马上看到零件本身，而不是延续上一次的视角。
+ * 其余场景（切换工序、改参数）保持用户已经调好的视角。
+ */
+async function refreshModel({ frame = false } = {}) {
+  // 换工程 / 重新导入模型时，先把上一条刀路与仿真结果清干净。
+  // 否则视口和统计里还挂着**上一个工程**的刀路，用户改了参数再生成，
+  // 界面上看到的仍是旧刀路，就会以为"重新生成没反应"。
+  cam.lastResult = null;
+  cam.simulation = null;
+  cam.simulationFrame = 0;
+  cam.selectedFaces = [];
+  viewport.clearToolpath();
+  viewport.clearSimulation();
+  viewport.setSelectedFaces([]);
+  const model = await fetchModel();
+  cam.model = model.project.part;
+  viewport.setPart(cam.model, { frame: false });
+  const stock = await fetchStock();
+  cam.stock = stock;
+  camPanel.setStock(stock);
+  viewport.setStockMesh(stock.mesh);
+  const parameters = await fetchParameters();
+  camPanel.setController(parameters.controller);
+  const features = await fetchFeatures();
+  cam.features = features.features;
+  await refreshOperations();
+  updatePickHint();
+  // 必须放在最后：等零件、毛坯都进了视口，bounds 才是新模型的尺寸
+  if (frame) viewport.resetView();
+}
+
+async function refreshOperations() {
+  const payload = await fetchOperations();
+  cam.operations = payload.operations || [];
+  cam.templates = payload.templates || [];
+  tree.setOperations(payload);
+  camPanel.setTemplates(cam.templates);
+  if (!cam.operations.some((item) => item.id === cam.activeOperationId)) {
+    cam.activeOperationId = cam.operations.length ? cam.operations[0].id : null;
+    const active = cam.operations.find((item) => item.id === cam.activeOperationId);
+    tree.select(cam.activeOperationId);
+    camPanel.setOperation(active || null);
+    if (active) drawOperationToolpath(active);
+  }
+  renderStatsForMode();
+}
+
+// ------------------------------------------------------------------ 导入
+function openImport() {
+  const limits = (catalog && catalog.import) || {};
+  openImportDialog({
+    modal,
+    suffixes: limits.suffixes || [".step", ".stp"],
+    maxBytes: limits.max_bytes || 32 * 1024 * 1024,
+    onError: (message) => showBanner(message),
+    onFile: async (file) => {
+      setBusy(true, "正在解析 STEP 模型…");
+      try {
+        const response = await importStep(file);
+        setMode("cam");
+        await refreshModel({ frame: true });
+        showBanner(
+          `已导入 ${response.project.part.name}：${response.project.part.statistics.faces} 个面，` +
+          `${response.project.part.statistics.triangles} 个三角面`,
+          "info"
+        );
+      } catch (error) {
+        showBanner("导入失败：" + error.message);
+      } finally {
+        setBusy(false);
+      }
+    },
+  });
+}
+
+// ------------------------------------------------------------------ 毛坯
+function previewStock(payload) {
+  // 预览：只做一次轻量的后端计算，失败也不打断输入
+  saveStock(payload.shape, payload.parameters)
+    .then((stock) => {
+      cam.stock = stock;
+      viewport.setStockMesh(stock.mesh);
+      renderStockNote(stock);
+    })
+    .catch((error) => showBanner("毛坯预览失败：" + error.message));
+}
+
+function commitStock(payload) {
+  setBusy(true, "正在生成毛坯…");
+  saveStock(payload.shape, payload.parameters)
+    .then((stock) => {
+      cam.stock = stock;
+      camPanel.setStock(stock);
+      viewport.setStockMesh(stock.mesh);
+      viewport.resetView();
+      renderStockNote(stock);
+      showBanner(`毛坯已更新：${stock.label} ${stock.bounds.size.map((v) => v.toFixed(1)).join(" × ")} mm`, "info");
+    })
+    .catch((error) => showBanner("毛坯生成失败：" + error.message))
+    .finally(() => setBusy(false));
+}
+
+function renderStockNote(stock) {
+  const residual = (stock.residual_mm || []).map((value) => value.toFixed(1) + " mm").join(" / ");
+  dom.stockButton.title = `毛坯 ${stock.label}：${stock.bounds.size.map((v) => v.toFixed(1)).join(" × ")} mm，余量 ${residual}`;
+}
+
+// ------------------------------------------------------------------ 工序
+async function createOperation() {
+  if (!cam.model) {
+    showBanner("请先导入 STEP 模型");
+    return;
+  }
+  if (!cam.selectedFaces.length) {
+    showBanner("请先在三维视图中选择加工面（打开左上角「拾取面」，点击面）");
+    return;
+  }
+  setBusy(true, "正在生成刀路…");
+  try {
+    const response = await addOperation({
+      kind: camPanel.state.kind,
+      faces: cam.selectedFaces,
+      parameters: camPanel.parameters(),
+    });
+    cam.activeOperationId = response.operation.id;
+    await refreshOperations();
+    if (response.result) {
+      applyCamResult(response.result);
+    }
+    showBanner(`已新增工序「${response.operation.name}」`, "info");
+  } catch (error) {
+    showBanner("新增工序失败：" + error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function selectOperation(operation) {
+  cam.activeOperationId = operation ? operation.id : null;
+  camPanel.setOperation(operation);
+  if (!operation) return;
+  cam.selectedFaces = (operation.faces || []).map(Number);
+  viewport.setSelectedFaces(cam.selectedFaces);
+  updatePickHint();
+  drawOperationToolpath(operation);
+}
+
+async function drawOperationToolpath(operation) {
+  try {
+    const response = await generateOperation(operation.id);
+    // 实验台模式下不碰视口：刀路分组是两种模式共用的，画上去会把实验台的刀路顶掉，
+    // 包围盒也会被改成 CAM 的范围。这里只缓存，切到 CAM 时再画。
+    if (mode !== "cam") {
+      cam.lastResult = response.result;
+      return;
+    }
+    applyCamResult(response.result);
+  } catch (error) {
+    showBanner(`工序「${operation.name}」无法生成刀路：${error.message}`);
+  }
+}
+
+/** 把一道 CAM 工序的结果画进视口（只在 CAM 模式下调用）。 */
+function applyCamResult(result) {
+  cam.lastResult = result;
+  viewport.setTool(result.tool);
+  viewport.setPathOnly(result.toolpath);
+  renderStats(result);
+  if (result.warnings && result.warnings.length) showBanner(result.warnings.join("；"));
+}
+
+async function generateOne(operationId) {
+  if (!operationId) {
+    showBanner("请先选择一道工序");
+    return;
+  }
+  setBusy(true, "正在生成刀路…");
+  try {
+    await commitPanelEdits(operationId);
+    const response = await generateOperation(operationId);
+    applyCamResult(response.result);
+    await refreshOperations();
+    showBanner("刀路已生成", "info");
+  } catch (error) {
+    showBanner("生成失败：" + error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+/**
+ * 把参数面板里**刚被改过**的值落盘到当前工序。
+ *
+ * 面板编辑只改内存里的 `camPanel.state.values`，不会自动保存（避免每拖一下滑块就写盘）。
+ * 如果"生成刀路"直接用后端的旧参数重新算，用户改了刀具直径 / 步距 / 切深再点生成，
+ * 刀路看起来"完全没反应" —— 这正是之前的问题。生成前先对齐一次，改了才发请求。
+ */
+async function commitPanelEdits(operationId) {
+  const operation = cam.operations.find((item) => item.id === operationId);
+  if (!operation) return;
+  const edited = camPanel.parameters();
+  const kind = camPanel.state.kind;
+  const changes = {};
+  if (JSON.stringify(edited) !== JSON.stringify(operation.parameters || {})) {
+    changes.parameters = edited;
+  }
+  if (kind && kind !== operation.kind) changes.kind = kind;
+  if (!Object.keys(changes).length) return;
+  const response = await updateOperation(operationId, changes);
+  const index = cam.operations.findIndex((item) => item.id === operationId);
+  if (index >= 0) cam.operations[index] = response.operation;
+  tree.setOperations({ operations: cam.operations, templates: cam.templates });
+}
+
+async function generateAll() {
+  if (!cam.operations.length) {
+    showBanner("还没有工序");
+    return;
+  }
+  setBusy(true, "正在按工序顺序生成全部刀路…");
+  try {
+    // 当前选中那道工序的面板参数也可能刚改过，批量生成前同样要落盘
+    if (cam.activeOperationId) await commitPanelEdits(cam.activeOperationId);
+    const response = await generateAllOperations();
+    const failed = (response.results || []).filter((item) => !item.ok);
+    await refreshOperations();
+    const active = cam.operations.find((item) => item.id === cam.activeOperationId);
+    if (active) await drawOperationToolpath(active);
+    showBanner(
+      failed.length
+        ? `有 ${failed.length} 道工序失败：${failed.map((item) => item.name).join("、")}`
+        : `已生成 ${(response.results || []).length} 道工序`,
+      failed.length ? "error" : "info"
+    );
+  } catch (error) {
+    showBanner("批量生成失败：" + error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function handleOperationChange(id, changes) {
+  try {
+    const response = await updateOperation(id, changes);
+    const index = cam.operations.findIndex((item) => item.id === id);
+    if (index >= 0) cam.operations[index] = response.operation;
+    tree.setOperations({ operations: cam.operations, templates: cam.templates });
+    if (id === cam.activeOperationId) camPanel.setOperation(response.operation);
+    if (changes.parameters || changes.faces) await drawOperationToolpath(response.operation);
+  } catch (error) {
+    showBanner("更新工序失败：" + error.message);
+  }
+}
+
+async function reorder(direction) {
+  const id = cam.activeOperationId;
+  if (!id) return;
+  const index = cam.operations.findIndex((item) => item.id === id);
+  const target = Math.max(0, Math.min(cam.operations.length - 1, index + direction));
+  if (target === index) return;
+  try {
+    await moveOperation(id, target);
+    await refreshOperations();
+  } catch (error) {
+    showBanner("排序失败：" + error.message);
+  }
+}
+
+async function toggleOperation() {
+  const operation = cam.operations.find((item) => item.id === cam.activeOperationId);
+  if (!operation) return;
+  await handleOperationChange(operation.id, { enabled: !operation.enabled });
+}
+
+async function copyOperation() {
+  if (!cam.activeOperationId) return;
+  try {
+    const response = await duplicateOperation(cam.activeOperationId);
+    cam.activeOperationId = response.operation.id;
+    await refreshOperations();
+    showBanner(`已复制工序「${response.operation.name}」`, "info");
+  } catch (error) {
+    showBanner("复制失败：" + error.message);
+  }
+}
+
+async function removeOperation() {
+  if (!cam.activeOperationId) return;
+  const operation = cam.operations.find((item) => item.id === cam.activeOperationId);
+  try {
+    await deleteOperation(cam.activeOperationId);
+    cam.activeOperationId = null;
+    await refreshOperations();
+    viewport.clearToolpath();
+    showBanner(`已删除工序「${operation ? operation.name : ""}」`, "info");
+  } catch (error) {
+    showBanner("删除失败：" + error.message);
+  }
+}
+
+function exportTree() {
+  const lines = cam.operations.map((operation) => {
+    const parameters = Object.entries(operation.parameters || {})
+      .map(([key, value]) => `${key}=${value}`)
+      .join(", ");
+    return [
+      `${operation.sequence + 1}\t${operation.name}\t${operation.kind_label}\t${operation.state_label}`,
+      `\t面: ${(operation.faces || []).map((id) => "#" + id).join(" ") || "-"}`,
+      `\t参数: ${parameters}`,
+      `\t统计: ${JSON.stringify(operation.statistics || {})}`,
+    ].join("\n");
+  });
+  const text = `工序表\t${new Date().toLocaleString()}\n\n` + lines.join("\n\n") + "\n";
+  downloadText("operations.txt", text);
+  showBanner("已导出工序表", "info");
+}
+
+async function handleTemplateSave(name, body) {
+  if (name === "__delete__") {
+    try {
+      await deleteTemplate(body.id);
+      await refreshOperations();
+      showBanner("模板已删除", "info");
+    } catch (error) {
+      showBanner("删除模板失败：" + error.message);
+    }
+    return;
+  }
+  try {
+    await saveTemplate(name, body.kind, body.parameters);
+    await refreshOperations();
+    showBanner(`已保存模板「${name}」`, "info");
+  } catch (error) {
+    showBanner("保存模板失败：" + error.message);
+  }
+}
+
+async function persistController(values) {
+  try {
+    await saveParameters(undefined, values);
+  } catch (error) {
+    showBanner("后处理参数保存失败：" + error.message);
+  }
+}
+
+// ------------------------------------------------------------------ 仿真
+async function runSimulation() {
+  if (!cam.model) {
+    showBanner("请先导入模型并生成工序");
+    return;
+  }
+  if (!cam.operations.length) {
+    showBanner("还没有工序：先拾取加工面并新增工序");
+    return;
+  }
+  setBusy(true, "正在计算毛坯切除仿真…");
+  try {
+    // 不写死 cell_mm：后端按毛坯大小自适应（200 mm 的件给 0.5 mm 会变成 40 万格、
+    // 响应几十 MB，仿真要几分钟）。这里只限制帧数。
+    const payload = { operation_id: cam.activeOperationId || undefined, max_frames: 120 };
+    const result = await simulate(payload);
+    cam.simulation = result;
+    cam.simulationFrame = 0;
+    cam.playing = false;
+    playback.load(null);
+    applySimulationFrame(0);
+    renderSimulationStats(result);
+    if (result.summary && result.summary.warnings && result.summary.warnings.length) {
+      showBanner(result.summary.warnings.join("；"));
+    } else {
+      showBanner(`仿真完成：切除 ${result.summary.removed_volume_mm3.toFixed(0)} mm³`, "info");
+    }
+    cam.playing = true;
+  } catch (error) {
+    showBanner("仿真失败：" + error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function applySimulationFrame(index) {
+  if (!cam.simulation) return;
+  const frames = cam.simulation.frames || [];
+  if (!frames.length) return;
+  const clamped = Math.max(0, Math.min(index, frames.length - 1));
+  cam.simulationFrame = clamped;
+  const frame = frames[clamped];
+  viewport.setSimulationMesh(cam.simulation.grid, frame.height);
+  // 原始毛坯由 setSimulationMesh 内部的可见性规则自动让位，不再手动隐藏
+  if (cam.simulation.toolpath) {
+    drawToolpath(cam.simulation.toolpath, { keepTool: true });
+  }
+  viewport.setPlayhead(frame.position, 0);
+  dom.scrub.value = String(frames.length > 1 ? clamped / (frames.length - 1) : 0);
+  dom.time.textContent = `${frame.time_s.toFixed(2)} / ${frames[frames.length - 1].time_s.toFixed(2)} s`;
+  dom.play.textContent = cam.playing ? "❚❚" : "▶";
+  renderSimulationStats(cam.simulation);
+}
+
+function seekSimulation(index) {
+  cam.playing = false;
+  applySimulationFrame(index);
+}
+
+function toggleSimulation() {
+  if (!cam.simulation) {
+    runSimulation();
+    return;
+  }
+  cam.playing = !cam.playing;
+  if (cam.playing && cam.simulationFrame >= cam.simulation.frames.length - 1) {
+    cam.simulationFrame = 0;
+  }
+  dom.play.textContent = cam.playing ? "❚❚" : "▶";
+}
+
+let simulationClock = 0;
+
+function advanceSimulation(dt) {
+  if (!cam.playing || !cam.simulation) return;
+  simulationClock += dt * (Number(dom.speed.value) || 1);
+  const interval = 1 / 12; // 12 fps：帧数不多时也够顺滑，且不会让 GPU 空转
+  if (simulationClock < interval) return;
+  simulationClock = 0;
+  if (cam.simulationFrame >= cam.simulation.frames.length - 1) {
+    cam.playing = false;
+    dom.play.textContent = "▶";
+    return;
+  }
+  applySimulationFrame(cam.simulationFrame + 1);
+}
+
+async function exportNc() {
+  try {
+    const name = await downloadNc({ operation_id: cam.activeOperationId || undefined });
+    showBanner("已导出 " + name, "info");
+  } catch (error) {
+    showBanner("导出失败：" + error.message);
+  }
+}
+
+// ------------------------------------------------------------------ 工程
+async function openProjectDialog() {
+  const list = document.createElement("div");
+  list.className = "project-list";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "button tiny danger";
+  close.textContent = "关闭当前工程";
+  close.addEventListener("click", async () => {
+    try {
+      await closeProject();
+      cam.model = null;
+      cam.stock = null;
+      cam.operations = [];
+      cam.simulation = null;
+      cam.activeOperationId = null;
+      tree.setOperations({ operations: [], templates: [] });
+      viewport.clearToolpath();
+      viewport.clearSimulation();
+      modal.close();
+      showBanner("已关闭工程", "info");
+    } catch (error) {
+      showBanner(error.message);
+    }
+  });
+
+  try {
+    const projects = await fetchProjects();
+    if (!projects.projects.length) {
+      const empty = document.createElement("p");
+      empty.className = "note";
+      empty.textContent = "还没有保存过的工程：导入一个 STEP 模型就会自动创建。";
+      list.appendChild(empty);
+    }
+    for (const item of projects.projects) {
+      const row = document.createElement("div");
+      row.className = "project-row";
+      const info = document.createElement("div");
+      const name = document.createElement("strong");
+      name.textContent = item.name || item.id;
+      const meta = document.createElement("small");
+      meta.textContent = `${item.part_name || ""} · ${item.operations || 0} 道工序 · ${item.updated_at || ""}`;
+      info.append(name, meta);
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "button tiny";
+      open.textContent = "打开";
+      open.addEventListener("click", async () => {
+        setBusy(true, "正在打开工程…");
+        try {
+          await openProject(item.id);
+          await refreshModel({ frame: true });
+          modal.close();
+          showBanner(`已打开工程「${item.name}」`, "info");
+        } catch (error) {
+          showBanner("打开失败：" + error.message);
+        } finally {
+          setBusy(false);
+        }
+      });
+      row.append(info, open);
+      list.appendChild(row);
+    }
+  } catch (error) {
+    showBanner("无法读取工程列表：" + error.message);
+  }
+
+  modal.open({ title: "工程", body: list, footer: close });
+}
+
+// ------------------------------------------------------------------ 刀路绘制
+function drawToolpath(toolpath, options = {}) {
+  // 刀路分组是两种模式共用的；实验台模式下不许 CAM 结果覆盖它
+  if (mode !== "cam") return;
+  viewport.setPathOnly(toolpath);
+  if (!options.keepTool) viewport.setTool(cam.simulation ? cam.simulation.tool : currentTool());
+}
+
+function currentTool() {
+  const operation = cam.operations.find((item) => item.id === cam.activeOperationId);
+  if (!operation) return viewport.tool;
+  const diameter = Number(operation.parameters.tool_diameter_mm || 10);
+  const length = Number(operation.parameters.tool_length_mm || 40);
+  return { diameter_mm: diameter, radius_mm: diameter / 2, length_mm: length, kind_label: "平底刀" };
+}
+
 // ------------------------------------------------------------------ 渲染
 function statRow(label, value) {
   const term = document.createElement("dt");
@@ -203,6 +1003,64 @@ function statRow(label, value) {
 }
 
 function renderStats(result) {
+  // 统计面板只在 CAM 模式显示；实验台的统计由 renderBenchStats 负责
+  if (mode !== "cam") return;
+  const stats = result.toolpath ? result.toolpath.statistics : result.statistics;
+  const rows = [
+    ["工序", result.kind_label || (result.toolpath && result.toolpath.planner_label) || "—"],
+    ["刀轨", String(stats.pass_count ?? 0)],
+    ["刀点", String(stats.point_count ?? 0)],
+    ["切削长度", (stats.cut_length_mm || 0).toFixed(1) + " mm"],
+    ["预计工时", seconds(stats.estimated_time_s || 0)],
+  ];
+  if (result.statistics && result.statistics.volume_deviation !== undefined
+      && result.statistics.volume_deviation !== null) {
+    rows.push(["体积偏差", (result.statistics.volume_deviation * 100).toFixed(1) + " %"]);
+  }
+  const list = document.createElement("dl");
+  for (const [label, value] of rows) {
+    for (const node of statRow(label, value)) list.appendChild(node);
+  }
+  const heading = document.createElement("h4");
+  heading.textContent = "CAM 刀路";
+  const container = document.createElement("div");
+  container.append(heading, list);
+  dom.stats.replaceChildren(container);
+}
+
+function renderSimulationStats(result) {
+  if (!result) return;
+  const summary = result.summary || {};
+  const rows = [
+    ["工序", result.kind_label || (result.toolpath && result.toolpath.planner_label) || "—"],
+    ["帧", String(summary.frame_count ?? (result.frames || []).length)],
+    ["毛坯体积", (summary.initial_volume_mm3 || 0).toFixed(0) + " mm³"],
+    ["已切除", (summary.removed_volume_mm3 || 0).toFixed(0) + " mm³"],
+    ["切除率", ((summary.removed_ratio || 0) * 100).toFixed(1) + " %"],
+    ["剩余", (summary.remaining_volume_mm3 || 0).toFixed(0) + " mm³"],
+  ];
+  const list = document.createElement("dl");
+  for (const [label, value] of rows) {
+    for (const node of statRow(label, value)) list.appendChild(node);
+  }
+  const heading = document.createElement("h4");
+  heading.textContent = "切削仿真";
+  const container = document.createElement("div");
+  container.append(heading, list);
+  dom.stats.replaceChildren(container);
+}
+
+function renderStockNoteFromPayload() {
+  if (cam.stock) renderStockNote(cam.stock);
+}
+
+function renderStatsForMode() {
+  if (mode === "cam" && cam.simulation) renderSimulationStats(cam.simulation);
+  else if (mode === "cam" && !cam.operations.length) dom.stats.replaceChildren();
+  else if (mode === "bench" && lastResult) renderBenchStats(lastResult);
+}
+
+function renderBenchStats(result) {
   const stats = result.toolpath.statistics;
   const region = result.region;
   const size = region.id === "circle"
@@ -229,6 +1087,7 @@ function renderStats(result) {
 }
 
 function renderPlaybar(state) {
+  if (mode !== "bench") return;
   if (!scrubbing) dom.scrub.value = String(state.progress);
   dom.time.textContent = state.time.toFixed(2) + " / " + state.duration.toFixed(2) + " s";
   dom.play.textContent = state.playing ? "❚❚" : "▶";
@@ -240,10 +1099,14 @@ let previousTime = 0;
 function animate(now) {
   const dt = previousTime ? Math.min((now - previousTime) / 1000, 0.1) : 0;
   previousTime = now;
-  const state = playback.update(dt);
-  if (state && playback.timeline) {
-    viewport.setPlayhead(state.position, state.index);
-    if (playback.playing || scrubbing) renderPlaybar(state);
+  if (mode === "bench") {
+    const state = playback.update(dt * (Number(dom.speed.value) || 1));
+    if (state && playback.timeline) {
+      viewport.setPlayhead(state.position, state.index);
+      if (playback.playing || scrubbing) renderPlaybar(state);
+    }
+  } else {
+    advanceSimulation(dt);
   }
   viewport.render();
   requestAnimationFrame(animate);

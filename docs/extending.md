@@ -120,10 +120,72 @@ RAPID_FEED_MM_PER_MIN = 5000.0
 在 export/ 写一个纯函数 `toolpath_to_xxx(toolpath, **options) -> str`，在 export/__init__.py 里导出，
 再在 server/app.py 的 `_route_api` 里加一个分支。
 
-## 5. 约定与检查清单
+## 5. 新增 CAM 加工类型（钻孔、等高铣、螺纹铣……）
+
+比新增刀路策略多一步"登记"，但界面上的加工类型下拉框、工序树的类型标签、参数面板都是自动的。
+
+**第一步**：在 `toolpath_lab/core/operation.py` 的 `OperationKind` 里加枚举值，并补上中文标签：
+
+```python
+class OperationKind(str, Enum):
+    ...
+    DRILL = "drill"
+
+OPERATION_KIND_LABELS[OperationKind.DRILL.value] = "钻孔"
+```
+
+**第二步**：在 `toolpath_lab/cam/` 下写规划函数。它拿到的是
+`MillingContext`（刀具、起始高度、目标高度、已校验的参数、加工区域）：
+
+```python
+# toolpath_lab/cam/drill.py
+class DrillPlanner:
+    id = "drill"
+    label = "钻孔"
+    parameters = cam_parameters() + ParameterSet((
+        spec("peck_mm", "每次钻深", K.FLOAT, 3.0, unit="mm", group="钻孔"),
+    ))
+
+    def plan(self, context: MillingContext) -> Toolpath:
+        builder = MoveBuilder(context)
+        # 用加工区域里的孔位（context.region.islands 就是岛屿/孔）逐个下钻
+        ...
+        return builder.finish(planner=self.id, label=self.label, notes=(...))
+```
+
+**第三步**：在 `toolpath_lab/cam/service.py` 的 `execute_operation` 里加一个分支，
+并在 `planning_catalog()` 的 `operations` 列表里加一条（界面上的下拉框就出来了）。
+
+加工区域的可用成员：
+
+| 成员 | 说明 |
+| --- | --- |
+| outline / islands | 外轮廓与岛屿（世界 XY，(N, 2)） |
+| top_z / floor_z | 这一层的起始高度与目标高度 |
+| inside | 刀心可行区域的布尔掩码（已按刀具半径 + 余量偏置） |
+| distance | 每个格点到轮廓的距离（毫米），等距与防撞判断都靠它 |
+| offset_mask(mm) / offset_outline_polygons(mm) | 等距区域与它的闭合边界环 |
+| scanline_levels / scanline_intervals | 按走刀方向布刀线与取区间 |
+
+## 6. 新增毛坯类型
+
+继承 `Stock`、声明参数、注册到 `STOCK_TYPES`（`toolpath_lab/core/stock.py`）。
+必须实现 `volume_mm3()` 与 `build_mesh()`（界面预览与仿真都要用），
+`bounds` 决定刀路深度与仿真栅格范围。
+
+## 7. 新增三维模型格式
+
+在 `toolpath_lab/step/` 旁边写一个 reader，返回同一个 `TessellatedModel`
+（positions / indices / normals / face_of_triangle / faces / loops），然后让
+`PartModel` 指向它即可——毛坯、特征、刀路、仿真全都不用改。
+`FaceRecord.loops` 是型腔铣的区域来源，务必把边界环填上。
+
+## 8. 约定与检查清单
 
 - 单位：毫米、秒、度；角度只在 API 边界出现，核心内部用弧度；
 - 坐标：右手系、Z 轴向上、XY 是加工平面；数组一律 float64；
-- 错误：参数问题抛 ParameterError（HTTP 400），几何不可行抛 PlanningError（HTTP 422）；
-- 用户可见文案用中文（放在 label / help），代码注释与文档字符串用英文；
-- 每个新能力都要补测试，`python -m unittest discover -s tests` 必须全绿。
+- 错误：参数问题抛 ParameterError（HTTP 400），几何不可行抛 PlanningError（HTTP 422），
+  文件格式错误抛 StepFormatError（400）、体积超限抛 StepSizeError（413）；
+- 用户可见文案用中文（放在 label / help），代码注释与文档字符串用中文；
+- 每个新能力都要补测试，`python -m unittest discover -s tests` 必须全绿；
+- 动了前端就顺手跑一次 `electron/smoke.mjs`：它会真的把界面加载起来，检查控制台错误与关键 DOM。
