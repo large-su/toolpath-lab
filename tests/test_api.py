@@ -100,7 +100,10 @@ class CatalogTests(ApiTestCase):
         status, body, _ = self.get("/api/catalog")
         payload = json.loads(body)
         self.assertEqual(status, 200)
-        self.assertEqual([item["id"] for item in payload["planners"]["list"]], ["raster"])
+        self.assertEqual(
+            [item["id"] for item in payload["planners"]["list"]],
+            ["raster", "crosshatch"],
+        )
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]), ["circle", "square"]
         )
