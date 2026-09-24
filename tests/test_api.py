@@ -105,12 +105,15 @@ class CatalogTests(ApiTestCase):
             ["raster", "crosshatch"],
         )
         self.assertEqual(
-            sorted(item["id"] for item in payload["regions"]["shapes"]), ["circle", "square"]
+            sorted(item["id"] for item in payload["regions"]["shapes"]),
+            ["circle", "ellipse", "square"],
         )
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
-        self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
-                         ["kind", "diameter_mm", "length_mm"])
+        self.assertEqual(
+            [item["key"] for item in payload["tool"]["parameters"]],
+            ["kind", "diameter_mm", "length_mm", "nose_radius_mm"],
+        )
 
     def test_catalog_reports_the_fixed_settings(self) -> None:
         _, body, _ = self.get("/api/catalog")
@@ -118,10 +121,10 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(fixed["safe_height_mm"], 5.0)
         self.assertEqual(fixed["rapid_feed_mm_per_min"], 5000.0)
 
-    def test_disabled_tool_kinds_are_published(self) -> None:
+    def test_enabled_tool_kinds_are_published(self) -> None:
         _, body, _ = self.get("/api/catalog")
         kinds = json.loads(body)["tool"]["parameters"][0]["choices"]
-        self.assertEqual([item["disabled"] for item in kinds], [False, True, True])
+        self.assertEqual([item["disabled"] for item in kinds], [False, False, False])
 
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -158,6 +161,27 @@ class PlanTests(ApiTestCase):
         for move in payload["toolpath"]["moves"]:
             self.assertIn(move["kind"], {"cut", "link", "rapid"})
             self.assertGreaterEqual(len(move["points"]), 2)
+
+    def test_ellipse_and_bull_tool_are_plannable(self) -> None:
+        status, payload, _ = self.plan(
+            {
+                "tool": {
+                    "kind": "bull",
+                    "diameter_mm": 10.0,
+                    "length_mm": 40.0,
+                    "nose_radius_mm": 2.0,
+                },
+                "region": {
+                    "shape": "ellipse",
+                    "parameters": {"major_mm": 120.0, "minor_mm": 80.0, "rotation_deg": 25.0},
+                },
+            }
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["tool"]["kind"], "bull")
+        self.assertEqual(payload["tool"]["nose_radius_mm"], 2.0)
+        self.assertEqual(payload["region"]["id"], "ellipse")
+        self.assertGreater(payload["toolpath"]["statistics"]["pass_count"], 0)
 
     def test_parameters_are_echoed_back_normalised(self) -> None:
         _, payload, _ = self.plan({"planner": {"parameters": {"stepover_mm": 8}}})

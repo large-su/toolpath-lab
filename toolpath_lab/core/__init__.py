@@ -17,6 +17,7 @@ from toolpath_lab.core.payload import coerce_group, split_capability
 from toolpath_lab.core.region import (
     REGION_SHAPES,
     CircleRegion,
+    EllipseRegion,
     RegionShape,
     SquareRegion,
     build_region,
@@ -38,6 +39,7 @@ __all__ = [
     "TOOL_KIND_LABELS",
     "Choice",
     "CircleRegion",
+    "EllipseRegion",
     "Move",
     "MoveKind",
     "ParameterError",

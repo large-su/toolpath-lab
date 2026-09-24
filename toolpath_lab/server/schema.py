@@ -79,8 +79,14 @@ class PlanRequest:
         """导出文件头部用的配置说明。"""
 
         planner_label = PLANNERS.get(self.planner_id).label
+        tool_line = (
+            f"tool: {self.tool.kind.value} D{self.tool.diameter_mm:g} mm "
+            f"L{self.tool.length_mm:g} mm"
+        )
+        if self.tool.kind.value == "bull":
+            tool_line += f" Rn{self.tool.corner_radius_mm:g} mm"
         return [
-            f"tool: {self.tool.kind.value} D{self.tool.diameter_mm:g} mm L{self.tool.length_mm:g} mm",
+            tool_line,
             f"region: {self.region_id} - {_format(self.region_parameters)}",
             f"strategy: {self.planner_id} ({planner_label}) - {_format(self.planner_parameters)}",
         ]

@@ -1,4 +1,4 @@
-"""区域形状：方形与圆形。"""
+"""区域形状：方形、圆形与椭圆。"""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
 
 
 class RegionCatalogTests(unittest.TestCase):
-    def test_only_square_and_circle_are_registered(self) -> None:
-        self.assertEqual(sorted(REGION_SHAPES.ids()), ["circle", "square"])
+    def test_square_circle_and_ellipse_are_registered(self) -> None:
+        self.assertEqual(sorted(REGION_SHAPES.ids()), ["circle", "ellipse", "square"])
 
     def test_catalog_publishes_labels_and_parameters(self) -> None:
         entries = {entry["id"]: entry for entry in region_catalog()}
@@ -31,6 +31,10 @@ class RegionCatalogTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["key"] for item in entries["circle"]["parameters"]], ["diameter_mm"]
+        )
+        self.assertEqual(
+            [item["key"] for item in entries["ellipse"]["parameters"]],
+            ["major_mm", "minor_mm", "rotation_deg"],
         )
 
     def test_unknown_shape_raises(self) -> None:
@@ -68,6 +72,26 @@ class CircleRegionTests(unittest.TestCase):
         radii = np.linalg.norm(polygon, axis=1)
         self.assertAlmostEqual(float(radii.min()), 30.0, places=6)
         self.assertAlmostEqual(float(radii.max()), 30.0, places=6)
+
+
+class EllipseRegionTests(unittest.TestCase):
+    def test_boundary_area_matches_the_analytic_value(self) -> None:
+        region = build_region(
+            "ellipse", {"major_mm": 120.0, "minor_mm": 80.0, "rotation_deg": 35.0}
+        )
+        polygon = ensure_ccw(region.boundary())
+        self.assertEqual(polygon.shape[0], CIRCLE_SEGMENTS)
+        self.assertAlmostEqual(polygon_area(polygon), pi * 60.0 * 40.0, delta=2.0)
+
+    def test_rotation_changes_the_axis_aligned_bounds(self) -> None:
+        aligned = build_region("ellipse", {"major_mm": 120.0, "minor_mm": 80.0})
+        rotated = build_region(
+            "ellipse", {"major_mm": 120.0, "minor_mm": 80.0, "rotation_deg": 45.0}
+        )
+        self.assertGreater(
+            polygon_bounds(rotated.boundary())[1][1] - polygon_bounds(rotated.boundary())[1][0],
+            polygon_bounds(aligned.boundary())[1][1] - polygon_bounds(aligned.boundary())[1][0],
+        )
 
 
 if __name__ == "__main__":

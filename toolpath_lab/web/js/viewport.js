@@ -249,17 +249,37 @@ export class Viewport {
     this._clear(this.toolGroup);
     const radius = Math.max(tool.radius_mm, 0.2);
     const length = tool.length_mm;
+    const kind = tool.kind || "flat";
+    const nose = Math.min(Math.max(Number(tool.nose_radius_mm || tool.corner_radius_mm || 0), 0), radius * 0.98);
     const flute = Math.min(length * 0.65, radius * 6);
     const holder = Math.max(length - flute, length * 0.2);
+    const cuttingMaterial = new THREE.MeshStandardMaterial({
+      color: COLORS.tool, metalness: 0.5, roughness: 0.34,
+    });
+    let cutting;
+    let cuttingHeight = flute;
 
-    // 两段都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
-    // 黄色切削段对齐 UGNX 的刀具配色。
-    const cutting = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, flute, 64),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.tool, metalness: 0.5, roughness: 0.34,
-      })
-    );
+    if (kind === "ball") {
+      // 球头刀用球体尖端表达刀尖接触，圆柱段从球顶继续向上延伸。
+      cuttingHeight = Math.min(length * 0.42, radius * 2);
+      cutting = new THREE.Mesh(new THREE.SphereGeometry(radius, 64, 32), cuttingMaterial);
+      cutting.position.z = radius;
+    } else if (kind === "bull" && nose > 0.001 && nose < radius) {
+      // 圆鼻刀的底部由平底段和四分之一圆弧组成，使用旋转体显示。
+      const flatRadius = radius - nose;
+      const profile = [new THREE.Vector2(0, 0), new THREE.Vector2(flatRadius, 0)];
+      for (let i = 1; i <= 10; i += 1) {
+        const angle = (Math.PI / 2) * (i / 10);
+        profile.push(new THREE.Vector2(
+          flatRadius + nose * Math.sin(angle),
+          nose * (1 - Math.cos(angle)),
+        ));
+      }
+      profile.push(new THREE.Vector2(radius, flute), new THREE.Vector2(0, flute));
+      cutting = new THREE.Mesh(new THREE.LatheGeometry(profile, 64), cuttingMaterial);
+    } else {
+      cutting = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, flute, 64), cuttingMaterial);
+    }
     const shank = new THREE.Mesh(
       new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
       new THREE.MeshStandardMaterial({
@@ -271,10 +291,16 @@ export class Viewport {
       mesh.receiveShadow = true;
       this.toolGroup.add(mesh);
     }
-    cutting.rotation.x = Math.PI / 2;
-    cutting.position.z = flute / 2;
+    if (kind !== "ball") {
+      cutting.rotation.x = Math.PI / 2;
+      if (kind === "bull" && nose > 0.001 && nose < radius) {
+        cutting.position.z = 0;
+      } else {
+        cutting.position.z = flute / 2;
+      }
+    }
     shank.rotation.x = Math.PI / 2;
-    shank.position.z = flute + holder / 2;
+    shank.position.z = (kind === "ball" ? radius * 2 : flute) + holder / 2;
     this.toolMesh = this.toolGroup;
     this.toolGroup.visible = this.display.showTool;
   }
@@ -367,17 +393,22 @@ export class Viewport {
     const material = new THREE.MeshStandardMaterial({
       color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
     });
-    if (region.id === "circle") {
-      const radius = (region.bounds_mm[0][1] - region.bounds_mm[0][0]) / 2;
-      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, thickness, 128), material);
-      mesh.rotation.x = Math.PI / 2;
-      mesh.position.z = -thickness / 2;
-      mesh.receiveShadow = true;
-      return mesh;
+    const boundary = (region.boundary || []).map((point) => new THREE.Vector2(point[0], point[1]));
+    const shape = new THREE.Shape();
+    if (boundary.length > 0) {
+      shape.moveTo(boundary[0].x, boundary[0].y);
+      for (let index = 1; index < boundary.length; index += 1) {
+        shape.lineTo(boundary[index].x, boundary[index].y);
+      }
+      shape.closePath();
     }
-    const side = region.bounds_mm[0][1] - region.bounds_mm[0][0];
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(side, side, thickness), material);
-    mesh.position.z = -thickness / 2;
+    const geometry = new THREE.ExtrudeGeometry(shape, {
+      depth: thickness,
+      bevelEnabled: false,
+      curveSegments: 32,
+    });
+    geometry.translate(0, 0, -thickness);
+    const mesh = new THREE.Mesh(geometry, material);
     mesh.receiveShadow = true;
     return mesh;
   }

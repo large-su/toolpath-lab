@@ -1,10 +1,11 @@
 """加工区域。
 
 区域就是"要加工的那块地方"，它替代了"导入模型 + 提取特征"这一整套前置环节：
-直接给定一个规则区域即可开始规划。当前提供两种形状：
+直接给定一个规则区域即可开始规划。当前提供三种形状：
 
 - 方形（square）：一个边长；
 - 圆形（circle）：一个直径。
+- 椭圆（ellipse）：长轴、短轴和旋转角度。
 
 所有形状统一归约为一条**逆时针、不重复首点**的边界多边形。栅格刀路只会用到
 "一条直线与多边形求交"，因此新增形状（椭圆、跑道形、凹多边形……）只要实现一个
@@ -134,6 +135,48 @@ class CircleRegion(RegionShape):
         radius = self.diameter_mm / 2.0
         angles = np.linspace(0.0, 2.0 * pi, CIRCLE_SEGMENTS, endpoint=False)
         return np.column_stack((radius * np.cos(angles), radius * np.sin(angles)))
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class EllipseRegion(RegionShape):
+    """以原点为中心、可旋转的椭圆区域。"""
+
+    major_mm: float = 120.0
+    minor_mm: float = 80.0
+    rotation_deg: float = 0.0
+
+    id: ClassVar[str] = "ellipse"
+    label: ClassVar[str] = "椭圆"
+    description: ClassVar[str] = "可旋转的椭圆端面，用来观察刀路在非圆曲线边界上的收放"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("major_mm", "长轴", K.FLOAT, 120.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域"),
+            spec("minor_mm", "短轴", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域"),
+            spec("rotation_deg", "旋转角度", K.FLOAT, 0.0, minimum=0.0, maximum=180.0,
+                 step=5.0, unit="°", group="区域"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.major_mm <= 0 or self.minor_mm <= 0:
+            raise ParameterError("椭圆长轴和短轴必须为正")
+
+    def boundary(self) -> NDArray[np.float64]:
+        angles = np.linspace(0.0, 2.0 * pi, CIRCLE_SEGMENTS, endpoint=False)
+        local = np.column_stack(
+            ((self.major_mm / 2.0) * np.cos(angles),
+             (self.minor_mm / 2.0) * np.sin(angles))
+        )
+        radians = np.deg2rad(self.rotation_deg)
+        rotation = np.array(
+            [[np.cos(radians), -np.sin(radians)],
+             [np.sin(radians), np.cos(radians)]],
+            dtype=np.float64,
+        )
+        return local @ rotation.T
 
 
 def build_region(shape_id: str, raw_parameters: Mapping[str, Any] | None = None) -> RegionShape:

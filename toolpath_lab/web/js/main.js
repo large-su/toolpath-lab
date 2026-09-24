@@ -205,10 +205,11 @@ function statRow(label, value) {
 function renderStats(result) {
   const stats = result.toolpath.statistics;
   const region = result.region;
+  const width = region.bounds_mm[0][1] - region.bounds_mm[0][0];
+  const height = region.bounds_mm[1][1] - region.bounds_mm[1][0];
   const size = region.id === "circle"
-    ? "直径 " + (region.bounds_mm[0][1] - region.bounds_mm[0][0]).toFixed(0) + " mm"
-    : (region.bounds_mm[0][1] - region.bounds_mm[0][0]).toFixed(0) + " × "
-      + (region.bounds_mm[1][1] - region.bounds_mm[1][0]).toFixed(0) + " mm";
+    ? "直径 " + width.toFixed(0) + " mm"
+    : width.toFixed(0) + " × " + height.toFixed(0) + " mm";
   const rows = [
     ["区域", size],
     ["刀轨", String(stats.pass_count)],

@@ -23,9 +23,13 @@ class ToolGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(tool.corner_radius_mm, 4.0)
 
     def test_bull_tool_uses_its_flat_bottom(self) -> None:
-        tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0)
-        self.assertAlmostEqual(tool.corner_radius_mm, 0.0)
-        self.assertAlmostEqual(tool.footprint_radius_mm, 5.0)
+        tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, nose_radius_mm=2.0)
+        self.assertAlmostEqual(tool.corner_radius_mm, 2.0)
+        self.assertAlmostEqual(tool.footprint_radius_mm, 3.0)
+
+    def test_bull_tool_rejects_a_nose_radius_larger_than_the_radius(self) -> None:
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, nose_radius_mm=5.0)
 
     def test_invalid_geometry_is_rejected(self) -> None:
         with self.assertRaises(ParameterError):
@@ -41,16 +45,17 @@ class ToolParameterTests(unittest.TestCase):
         self.assertEqual(tool.diameter_mm, 6.0)
         self.assertEqual(tool.length_mm, 30.0)
 
-    def test_only_the_flat_kind_is_selectable(self) -> None:
+    def test_all_three_tool_kinds_are_selectable(self) -> None:
         disabled = {choice.value: choice.disabled for choice in TOOL_KINDS}
         self.assertFalse(disabled["flat"])
-        self.assertTrue(disabled["ball"])
-        self.assertTrue(disabled["bull"])
+        self.assertFalse(disabled["ball"])
+        self.assertFalse(disabled["bull"])
 
     def test_parameter_choices_are_published_in_the_catalog(self) -> None:
         kind_spec = tool_parameters().spec("kind")
         self.assertEqual(len(kind_spec.choices), 3)
-        self.assertTrue(kind_spec.to_dict()["choices"][1]["disabled"])
+        self.assertFalse(kind_spec.to_dict()["choices"][1]["disabled"])
+        self.assertEqual(tool_parameters().spec("nose_radius_mm").default, 2.0)
 
     def test_describe_exposes_the_geometry(self) -> None:
         payload = Tool.from_parameters(
@@ -60,7 +65,17 @@ class ToolParameterTests(unittest.TestCase):
         self.assertEqual(payload["radius_mm"], 5.0)
         self.assertEqual(payload["footprint_radius_mm"], 5.0)
         self.assertEqual(payload["length_mm"], 45.0)
+        self.assertEqual(payload["nose_radius_mm"], 0.0)
         self.assertIn("kind_label", payload)
+
+    def test_bull_parameters_create_a_rounded_tool(self) -> None:
+        values = tool_parameters().coerce(
+            {"kind": "bull", "diameter_mm": 10.0, "nose_radius_mm": 2.0}
+        )
+        tool = Tool.from_parameters(values)
+        self.assertIs(tool.kind, ToolKind.BULL)
+        self.assertAlmostEqual(tool.corner_radius_mm, 2.0)
+        self.assertAlmostEqual(tool.footprint_radius_mm, 3.0)
 
     def test_out_of_range_diameter_is_rejected(self) -> None:
         with self.assertRaises(ParameterError):
