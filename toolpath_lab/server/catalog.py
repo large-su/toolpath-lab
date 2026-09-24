@@ -10,11 +10,13 @@ from typing import Any
 
 from toolpath_lab import __version__
 from toolpath_lab.core.region import REGION_SHAPES, region_catalog
+from toolpath_lab.core.surface import SURFACE_TYPES, surface_catalog
 from toolpath_lab.core.tool import tool_parameters
 from toolpath_lab.planning import RAPID_FEED_MM_PER_MIN, SAFE_HEIGHT_MM
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
 
 DEFAULT_REGION_ID = "square"
+DEFAULT_SURFACE_ID = "flat"
 DEFAULT_PLANNER_ID = "raster"
 
 
@@ -28,6 +30,10 @@ def default_tool_parameters() -> dict[str, Any]:
 
 def default_region_parameters(region_id: str = DEFAULT_REGION_ID) -> dict[str, Any]:
     return _defaults(REGION_SHAPES, region_id)
+
+
+def default_surface_parameters(surface_id: str = DEFAULT_SURFACE_ID) -> dict[str, Any]:
+    return _defaults(SURFACE_TYPES, surface_id)
 
 
 def default_planner_parameters(planner_id: str = DEFAULT_PLANNER_ID) -> dict[str, Any]:
@@ -47,6 +53,11 @@ def catalog_payload() -> dict[str, Any]:
             "shapes": region_catalog(),
             "default_id": DEFAULT_REGION_ID,
             "defaults": default_region_parameters(),
+        },
+        "surfaces": {
+            "types": surface_catalog(),
+            "default_id": DEFAULT_SURFACE_ID,
+            "defaults": default_surface_parameters(),
         },
         "planners": {
             "list": planner_catalog(),

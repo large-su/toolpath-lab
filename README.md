@@ -7,11 +7,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形状的加工区域，生成栅格刀路，
+ToolpathLab 是一个刀路规划基座：给定一把刀具、一块加工区域和一个加工曲面，生成栅格刀路，
 在三维窗口中显示工件、刀路与刀具，并按进给速度播放整个加工过程。
 
 后端是纯 Python（只依赖 numpy），前端是原生 ES 模块加 three.js，桌面窗口由 Electron 提供。
-刀具与区域都用参数描述，参数面板根据后端的参数声明自动生成。
+刀具、区域与曲面都用参数描述，参数面板根据后端的参数声明自动生成。
 
 ![界面](docs/images/screenshot.png)
 
@@ -20,10 +20,11 @@ ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形�
 - **刀具**：平底刀、球头刀、圆鼻刀，可设置直径与长度；圆鼻刀还可设置鼻圆角半径。
   三种刀具都会根据加工面足迹半径自动计算边界偏置，前端用实体几何显示刀具形态。
 - **区域**：方形、圆形与可旋转椭圆，以原点为中心，加工面为 XY 平面；三维工件由区域边界自动拉伸生成。
+- **曲面**：平面与可调的解析自由曲面。自由曲面可设置起伏幅值、X/Y 波长与相位；刀路按曲面高度加密采样，三维视图显示曲面网格。
 - **刀路**：栅格刀路与交叉栅格刀路
   - **往复 Zigzag**：奇数刀反向，相邻两刀在端头直接连过去；
   - **单向 One-way**：每刀同向，刀与刀之间抬刀到安全面再回到起点；
-  - **交叉栅格 Crosshatch**：按两个方向各加工一遍，组内往复、组间安全抬刀，适合需要均匀覆盖的平面加工。
+  - **交叉栅格 Crosshatch**：按两个方向各加工一遍，组内往复、组间安全抬刀；选择自由曲面时同样沿曲面生成刀路。
 - **参数**：切宽、走刀方向角、进给速度。安全高度、快移速度、边界处理方式等为固定值，见[配置常量](#配置常量)。
 - **三维视图**：工件实体、区域轮廓、刀路（切削 / 连接 / 快移分色）、刀具实体、已走轨迹、实时阴影。
 - **播放**：按每段运动自己的进给速度做时间参数化，支持播放 / 暂停、拖动进度，并给出切削长度与预计工时。
@@ -47,7 +48,7 @@ ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形�
 
 ![俯视图](docs/images/screenshot-top.png)
 
-参数面板由后端 `/api/catalog` 返回的参数声明生成：新增区域形状或刀路策略后，
+参数面板由后端 `/api/catalog` 返回的参数声明生成：新增区域形状、曲面或刀路策略后，
 界面上会自动出现对应的控件，不需要修改前端代码。
 
 ## 环境要求
@@ -83,6 +84,7 @@ python -m toolpath_lab    # 只用后端 + 浏览器：http://127.0.0.1:8770/
 ```bash
 python examples/headless_plan.py
 python examples/crosshatch_plan.py
+python examples/freeform_surface_plan.py
 ```
 
 该示例不使用界面，直接生成一条刀路、打印统计信息并导出 NC 文件，
@@ -107,7 +109,7 @@ print(outcome.toolpath.statistics())
 | 接口 | 说明 |
 | --- | --- |
 | `GET /api/health` | 健康检查与版本号 |
-| `GET /api/catalog` | 能力目录：区域形状、刀路策略、参数声明、默认值与固定值 |
+| `GET /api/catalog` | 能力目录：刀具、区域形状、曲面、刀路策略、参数声明与默认值 |
 | `POST /api/plan` | 生成刀路，返回刀路运动段、统计与播放时间轴 |
 | `POST /api/export/gcode` | 导出 NC 程序 |
 
@@ -118,6 +120,7 @@ curl -X POST http://127.0.0.1:8770/api/plan \
   -H "Content-Type: application/json" \
   -d '{"tool":{"diameter_mm":6,"length_mm":30},
        "region":{"shape":"circle","parameters":{"diameter_mm":80}},
+       "surface":{"type":"freeform","parameters":{"amplitude_mm":4,"wavelength_x_mm":80,"wavelength_y_mm":60}},
        "planner":{"id":"raster","parameters":{"mode":"one_way","stepover_mm":6}}}'
 
 curl -X POST http://127.0.0.1:8770/api/export/gcode \
@@ -131,8 +134,8 @@ curl -X POST http://127.0.0.1:8770/api/export/gcode \
 
 ```
 toolpath_lab/
-  core/        领域层：参数声明、刀具、区域、刀路与运动段模型
-  planning/    策略层：Planner 基类与注册表、平面多边形几何、栅格与交叉栅格刀路
+  core/        领域层：参数声明、刀具、区域、曲面、刀路与运动段模型
+  planning/    策略层：Planner 基类与注册表、扫描线几何、栅格与交叉栅格刀路
   simulation/  时间层：按进给速度把刀路参数化为时间轴
   export/      G-code 导出
   server/      标准库 HTTP 服务：接口路由、请求校验、能力目录、静态文件
@@ -156,7 +159,7 @@ docs/          架构与扩展文档
 | 安全高度 | 5 mm | `toolpath_lab/planning/base.py` |
 | 快移速度 | 5000 mm/min | `toolpath_lab/planning/base.py` |
 | 边界处理 | 刀路相对区域轮廓内缩一个刀具足迹半径 | `toolpath_lab/planning/raster.py` |
-| 每刀采样 | 两个端点（加工面为平面） | `toolpath_lab/planning/raster.py` |
+| 每刀采样 | 平面仅端点；自由曲面按最短波长的 1/24 加密 | `toolpath_lab/planning/base.py` |
 
 把它们改成可在界面上调整的参数，做法见 [docs/extending.md](docs/extending.md)。
 
@@ -166,6 +169,7 @@ docs/          架构与扩展文档
   [examples/plugins/contour_planner.py](examples/plugins/contour_planner.py) 是一个可直接使用的
   环切（等距轮廓）实现，复制到 `toolpath_lab/planning/` 并在 `__init__.py` 中导入一行即可启用。
 - **新增区域形状**：实现一个返回逆时针边界多边形的 `boundary()`，栅格刀路与三维显示会自动适配。
+- **新增曲面**：实现 `height_at()` 与 `height_bounds()`，参见 [自由曲面说明](docs/freeform-surface.md)。
 - **新增导出格式**：在 `export/` 中写一个纯函数，并在 HTTP 路由中加一个分支。
 - 完整说明见 [docs/extending.md](docs/extending.md)，开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

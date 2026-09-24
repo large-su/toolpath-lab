@@ -1,5 +1,5 @@
 // 参数面板完全由 /api/catalog 生成：每个能力在 Python 里声明一次参数，
-// 这里负责把它们渲染出来。新增一个区域形状或策略，刷新页面就会出现，不用改本文件。
+// 这里负责把它们渲染出来。新增一个区域、曲面或策略，刷新页面就会出现，不用改本文件。
 
 const DISPLAY_OPTIONS = [
   { key: "showWorkpiece", label: "工件" },
@@ -51,6 +51,10 @@ export class ParameterPanel {
         id: this.catalog.regions.default_id,
         values: clone(this.catalog.regions.defaults),
       },
+      surface: {
+        id: this.catalog.surfaces.default_id,
+        values: clone(this.catalog.surfaces.defaults),
+      },
       planner: {
         id: this.catalog.planners.default_id,
         values: clone(this.catalog.planners.defaults),
@@ -65,6 +69,7 @@ export class ParameterPanel {
     return {
       tool: clone(this.state.tool),
       region: { shape: this.state.region.id, parameters: clone(this.state.region.values) },
+      surface: { type: this.state.surface.id, parameters: clone(this.state.surface.values) },
       planner: { id: this.state.planner.id, parameters: clone(this.state.planner.values) },
     };
   }
@@ -79,6 +84,7 @@ export class ParameterPanel {
     this.root.replaceChildren(
       this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
       this._regionSection(),
+      this._surfaceSection(),
       this._plannerSection(),
       this._displaySection(),
       this._noteSection()
@@ -170,6 +176,39 @@ export class ParameterPanel {
       });
       section.appendChild(
         this._wrapRow(spec, control, "planner", this.state.planner.values)
+      );
+    }
+    return section;
+  }
+
+  _surfaceSection() {
+    const section = this._section("曲面");
+    const surfaces = this.catalog.surfaces.types;
+    const current = this._item(surfaces, this.state.surface.id);
+    const selectorSpec = {
+      key: "__surface__",
+      label: "类型",
+      kind: "choice",
+      choices: surfaces.map((item) => ({ value: item.id, label: item.label })),
+      help: current.description,
+    };
+    const selector = this._buildControl(selectorSpec, this.state.surface.id, (value) => {
+      this.state.surface.id = value;
+      this.state.surface.values = carryOver(
+        this.state.surface.values,
+        this._item(surfaces, value)
+      );
+      this.render();
+      this.onChange();
+    });
+    section.appendChild(this._wrapRow(selectorSpec, selector, null, this.state.surface.values));
+    for (const spec of current.parameters) {
+      const control = this._buildControl(spec, this.state.surface.values[spec.key], (value) => {
+        this.state.surface.values[spec.key] = value;
+        this.onChange();
+      });
+      section.appendChild(
+        this._wrapRow(spec, control, "surface", this.state.surface.values)
       );
     }
     return section;

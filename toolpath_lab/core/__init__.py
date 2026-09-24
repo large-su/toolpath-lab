@@ -24,6 +24,14 @@ from toolpath_lab.core.region import (
     region_catalog,
 )
 from toolpath_lab.core.registry import Registry
+from toolpath_lab.core.surface import (
+    SURFACE_TYPES,
+    FlatSurface,
+    FreeformSurface,
+    SurfaceShape,
+    build_surface,
+    surface_catalog,
+)
 from toolpath_lab.core.tool import (
     TOOL_KIND_LABELS,
     TOOL_KINDS,
@@ -51,6 +59,10 @@ __all__ = [
     "RegistryError",
     "RegionShape",
     "SquareRegion",
+    "SURFACE_TYPES",
+    "FlatSurface",
+    "FreeformSurface",
+    "SurfaceShape",
     "Tool",
     "ToolKind",
     "Toolpath",
@@ -60,5 +72,7 @@ __all__ = [
     "region_catalog",
     "retract_move",
     "split_capability",
+    "build_surface",
+    "surface_catalog",
     "tool_parameters",
 ]

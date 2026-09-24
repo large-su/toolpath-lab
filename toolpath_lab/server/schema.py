@@ -12,9 +12,10 @@ from typing import Any, Mapping
 from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.payload import coerce_group, split_capability
 from toolpath_lab.core.region import RegionShape, build_region
+from toolpath_lab.core.surface import SurfaceShape, build_surface
 from toolpath_lab.core.tool import Tool, tool_parameters
 from toolpath_lab.planning.registry import PLANNERS
-from toolpath_lab.server.catalog import DEFAULT_PLANNER_ID, DEFAULT_REGION_ID
+from toolpath_lab.server.catalog import DEFAULT_PLANNER_ID, DEFAULT_REGION_ID, DEFAULT_SURFACE_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,10 +24,13 @@ class PlanRequest:
 
     tool: Tool
     region: RegionShape
+    surface: SurfaceShape
     planner_id: str
     tool_parameters: dict[str, Any] = field(default_factory=dict)
     region_id: str = DEFAULT_REGION_ID
     region_parameters: dict[str, Any] = field(default_factory=dict)
+    surface_id: str = DEFAULT_SURFACE_ID
+    surface_parameters: dict[str, Any] = field(default_factory=dict)
     planner_parameters: dict[str, Any] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
 
@@ -48,6 +52,14 @@ class PlanRequest:
         )
         region = build_region(region_id, region_parameters)
 
+        surface_id, surface_parameters = split_capability(
+            coerce_group(payload, "surface"),
+            selector="type",
+            default_id=DEFAULT_SURFACE_ID,
+            label="surface",
+        )
+        surface = build_surface(surface_id, surface_parameters)
+
         planner_id, planner_parameters = split_capability(
             coerce_group(payload, "planner"),
             selector="id",
@@ -59,10 +71,13 @@ class PlanRequest:
         return cls(
             tool=tool,
             region=region,
+            surface=surface,
             planner_id=planner_id,
             tool_parameters=tool_values,
             region_id=region_id,
             region_parameters=region.parameters.coerce(region_parameters),
+            surface_id=surface_id,
+            surface_parameters=surface.parameters.coerce(surface_parameters),
             planner_parameters=planner_class.parameters.coerce(planner_parameters),
         )
 
@@ -72,6 +87,7 @@ class PlanRequest:
         return {
             "tool": dict(self.tool_parameters),
             "region": {"shape": self.region_id, "parameters": dict(self.region_parameters)},
+            "surface": {"type": self.surface_id, "parameters": dict(self.surface_parameters)},
             "planner": {"id": self.planner_id, "parameters": dict(self.planner_parameters)},
         }
 
@@ -88,6 +104,7 @@ class PlanRequest:
         return [
             tool_line,
             f"region: {self.region_id} - {_format(self.region_parameters)}",
+            f"surface: {self.surface_id} - {_format(self.surface_parameters)}",
             f"strategy: {self.planner_id} ({planner_label}) - {_format(self.planner_parameters)}",
         ]
 

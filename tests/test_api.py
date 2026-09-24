@@ -108,7 +108,10 @@ class CatalogTests(ApiTestCase):
             sorted(item["id"] for item in payload["regions"]["shapes"]),
             ["circle", "ellipse", "square"],
         )
-        self.assertNotIn("surfaces", payload)
+        self.assertEqual(
+            [item["id"] for item in payload["surfaces"]["types"]],
+            ["flat", "freeform"],
+        )
         self.assertNotIn("presets", payload)
         self.assertEqual(
             [item["key"] for item in payload["tool"]["parameters"]],
@@ -141,6 +144,7 @@ class PlanTests(ApiTestCase):
         self.assertGreater(statistics["pass_count"], 0)
         self.assertIsNotNone(payload["timeline"])
         self.assertTrue(payload["region"]["boundary"])
+        self.assertEqual(payload["surface"]["id"], "flat")
 
     def test_response_carries_everything_the_viewer_needs(self) -> None:
         status, payload, _ = self.plan(
@@ -182,6 +186,30 @@ class PlanTests(ApiTestCase):
         self.assertEqual(payload["tool"]["nose_radius_mm"], 2.0)
         self.assertEqual(payload["region"]["id"], "ellipse")
         self.assertGreater(payload["toolpath"]["statistics"]["pass_count"], 0)
+
+    def test_freeform_surface_generates_sampled_3d_path(self) -> None:
+        status, payload, _ = self.plan({
+            "surface": {"type": "freeform", "parameters": {
+                "amplitude_mm": 6.0, "wavelength_x_mm": 40.0,
+                "wavelength_y_mm": 60.0,
+            }},
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["surface"]["id"], "freeform")
+        self.assertGreater(len(payload["surface"]["mesh"]["indices"]), 0)
+        cuts = [move for move in payload["toolpath"]["moves"] if move["kind"] == "cut"]
+        self.assertTrue(any(len(move["points"]) > 2 for move in cuts))
+        self.assertTrue(any(abs(point[2]) > 0.1 for move in cuts for point in move["points"]))
+        safe_z = payload["surface"]["height_bounds_mm"][1] + 5.0
+        self.assertTrue(any(
+            point[2] >= safe_z for move in payload["toolpath"]["moves"]
+            if move["kind"] == "rapid" for point in move["points"]
+        ))
+
+    def test_unknown_surface_is_a_bad_request(self) -> None:
+        status, payload, _ = self.plan({"surface": {"type": "saddle"}})
+        self.assertEqual(status, 400)
+        self.assertIn("saddle", payload["error"])
 
     def test_parameters_are_echoed_back_normalised(self) -> None:
         _, payload, _ = self.plan({"planner": {"parameters": {"stepover_mm": 8}}})

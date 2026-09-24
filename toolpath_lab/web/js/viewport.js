@@ -60,7 +60,9 @@ function orientation(view) {
 
 // 刀路整体抬高一点点画，避免与工件上表面互相穿插（z-fighting）。
 function liftPaths(polylines) {
-  return polylines.map((points) => points.map((point) => [point[0], point[1], PATH_LIFT_MM]));
+  return polylines.map((points) => points.map((point) => [
+    point[0], point[1], point[2] + PATH_LIFT_MM,
+  ]));
 }
 
 function polylineGeometry(polylines, dashed = false) {
@@ -187,9 +189,11 @@ export class Viewport {
     const span = Math.max(xMax - xMin, yMax - yMin);
 
     const thickness = this._thickness(span);
-    this.workpieceGroup.add(this._workpiece(region, thickness));
+    this.workpieceGroup.add(this._workpiece(region, payload.surface, thickness));
     this.contourGroup.add(this._contour(region.boundary));
-    this._rebuildGrid(span, thickness);
+    const lowerZ = Number(payload.surface && payload.surface.height_bounds_mm
+      ? payload.surface.height_bounds_mm[0] : 0);
+    this._rebuildGrid(span, thickness, lowerZ);
 
     const groups = { cut: [], link: [], rapid: [] };
     for (const move of payload.toolpath.moves) {
@@ -389,10 +393,21 @@ export class Viewport {
     return Math.min(Math.max(span * 0.09, 4), 24);
   }
 
-  _workpiece(region, thickness) {
+  _workpiece(region, surface, thickness) {
     const material = new THREE.MeshStandardMaterial({
       color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
     });
+    const meshPayload = surface && surface.mesh;
+    if (surface && surface.id === "freeform" && meshPayload && meshPayload.vertices && meshPayload.indices) {
+      const geometry = new THREE.BufferGeometry();
+      const vertices = new Float32Array(meshPayload.vertices.flat());
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+      geometry.setIndex(meshPayload.indices);
+      geometry.computeVertexNormals();
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.receiveShadow = true;
+      return mesh;
+    }
     const boundary = (region.boundary || []).map((point) => new THREE.Vector2(point[0], point[1]));
     const shape = new THREE.Shape();
     if (boundary.length > 0) {
@@ -407,14 +422,15 @@ export class Viewport {
       bevelEnabled: false,
       curveSegments: 32,
     });
-    geometry.translate(0, 0, -thickness);
+    const baseZ = Number(surface && surface.height_bounds_mm ? surface.height_bounds_mm[0] : 0);
+    geometry.translate(0, 0, baseZ - thickness);
     const mesh = new THREE.Mesh(geometry, material);
     mesh.receiveShadow = true;
     return mesh;
   }
 
   _contour(boundary) {
-    const points = boundary.map((point) => new THREE.Vector3(point[0], point[1], PATH_LIFT_MM * 2));
+    const points = boundary.map((point) => new THREE.Vector3(point[0], point[1], point[2] + PATH_LIFT_MM * 2));
     const geometry = new THREE.BufferGeometry().setFromPoints(points);
     return new THREE.LineLoop(
       geometry,
@@ -437,13 +453,13 @@ export class Viewport {
     return line;
   }
 
-  _rebuildGrid(span, thickness) {
+  _rebuildGrid(span, thickness, lowerZ = 0) {
     this._clear(this.gridGroup);
     const size = Math.max(Math.ceil((span * 3) / 20) * 20, 100);
     const grid = new THREE.GridHelper(size, Math.max(4, Math.round(size / 10)), 0x2d6c69, 0x173331);
     grid.rotation.x = Math.PI / 2;
     // 网格是"地面"：铺在工件底面，而不是穿过工件。
-    grid.position.z = -thickness - 0.1;
+    grid.position.z = lowerZ - thickness - 0.1;
     grid.material.transparent = true;
     grid.material.opacity = 0.7;
     this.gridGroup.add(grid);

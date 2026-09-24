@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from toolpath_lab.core.path import Toolpath
 from toolpath_lab.core.region import RegionShape
+from toolpath_lab.core.surface import FlatSurface, SurfaceShape
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.base import Planner, PlanningContext
 from toolpath_lab.planning.registry import PLANNERS
@@ -31,12 +32,18 @@ def run_plan(
     planner_id: str,
     tool: Tool,
     region: RegionShape,
+    surface: SurfaceShape | None = None,
     parameters: Mapping[str, Any] | None = None,
 ) -> PlanningOutcome:
     """为一份刀具/区域/参数组合生成刀路。"""
 
     planner = get_planner(planner_id)
     validated = planner.parameters.coerce(parameters)
-    context = PlanningContext(tool=tool, region=region, parameters=validated)
+    context = PlanningContext(
+        tool=tool,
+        region=region,
+        parameters=validated,
+        surface=surface or FlatSurface(),
+    )
     toolpath = planner.plan(context)
     return PlanningOutcome(toolpath=toolpath, warnings=tuple(context.warnings))

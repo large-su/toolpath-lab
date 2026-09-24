@@ -21,6 +21,7 @@ from toolpath_lab.core.parameters import ParameterSet
 from toolpath_lab.core.path import Move, MoveKind, Toolpath, retract_move
 from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import Tool
+from toolpath_lab.core.surface import FlatSurface, FreeformSurface, SurfaceShape
 from toolpath_lab.planning.geometry2d import ensure_ccw
 
 #: 快速移动时相对工件上表面抬起的距离（mm）。
@@ -37,11 +38,18 @@ class PlanningContext:
     region: RegionShape
     parameters: Mapping[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    surface: SurfaceShape = field(default_factory=FlatSurface)
 
     # -- 参数 --------------------------------------------------------------
     @property
     def feed_mm_per_min(self) -> float:
         return float(self.parameters["feed_mm_per_min"])
+
+    @property
+    def safe_z_mm(self) -> float:
+        """曲面最高点以上的安全快移高度。"""
+
+        return self.surface.height_bounds()[1] + SAFE_HEIGHT_MM
 
     # -- 几何 --------------------------------------------------------------
     @property
@@ -51,10 +59,11 @@ class PlanningContext:
         return ensure_ccw(self.region.boundary())
 
     def to_positions(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
-        """把平面点 (N, 2) 抬成工件坐标下的 (N, 3)（加工面为 Z = 0）。"""
+        """把平面点 (N, 2) 映射到加工曲面上的 (N, 3)。"""
 
         planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
-        return np.column_stack((planar, np.zeros(planar.shape[0], dtype=np.float64)))
+        heights = self.surface.height_at(planar)
+        return np.column_stack((planar, heights))
 
     def warn(self, message: str) -> None:
         """记录一条不致命的提醒，会随响应返回并显示在界面上。"""
@@ -64,15 +73,28 @@ class PlanningContext:
 
     # -- 运动段构造 --------------------------------------------------------
     def cut_move(self, points_xy: NDArray[np.float64], *, pass_index: int, label: str) -> Move:
+        planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
+        if isinstance(self.surface, FreeformSurface):
+            # 平面策略原本每刀只有两个端点；曲面加工需沿线加密采样。
+            spacing = min(self.surface.wavelength_x_mm, self.surface.wavelength_y_mm) / 24.0
+            samples = [planar[0]]
+            for start, end in zip(planar[:-1], planar[1:]):
+                count = max(1, int(np.ceil(np.linalg.norm(end - start) / spacing)))
+                samples.extend(start + (end - start) * (index / count)
+                               for index in range(1, count + 1))
+            planar = np.asarray(samples, dtype=np.float64)
         return Move(
             MoveKind.CUT,
-            self.to_positions(points_xy),
+            self.to_positions(planar),
             self.feed_mm_per_min,
             pass_index=pass_index,
             label=label,
         )
 
     def link_move(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> Move:
+        if not isinstance(self.surface, FlatSurface):
+            # 曲面上的直线连接可能穿入中间凸起，改从全局安全高度跨越。
+            return self.rapid_between(start, end)
         return Move(
             MoveKind.LINK,
             np.vstack([start, end]),
@@ -81,13 +103,13 @@ class PlanningContext:
         )
 
     def rapid_between(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> Move:
-        return retract_move(start, end, SAFE_HEIGHT_MM, RAPID_FEED_MM_PER_MIN)
+        return retract_move(start, end, self.safe_z_mm, RAPID_FEED_MM_PER_MIN)
 
     def approach_move_down(self, point: NDArray[np.float64]) -> Move:
         """从安全高度下刀到该点。"""
 
         target = np.asarray(point, dtype=np.float64).reshape(3)
-        start = np.array([target[0], target[1], SAFE_HEIGHT_MM], dtype=np.float64)
+        start = np.array([target[0], target[1], self.safe_z_mm], dtype=np.float64)
         return Move(MoveKind.RAPID, np.vstack([start, target]), RAPID_FEED_MM_PER_MIN,
                     label="下刀")
 
@@ -95,7 +117,7 @@ class PlanningContext:
         """从该点抬刀到安全高度。"""
 
         start = np.asarray(point, dtype=np.float64).reshape(3)
-        end = np.array([start[0], start[1], SAFE_HEIGHT_MM], dtype=np.float64)
+        end = np.array([start[0], start[1], self.safe_z_mm], dtype=np.float64)
         return Move(MoveKind.RAPID, np.vstack([start, end]), RAPID_FEED_MM_PER_MIN,
                     label="抬刀")
 

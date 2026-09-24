@@ -38,10 +38,12 @@ class PlanResult:
             "region": {
                 **request.region.describe(),
                 "boundary": [
-                    [round(float(point[0]), 4), round(float(point[1]), 4), 0.0]
+                    [round(float(point[0]), 4), round(float(point[1]), 4),
+                     round(float(request.surface.height_at(point.reshape(1, 2))[0]), 4)]
                     for point in boundary
                 ],
             },
+            "surface": request.surface.describe(request.region),
             "toolpath": self.toolpath.to_payload(),
             "timeline": None if self.timeline is None else self.timeline.to_payload(),
             "warnings": list(self.warnings),
@@ -60,6 +62,7 @@ def execute_plan(
         planner_id=request.planner_id,
         tool=request.tool,
         region=request.region,
+        surface=request.surface,
         parameters=request.planner_parameters,
     )
     timeline = (
