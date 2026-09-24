@@ -21,7 +21,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from toolpath_lab.core.errors import ParameterError
-from toolpath_lab.core.mathutil import cumulative_lengths
+from toolpath_lab.core.mathutil import cumulative_lengths, unit
+
+DEFAULT_TOOL_AXIS = np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
 
 class MoveKind(str, Enum):
@@ -48,6 +50,7 @@ class Move:
     feed_mm_per_min: float
     pass_index: int = -1
     label: str = ""
+    tool_axes: NDArray[np.float64] | None = None
 
     def __post_init__(self) -> None:
         points = np.array(self.points, dtype=np.float64, copy=True).reshape(-1, 3)
@@ -59,6 +62,26 @@ class Move:
             raise ParameterError("运动段的进给速度必须是有限正数")
         points.setflags(write=False)
         object.__setattr__(self, "points", points)
+        if self.tool_axes is None:
+            axes = np.repeat(DEFAULT_TOOL_AXIS[None, :], points.shape[0], axis=0)
+        else:
+            axes = np.asarray(self.tool_axes, dtype=np.float64).reshape(-1, 3)
+            if axes.shape[0] != points.shape[0]:
+                raise ParameterError("刀轴姿态数量必须与运动点数量一致")
+            if not np.all(np.isfinite(axes)):
+                raise ParameterError("刀轴姿态必须都是有限值")
+            lengths = np.linalg.norm(axes, axis=1)
+            if np.any(lengths <= 1e-9):
+                raise ParameterError("刀轴姿态不能是零向量")
+            axes = axes / lengths[:, None]
+        axes.setflags(write=False)
+        object.__setattr__(self, "tool_axes", axes)
+
+    @property
+    def is_oriented(self) -> bool:
+        """是否包含非垂直于 XY 平面的五轴刀轴姿态。"""
+
+        return bool(np.any(np.abs(self.tool_axes[:, :2]) > 1e-7))
 
     @property
     def length_mm(self) -> float:
@@ -77,7 +100,7 @@ class Move:
         return self.length_mm / self.feed_mm_per_min * 60.0
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "kind": self.kind.value,
             "kind_label": MOVE_KIND_LABELS[self.kind.value],
             "feed_mm_per_min": self.feed_mm_per_min,
@@ -86,6 +109,11 @@ class Move:
             "length_mm": self.length_mm,
             "points": [[round(float(value), 4) for value in row] for row in self.points],
         }
+        if self.is_oriented:
+            payload["tool_axes"] = [
+                [round(float(value), 6) for value in row] for row in self.tool_axes
+            ]
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +136,10 @@ class Toolpath:
     @property
     def point_count(self) -> int:
         return int(sum(move.points.shape[0] for move in self.moves))
+
+    @property
+    def is_oriented(self) -> bool:
+        return any(move.is_oriented for move in self.moves)
 
     def _length(self, kinds: tuple[MoveKind, ...]) -> float:
         return float(sum(move.length_mm for move in self.moves if move.kind in kinds))
@@ -151,6 +183,7 @@ class Toolpath:
             "notes": list(self.notes),
             "moves": [move.to_payload() for move in self.moves],
             "statistics": self.statistics(),
+            "axis_mode": "five_axis" if self.is_oriented else "three_axis",
         }
 
 
@@ -159,6 +192,8 @@ def retract_move(
     end: NDArray[np.float64],
     safe_z_mm: float,
     feed_mm_per_min: float,
+    start_tool_axis: NDArray[np.float64] | None = None,
+    end_tool_axis: NDArray[np.float64] | None = None,
 ) -> Move:
     """抬刀 → 横移 → 下刀 这段最经典的快速定位。"""
 
@@ -174,7 +209,10 @@ def retract_move(
         ],
         dtype=np.float64,
     )
-    return Move(MoveKind.RAPID, points, feed_mm_per_min, label="抬刀-横移-下刀")
+    start_axis = unit(start_tool_axis if start_tool_axis is not None else DEFAULT_TOOL_AXIS)
+    end_axis = unit(end_tool_axis if end_tool_axis is not None else start_axis)
+    axes = np.array([start_axis, start_axis, end_axis, end_axis], dtype=np.float64)
+    return Move(MoveKind.RAPID, points, feed_mm_per_min, label="抬刀-横移-下刀", tool_axes=axes)
 
 
 def polyline_length(points: NDArray[np.float64]) -> float:

@@ -17,6 +17,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from toolpath_lab.core.errors import PlanningError
+from toolpath_lab.core.mathutil import unit
 from toolpath_lab.core.parameters import ParameterSet
 from toolpath_lab.core.path import Move, MoveKind, Toolpath, retract_move
 from toolpath_lab.core.region import RegionShape
@@ -72,54 +73,102 @@ class PlanningContext:
             self.warnings.append(message)
 
     # -- 运动段构造 --------------------------------------------------------
-    def cut_move(self, points_xy: NDArray[np.float64], *, pass_index: int, label: str) -> Move:
+    def cut_move(
+        self,
+        points_xy: NDArray[np.float64],
+        *,
+        pass_index: int,
+        label: str,
+        tool_axes: NDArray[np.float64] | None = None,
+    ) -> Move:
         planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
+        axes = None if tool_axes is None else np.asarray(tool_axes, dtype=np.float64).reshape(-1, 3)
+        if axes is not None and axes.shape[0] != planar.shape[0]:
+            raise PlanningError("刀轴姿态数量必须与切削点数量一致")
         if isinstance(self.surface, FreeformSurface):
             # 平面策略原本每刀只有两个端点；曲面加工需沿线加密采样。
             spacing = min(self.surface.wavelength_x_mm, self.surface.wavelength_y_mm) / 24.0
             samples = [planar[0]]
-            for start, end in zip(planar[:-1], planar[1:]):
+            sampled_axes = None if axes is None else [axes[0]]
+            for segment, (start, end) in enumerate(zip(planar[:-1], planar[1:])):
                 count = max(1, int(np.ceil(np.linalg.norm(end - start) / spacing)))
-                samples.extend(start + (end - start) * (index / count)
-                               for index in range(1, count + 1))
+                for index in range(1, count + 1):
+                    ratio = index / count
+                    samples.append(start + (end - start) * ratio)
+                    if sampled_axes is not None:
+                        sampled_axes.append(axes[segment] + (axes[segment + 1] - axes[segment]) * ratio)
             planar = np.asarray(samples, dtype=np.float64)
+            if sampled_axes is not None:
+                axes = np.asarray(sampled_axes, dtype=np.float64)
+        elif axes is not None:
+            axes = np.asarray([unit(axis) for axis in axes], dtype=np.float64)
         return Move(
             MoveKind.CUT,
             self.to_positions(planar),
             self.feed_mm_per_min,
             pass_index=pass_index,
             label=label,
+            tool_axes=axes,
         )
 
-    def link_move(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> Move:
+    def link_move(
+        self,
+        start: NDArray[np.float64],
+        end: NDArray[np.float64],
+        start_tool_axis: NDArray[np.float64] | None = None,
+        end_tool_axis: NDArray[np.float64] | None = None,
+    ) -> Move:
         if not isinstance(self.surface, FlatSurface):
             # 曲面上的直线连接可能穿入中间凸起，改从全局安全高度跨越。
-            return self.rapid_between(start, end)
+            return self.rapid_between(start, end, start_tool_axis, end_tool_axis)
+        axes = None
+        if start_tool_axis is not None or end_tool_axis is not None:
+            first = unit(start_tool_axis if start_tool_axis is not None else end_tool_axis)
+            last = unit(end_tool_axis if end_tool_axis is not None else first)
+            axes = np.vstack((first, last))
         return Move(
             MoveKind.LINK,
             np.vstack([start, end]),
             self.feed_mm_per_min,
             label="刀间连接",
+            tool_axes=axes,
         )
 
-    def rapid_between(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> Move:
-        return retract_move(start, end, self.safe_z_mm, RAPID_FEED_MM_PER_MIN)
+    def rapid_between(
+        self,
+        start: NDArray[np.float64],
+        end: NDArray[np.float64],
+        start_tool_axis: NDArray[np.float64] | None = None,
+        end_tool_axis: NDArray[np.float64] | None = None,
+    ) -> Move:
+        return retract_move(
+            start, end, self.safe_z_mm, RAPID_FEED_MM_PER_MIN,
+            start_tool_axis, end_tool_axis,
+        )
 
-    def approach_move_down(self, point: NDArray[np.float64]) -> Move:
+    def approach_move_down(
+        self, point: NDArray[np.float64], tool_axis: NDArray[np.float64] | None = None
+    ) -> Move:
         """从安全高度下刀到该点。"""
 
         target = np.asarray(point, dtype=np.float64).reshape(3)
         start = np.array([target[0], target[1], self.safe_z_mm], dtype=np.float64)
+        axis = unit(tool_axis) if tool_axis is not None else None
+        axes = None if axis is None else np.vstack((axis, axis))
         return Move(MoveKind.RAPID, np.vstack([start, target]), RAPID_FEED_MM_PER_MIN,
-                    label="下刀")
+                    label="下刀", tool_axes=axes)
 
-    def retract_move_up(self, point: NDArray[np.float64]) -> Move:
+    def retract_move_up(
+        self, point: NDArray[np.float64], tool_axis: NDArray[np.float64] | None = None
+    ) -> Move:
         """从该点抬刀到安全高度。"""
 
         start = np.asarray(point, dtype=np.float64).reshape(3)
         end = np.array([start[0], start[1], self.safe_z_mm], dtype=np.float64)
+        axis = unit(tool_axis) if tool_axis is not None else None
+        axes = None if axis is None else np.vstack((axis, axis))
         return Move(MoveKind.RAPID, np.vstack([start, end]), RAPID_FEED_MM_PER_MIN,
-                    label="抬刀")
+                    label="抬刀", tool_axes=axes)
 
 
 class Planner:

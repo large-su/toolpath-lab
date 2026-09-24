@@ -33,16 +33,17 @@ planning ── simulation ┘
 | `parameters.py` | `ParameterSpec` / `ParameterSet`：声明式参数（类型、范围、默认值、单位、中文标签、显隐条件、选项的 disabled），同时驱动界面、校验与文档 |
 | `tool.py` | 刀具：类型、直径、长度，以及由类型推出的**足迹半径**（刀路相对轮廓的偏置量） |
 | `region.py` | 区域形状：方形与圆形，统一输出逆时针边界多边形 |
-| `path.py` | `Move`（切削/连接/快移 + 进给）与 `Toolpath`（统计、载荷） |
+| `path.py` | `Move`（切削/连接/快移 + 进给 + 可选刀轴姿态）与 `Toolpath`（统计、载荷） |
 | `registry.py` | 通用能力注册表（区域形状、策略共用） |
 | `payload.py` | 请求字典 → 领域对象的拆解工具 |
 
 ### planning —— 策略层
 
-- `base.py`：`PlanningContext`（刀具 + 区域 + 参数）与 `Planner` 基类；固定的安全高度与快移速度也在这里；
+- `base.py`：`PlanningContext`（刀具 + 区域 + 曲面 + 参数）与 `Planner` 基类；固定的安全高度与快移速度也在这里；
 - `geometry2d.py`：`scanline_intervals`（直线与多边形求交、偶奇配对）与多边形规范化——
   栅格刀路只靠这一个几何操作就能支持任意形状；
 - `raster.py`：往复与单向两种模式。
+- `five_axis.py`：在扫描线接触点上计算曲面法向、前倾/侧倾刀轴，输出连续姿态。
 
 ### simulation —— 时间层
 
@@ -73,6 +74,13 @@ planning ── simulation ┘
 5. 往复模式奇数刀反向、刀间直接连过去；单向模式每刀同向、刀间抬到安全面再回来；
    首尾补"下刀"和"抬刀"。
 
+### 五轴姿态
+
+五轴策略先从曲面求单位法向，再由走刀方向构造切向量和侧向量：
+`axis = normalize(normal + tan(lead) × tangent + tan(side_tilt) × side)`。
+每个 `Move` 保存与 XYZ 点数量相同的 `tool_axes`，时间轴对姿态做归一化插值，前端将刀具局部 +Z 旋转到该方向。
+G-code 导出以 A（方位角）和 B（相对 +Z 的倾角）表达，真实机床的 RTCP 和旋转轴约定由后处理器负责。
+
 ### 时间参数化
 
 每段运动携带自己的进给速度，累计时间就是各段"弧长 / 进给"之和，因此快移段与切削段对"预计工时"
@@ -84,5 +92,6 @@ planning ── simulation ┘
 - 想加**参数**：在对应能力的 `ParameterSet` 里加一行 `spec(...)`，界面与校验自动跟上；
 - 想加**形状**：写一个 `boundary()` 返回逆时针多边形；
 - 想加**策略**：继承 `Planner` 并注册，见 extending.md；
-- 想加**曲面 / 三维区域**：给区域加高度场、给 `Move` 加刀轴字段，再在策略里逐点采样；
+- 想加**曲面 / 三维区域**：给区域加高度场和 `normal_at()`，策略即可逐点采样；
+- 想加**材料切除仿真**：在 `simulation/` 中增加 StockState，由现有 Timeline 驱动材料状态更新，不改规划策略；
 - 想加**导出格式**：在 `export/` 写一个纯函数，在 `server/app.py` 加一个分支。

@@ -42,7 +42,10 @@ export class Playback {
 
   state() {
     if (!this.timeline || this.sampleCount === 0) {
-      return { time: 0, duration: 0, progress: 0, index: 0, position: [0, 0, 0], playing: false };
+      return {
+        time: 0, duration: 0, progress: 0, index: 0,
+        position: [0, 0, 0], toolAxis: [0, 0, 1], playing: false,
+      };
     }
     const times = this.timeline.times;
     const clamped = Math.min(Math.max(this.time, 0), this.duration);
@@ -64,12 +67,26 @@ export class Playback {
     const position = ratio === 0
       ? a
       : [a[0] + (b[0] - a[0]) * ratio, a[1] + (b[1] - a[1]) * ratio, a[2] + (b[2] - a[2]) * ratio];
+    const axisSamples = this.timeline.tool_axes;
+    let toolAxis = [0, 0, 1];
+    if (axisSamples && axisSamples.length) {
+      const axisA = axisSamples[index];
+      const axisB = axisSamples[next];
+      toolAxis = ratio === 0
+        ? axisA
+        : [axisA[0] + (axisB[0] - axisA[0]) * ratio,
+          axisA[1] + (axisB[1] - axisA[1]) * ratio,
+          axisA[2] + (axisB[2] - axisA[2]) * ratio];
+      const length = Math.hypot(toolAxis[0], toolAxis[1], toolAxis[2]) || 1;
+      toolAxis = toolAxis.map((value) => value / length);
+    }
     return {
       time: clamped,
       duration: this.duration,
       progress: this.duration > 0 ? clamped / this.duration : 0,
       index,
       position,
+      toolAxis,
       playing: this.playing,
     };
   }

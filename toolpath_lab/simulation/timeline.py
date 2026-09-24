@@ -16,7 +16,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from toolpath_lab.core.mathutil import cumulative_lengths
-from toolpath_lab.core.path import Move, MoveKind, Toolpath
+from toolpath_lab.core.path import DEFAULT_TOOL_AXIS, Move, MoveKind, Toolpath
 
 #: 载荷里使用的运动类型编码（kind_runs 里是整数，省掉重复字符串）。
 KIND_CODES: dict[str, int] = {
@@ -36,6 +36,7 @@ class TimelineState:
     kind: str
     move_index: int
     progress: float
+    tool_axis: NDArray[np.float64]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,7 @@ class Timeline:
     kind_codes: NDArray[np.int64]
     move_indices: NDArray[np.int64]
     duration_s: float
+    tool_axes: NDArray[np.float64] | None = None
 
     @property
     def sample_count(self) -> int:
@@ -73,18 +75,27 @@ class Timeline:
         t1 = float(self.times_s[nxt])
         ratio = 0.0 if t1 <= t0 else (query - t0) / (t1 - t0)
         position = self.positions[index] + ratio * (self.positions[nxt] - self.positions[index])
+        if self.tool_axes is None:
+            tool_axis = DEFAULT_TOOL_AXIS.copy()
+        else:
+            tool_axis = self.tool_axes[index] + ratio * (
+                self.tool_axes[nxt] - self.tool_axes[index]
+            )
+            length = float(np.linalg.norm(tool_axis))
+            tool_axis = tool_axis / max(length, 1e-9)
         return TimelineState(
             time_s=query,
             position=position,
             kind=KIND_CODE_LABELS[int(self.kind_codes[index])],
             move_index=int(self.move_indices[index]),
             progress=float(query / duration),
+            tool_axis=tool_axis,
         )
 
     def to_payload(self, *, time_decimals: int = 4, position_decimals: int = 3) -> dict[str, Any]:
         """紧凑的 JSON 形式。"""
 
-        return {
+        payload = {
             "duration_s": round(self.duration_s, 6),
             "sample_count": self.sample_count,
             "times": [round(float(value), time_decimals) for value in self.times_s],
@@ -96,6 +107,12 @@ class Timeline:
             "move_runs": self._runs(self.move_indices),
             "kind_codes": KIND_CODE_LABELS,
         }
+        if self.tool_axes is not None:
+            payload["tool_axes"] = [
+                [round(float(value), position_decimals) for value in row]
+                for row in self.tool_axes
+            ]
+        return payload
 
 
 def _resample_move(move: Move, samples: int) -> NDArray[np.float64]:
@@ -110,6 +127,23 @@ def _resample_move(move: Move, samples: int) -> NDArray[np.float64]:
     return np.column_stack(
         [np.interp(targets, cumulative, points[:, axis]) for axis in range(3)]
     )
+
+
+def _resample_axes(move: Move, samples: int) -> NDArray[np.float64]:
+    """按同一弧长采样刀轴姿态，并重新归一化。"""
+
+    axes = move.tool_axes
+    cumulative = cumulative_lengths(move.points)
+    total = float(cumulative[-1])
+    if samples <= 2 or total <= 1e-9:
+        result = axes[[0, -1]]
+    else:
+        targets = np.linspace(0.0, total, samples)
+        result = np.column_stack(
+            [np.interp(targets, cumulative, axes[:, axis]) for axis in range(3)]
+        )
+    lengths = np.linalg.norm(result, axis=1)
+    return result / np.maximum(lengths[:, None], 1e-9)
 
 
 def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
@@ -129,10 +163,13 @@ def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
     positions: list[NDArray[np.float64]] = []
     kind_codes: list[NDArray[np.int64]] = []
     move_indices: list[NDArray[np.int64]] = []
+    tool_axes: list[NDArray[np.float64]] = []
+    include_axes = toolpath.is_oriented
     clock = 0.0
 
     for index, move in enumerate(toolpath.moves):
         sampled = _resample_move(move, int(shares[index]))
+        sampled_axes = _resample_axes(move, int(shares[index])) if include_axes else None
         steps = np.linalg.norm(np.diff(sampled, axis=0), axis=1)
         local = np.concatenate(([0.0], np.cumsum(steps))) / move.feed_mm_per_min * 60.0
         local_times = clock + local
@@ -140,11 +177,15 @@ def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
         if positions and index > 0:
             # 上一段的终点与本段起点重合，去掉重复采样。
             sampled = sampled[1:]
+            if sampled_axes is not None:
+                sampled_axes = sampled_axes[1:]
             local_times = local_times[1:]
         times.append(local_times)
         positions.append(sampled)
         kind_codes.append(np.full(local_times.shape[0], KIND_CODES[move.kind.value], dtype=np.int64))
         move_indices.append(np.full(local_times.shape[0], index, dtype=np.int64))
+        if sampled_axes is not None:
+            tool_axes.append(sampled_axes)
 
     return Timeline(
         times_s=np.concatenate(times),
@@ -152,4 +193,5 @@ def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
         kind_codes=np.concatenate(kind_codes),
         move_indices=np.concatenate(move_indices),
         duration_s=clock,
+        tool_axes=np.vstack(tool_axes) if include_axes else None,
     )

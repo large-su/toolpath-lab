@@ -41,7 +41,7 @@ def _cut_moves(toolpath: Toolpath):
 
 class RegistryTests(unittest.TestCase):
     def test_raster_and_crosshatch_strategies_are_registered(self) -> None:
-        self.assertEqual(PLANNERS.ids(), ["raster", "crosshatch"])
+        self.assertEqual(PLANNERS.ids(), ["raster", "crosshatch", "five_axis"])
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:
         entry = planner_catalog()[0]

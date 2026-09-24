@@ -7,9 +7,19 @@ Fanuc、Siemens 以及绝大多数 hobby 控制器都认。
 
 from __future__ import annotations
 
+from math import atan2, degrees, hypot
 from typing import Any
 
 from toolpath_lab.core.path import MoveKind, Toolpath
+
+
+def tool_axis_to_ab(axis: Any) -> tuple[float, float]:
+    """将 +Z 为零位的刀轴单位向量转换为 A(方位)/B(倾角) 度数。"""
+
+    x, y, z = (float(value) for value in axis)
+    azimuth = 0.0 if hypot(x, y) <= 1e-9 else degrees(atan2(y, x))
+    tilt = degrees(atan2(hypot(x, y), z))
+    return azimuth, tilt
 
 
 def toolpath_to_gcode(
@@ -34,6 +44,8 @@ def toolpath_to_gcode(
     lines.append("G21 (mm)")
     lines.append("G90 (absolute)")
     lines.append("G17 (XY plane)")
+    if toolpath.is_oriented:
+        lines.append("(five-axis: A=azimuth deg, B=tilt-from-Z deg)")
     lines.append("")
 
     number = f"{{:.{decimals}f}}"
@@ -45,9 +57,12 @@ def toolpath_to_gcode(
             if move.feed_mm_per_min != last_feed:
                 last_feed = move.feed_mm_per_min
                 last_kind = None
-        for point in move.points:
+        for point_index, point in enumerate(move.points):
             x, y, z = (float(value) for value in point)
             coordinates = f"X{number.format(x)} Y{number.format(y)} Z{number.format(z)}"
+            if toolpath.is_oriented:
+                azimuth, tilt = tool_axis_to_ab(move.tool_axes[point_index])
+                coordinates += f" A{number.format(azimuth)} B{number.format(tilt)}"
             if move.kind is MoveKind.RAPID:
                 if last_kind is not MoveKind.RAPID:
                     lines.append("(rapid)")

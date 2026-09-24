@@ -243,7 +243,7 @@ function animate(now) {
   previousTime = now;
   const state = playback.update(dt);
   if (state && playback.timeline) {
-    viewport.setPlayhead(state.position, state.index);
+    viewport.setPlayhead(state.position, state.index, state.toolAxis);
     if (playback.playing || scrubbing) renderPlaybar(state);
   }
   viewport.render();

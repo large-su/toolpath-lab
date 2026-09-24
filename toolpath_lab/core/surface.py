@@ -41,6 +41,21 @@ class SurfaceShape:
 
         raise NotImplementedError
 
+    def normal_at(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
+        """返回曲面在 XY 点处的单位法向，方向朝向 +Z。"""
+
+        points = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
+        step = 1e-3
+        x_plus = points + np.array([step, 0.0])
+        x_minus = points - np.array([step, 0.0])
+        y_plus = points + np.array([0.0, step])
+        y_minus = points - np.array([0.0, step])
+        dzdx = (self.height_at(x_plus) - self.height_at(x_minus)) / (2.0 * step)
+        dzdy = (self.height_at(y_plus) - self.height_at(y_minus)) / (2.0 * step)
+        normals = np.column_stack((-dzdx, -dzdy, np.ones(points.shape[0], dtype=np.float64)))
+        lengths = np.linalg.norm(normals, axis=1)
+        return normals / np.maximum(lengths[:, None], 1e-12)
+
     def to_params(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
 

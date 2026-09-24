@@ -102,7 +102,7 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(
             [item["id"] for item in payload["planners"]["list"]],
-            ["raster", "crosshatch"],
+            ["raster", "crosshatch", "five_axis"],
         )
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]),
@@ -205,6 +205,21 @@ class PlanTests(ApiTestCase):
             point[2] >= safe_z for move in payload["toolpath"]["moves"]
             if move["kind"] == "rapid" for point in move["points"]
         ))
+
+    def test_five_axis_request_returns_tool_axes(self) -> None:
+        status, payload, _ = self.plan({
+            "surface": {"type": "freeform", "parameters": {"amplitude_mm": 3.0}},
+            "planner": {"id": "five_axis", "parameters": {
+                "stepover_mm": 8.0, "lead_deg": 10.0, "side_tilt_deg": 3.0,
+            }},
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["toolpath"]["axis_mode"], "five_axis")
+        self.assertTrue(payload["timeline"]["tool_axes"])
+        oriented_moves = [move for move in payload["toolpath"]["moves"] if "tool_axes" in move]
+        self.assertTrue(oriented_moves)
+        axis = oriented_moves[0]["tool_axes"][0]
+        self.assertAlmostEqual(sum(value * value for value in axis), 1.0, places=4)
 
     def test_unknown_surface_is_a_bad_request(self) -> None:
         status, payload, _ = self.plan({"surface": {"type": "saddle"}})

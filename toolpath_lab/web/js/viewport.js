@@ -309,8 +309,10 @@ export class Viewport {
     this.toolGroup.visible = this.display.showTool;
   }
 
-  setPlayhead(position, traversedSegments) {
+  setPlayhead(position, traversedSegments, toolAxis = [0, 0, 1]) {
     this.toolGroup.position.set(position[0], position[1], position[2]);
+    const axis = new THREE.Vector3(toolAxis[0], toolAxis[1], toolAxis[2]).normalize();
+    this.toolGroup.quaternion.setFromUnitVectors(Z_UP, axis);
     if (this.traceLine && traversedSegments !== this._lastTraversed) {
       this._lastTraversed = traversedSegments;
       this.traceLine.geometry.setDrawRange(0, Math.max(0, traversedSegments) * 2);
