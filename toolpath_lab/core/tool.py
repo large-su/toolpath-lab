@@ -22,6 +22,8 @@ from enum import Enum
 from math import isfinite
 from typing import Any, Mapping
 
+import numpy as np
+
 from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.parameters import (
     Choice,
@@ -133,3 +135,26 @@ class Tool:
             "nose_radius_mm": self.corner_radius_mm if self.kind is ToolKind.BULL else 0.0,
             "footprint_radius_mm": self.footprint_radius_mm,
         }
+
+    def orientation_clearance_mm(self, tool_axis: Any, surface_normal: Any) -> float:
+        """Return a conservative lift for a tilted flat/bull cutter.
+
+        A ball nose is tangent at its tip and needs no lift.  For a flat or
+        bull nose cutter, tilting the tool makes one side of its bottom face
+        lower than the nominal contact point.  Lifting by ``R sin(theta)``
+        keeps the circular footprint tangent to the local surface plane.
+        This is a local geometric guard, not a full swept-volume collision
+        solver for high-curvature surfaces.
+        """
+
+        if self.kind is ToolKind.BALL:
+            return 0.0
+        axis = np.asarray(tool_axis, dtype=np.float64).reshape(3)
+        normal = np.asarray(surface_normal, dtype=np.float64).reshape(3)
+        axis_norm = float(np.linalg.norm(axis))
+        normal_norm = float(np.linalg.norm(normal))
+        if axis_norm <= 1e-9 or normal_norm <= 1e-9:
+            return 0.0
+        alignment = float(np.dot(axis, normal) / (axis_norm * normal_norm))
+        sine = float(np.sqrt(max(0.0, 1.0 - np.clip(alignment, -1.0, 1.0) ** 2)))
+        return self.radius_mm * sine

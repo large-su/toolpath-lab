@@ -111,10 +111,15 @@ class FiveAxisPlanner(Planner):
                 dtype=np.float64,
             )
             points_xy = planar @ frame.T
+            # 先把扫描线加密，再逐刀点重算曲面法向和刀轴，避免整条刀路
+            # 只使用起点/终点姿态而在中间“保持不变”。
+            points_xy = context.sample_cut_points(points_xy)
             axes = _surface_axes(
                 context, points_xy, lead_deg=lead_deg, side_tilt_deg=side_tilt_deg
             )
-            positions = context.to_positions(points_xy)
+            positions = context.to_positions(
+                points_xy, tool_axes=axes, compensate_tool=True
+            )
             if previous is None:
                 moves.append(context.approach_move_down(positions[0], axes[0]))
             else:
@@ -124,6 +129,8 @@ class FiveAxisPlanner(Planner):
                 pass_index=index,
                 label=f"五轴第 {index + 1} 刀",
                 tool_axes=axes,
+                compensate_tool=True,
+                sampled=True,
             ))
             previous = positions[-1]
             previous_axis = axes[-1]
@@ -136,6 +143,7 @@ class FiveAxisPlanner(Planner):
             notes=(
                 f"五轴栅格：{len(passes)} 刀，切宽 {stepover:g} mm，走刀方向 {direction:g}°",
                 f"刀轴沿曲面法向，前倾 {lead_deg:g}°，侧倾 {side_tilt_deg:g}°",
+                "自由曲面按逐刀点重算法向；平底/圆鼻刀按局部倾角增加保守接触间隙",
                 "刀轴姿态以 A=方位角、B=倾角形式导出；请在仿真或机床后处理器中校验轴限位",
             ),
         )

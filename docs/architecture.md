@@ -43,7 +43,7 @@ planning ── simulation ┘
 - `geometry2d.py`：`scanline_intervals`（直线与多边形求交、偶奇配对）与多边形规范化——
   栅格刀路只靠这一个几何操作就能支持任意形状；
 - `raster.py`：往复与单向两种模式。
-- `five_axis.py`：在扫描线接触点上计算曲面法向、前倾/侧倾刀轴，输出连续姿态。
+- `five_axis.py`：在加密后的每个扫描点上计算曲面法向、前倾/侧倾刀轴，并输出连续姿态与局部刀具接触间隙。
 
 ### simulation —— 时间层
 

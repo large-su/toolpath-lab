@@ -42,6 +42,28 @@ class FiveAxisTests(unittest.TestCase):
         state = timeline.state_at(timeline.duration_s * 0.5)
         self.assertAlmostEqual(float(np.linalg.norm(state.tool_axis)), 1.0, places=6)
 
+    def test_freeform_recomputes_axis_at_dense_points(self) -> None:
+        cuts = [move for move in self._plan().moves if move.kind is MoveKind.CUT]
+        self.assertGreater(cuts[0].points.shape[0], 2)
+        self.assertGreater(float(np.ptp(cuts[0].tool_axes, axis=0).max()), 1e-3)
+
+    def test_tilted_flat_tool_gets_contact_clearance(self) -> None:
+        toolpath = run_plan(
+            planner_id="five_axis",
+            tool=Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=40.0),
+            region=build_region("square", {"side_mm": 80.0}),
+            surface=build_surface("flat", {"base_z_mm": 0.0}),
+            parameters={
+                "stepover_mm": 8.0,
+                "lead_deg": 20.0,
+                "side_tilt_deg": 0.0,
+                "feed_mm_per_min": 500.0,
+            },
+        ).toolpath
+        cut = next(move for move in toolpath.moves if move.kind is MoveKind.CUT)
+        expected = 3.0 * np.sin(np.deg2rad(20.0))
+        self.assertTrue(np.all(cut.points[:, 2] >= expected - 1e-6))
+
     def test_gcode_contains_ab_axes(self) -> None:
         gcode = toolpath_to_gcode(self._plan())
         self.assertIn("(five-axis: A=azimuth deg, B=tilt-from-Z deg)", gcode)
