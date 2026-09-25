@@ -19,6 +19,7 @@ const COLORS = {
   link: 0xf2c94c,
   rapid: 0x4fc3f7,
   trace: 0x54d6c4,
+  pose: 0xff4fd8,
   tool: 0xffcc00,
   holder: 0xb0bcc6,
 };
@@ -141,10 +142,11 @@ export class Viewport {
     this.contourGroup = new THREE.Group();
     this.pathGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
+    this.poseGroup = new THREE.Group();
     this.toolGroup = new THREE.Group();
     this.scene.add(
       this.gridGroup, this.workpieceGroup,
-      this.contourGroup, this.pathGroup, this.traceGroup, this.toolGroup
+      this.contourGroup, this.pathGroup, this.traceGroup, this.poseGroup, this.toolGroup
     );
 
     this.tool = null;
@@ -182,6 +184,7 @@ export class Viewport {
     this._clear(this.contourGroup);
     this._clear(this.pathGroup);
     this._clear(this.traceGroup);
+    this._clear(this.poseGroup);
 
     const region = payload.region;
     const [xMin, xMax] = region.bounds_mm[0];
@@ -215,6 +218,30 @@ export class Viewport {
       this.traceGroup.add(this.traceLine);
     } else {
       this.traceLine = null;
+    }
+
+    // 姿态标记让自由曲面上的刀轴变化可见，即使当前没有播放刀具。
+    if (payload.timeline && payload.timeline.positions && payload.timeline.tool_axes) {
+      const positions = payload.timeline.positions;
+      const axes = payload.timeline.tool_axes;
+      const stride = Math.max(1, Math.floor(positions.length / 48));
+      const posePoints = [];
+      for (let index = 0; index < positions.length; index += stride) {
+        const point = positions[index];
+        const axis = axes[index];
+        if (!axis) continue;
+        posePoints.push(
+          point[0], point[1], point[2] + PATH_LIFT_MM * 2,
+          point[0] + axis[0] * 8, point[1] + axis[1] * 8,
+          point[2] + PATH_LIFT_MM * 2 + axis[2] * 8,
+        );
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(posePoints, 3));
+      this.poseGroup.add(new THREE.LineSegments(
+        geometry,
+        new THREE.LineBasicMaterial({ color: COLORS.pose, transparent: true, opacity: 0.9 })
+      ));
     }
 
     this.bounds = new THREE.Box3().setFromObject(this.workpieceGroup);
@@ -324,6 +351,7 @@ export class Viewport {
     this.workpieceGroup.visible = this.display.showWorkpiece;
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
+    this.poseGroup.visible = this.display.showPath;
     this.toolGroup.visible = this.display.showTool;
     if (this.rapidLine) this.rapidLine.visible = this.display.showRapid;
     this.contourGroup.visible = this.display.showWorkpiece;
