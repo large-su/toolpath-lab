@@ -16,6 +16,7 @@ from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.mathutil import unit
 from toolpath_lab.core.parameters import ParameterKind as K, ParameterSet, spec
 from toolpath_lab.core.path import Move, Toolpath
+from toolpath_lab.core.surface import FreeformSurface
 from toolpath_lab.planning.base import Planner, PlanningContext
 from toolpath_lab.planning.crosshatch import _passes_for_direction
 from toolpath_lab.planning.registry import PLANNERS
@@ -87,6 +88,10 @@ class FiveAxisPlanner(Planner):
         direction = float(context.parameters["direction_deg"])
         lead_deg = float(context.parameters["lead_deg"])
         side_tilt_deg = float(context.parameters["side_tilt_deg"])
+        if not isinstance(context.surface, FreeformSurface):
+            context.warn(
+                "当前是平面加工面，曲面法向处处相同，因此同一刀路的刀具姿态会保持一致；切换到自由曲面可观察连续姿态变化"
+            )
         if stepover > context.tool.diameter_mm:
             context.warn(
                 f"切宽 {stepover:g} mm 大于刀具直径 {context.tool.diameter_mm:g} mm，两刀之间会留下未切除的残余"

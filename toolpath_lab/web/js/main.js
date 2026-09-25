@@ -18,6 +18,7 @@ const dom = {
   play: document.getElementById("btn-play"),
   stop: document.getElementById("btn-stop"),
   scrub: document.getElementById("scrub"),
+  pose: document.getElementById("pose"),
   time: document.getElementById("time"),
 };
 
@@ -231,6 +232,10 @@ function renderStats(result) {
 
 function renderPlaybar(state) {
   if (!scrubbing) dom.scrub.value = String(state.progress);
+  const [x, y, z] = state.toolAxis || [0, 0, 1];
+  const azimuth = Math.hypot(x, y) <= 1e-9 ? 0 : Math.atan2(y, x) * 180 / Math.PI;
+  const tilt = Math.atan2(Math.hypot(x, y), z) * 180 / Math.PI;
+  dom.pose.textContent = "姿态 A" + azimuth.toFixed(1) + "° B" + tilt.toFixed(1) + "°";
   dom.time.textContent = state.time.toFixed(2) + " / " + state.duration.toFixed(2) + " s";
   dom.play.textContent = state.playing ? "❚❚" : "▶";
 }

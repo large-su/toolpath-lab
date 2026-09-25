@@ -470,6 +470,13 @@ input[type="checkbox"] {
   text-align: right;
 }
 
+.pose {
+  min-width: 122px;
+  color: var(--accent);
+  font: 11px var(--mono);
+  text-align: right;
+}
+
 /* -------------------------------------------------------------- 滚动条 */
 .panel::-webkit-scrollbar {
   width: 9px;
