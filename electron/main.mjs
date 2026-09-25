@@ -20,6 +20,20 @@ const startedAt = Date.now();
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STARTUP_TIMEOUT_MS = 30000;
 
+// Electron 默认使用名为 "electron" 的用户数据目录。桌面开发环境里
+// 可能同时运行其它 Electron 应用，它们会因此共享同一个单实例锁。
+// ToolpathLab 使用独立目录，避免被其它应用误判为“已有实例”。
+app.setName("ToolpathLab");
+const toolpathUserData = path.join(projectRoot, ".electron-user-data");
+fs.mkdirSync(toolpathUserData, { recursive: true });
+app.setPath("userData", toolpathUserData);
+// 某些教学/远程桌面环境缺少 Electron GPU 依赖，改用软件渲染仍可完整查看刀路。
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-gpu-compositing");
+app.commandLine.appendSwitch("in-process-gpu");
+app.commandLine.appendSwitch("no-proxy-server");
+
 // 应用图标：Windows 用多尺寸 .ico（任务栏小图标更清晰），其它平台用 PNG。
 const WEB_ICON_DIR = path.join(projectRoot, "toolpath_lab", "web");
 const APP_ICON = path.join(
@@ -155,7 +169,7 @@ function stopBackend() {
   }
 }
 
-function createWindow() {
+async function createWindow() {
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -177,13 +191,13 @@ function createWindow() {
     shell.openExternal(target);
     return { action: "deny" };
   });
-  window.loadURL(LOADING_PAGE);
+  await window.loadURL(LOADING_PAGE);
   return window;
 }
 
 async function boot() {
   // 窗口与后端同时起步：窗口先显示加载页，后端在后台准备。
-  const window = createWindow();
+  const window = await createWindow();
   const backendUrl = startFirstWorkingBackend();
   try {
     const url = await backendUrl;
