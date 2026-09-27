@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -37,7 +38,9 @@ from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.operation import Operation, OperationTree, ParameterTemplate
 from toolpath_lab.core.part import PartBounds, PartModel
 from toolpath_lab.core.stock import CylindricalStock, RectangularStock, Stock, build_stock
-from toolpath_lab.step.tessellate import FaceRecord, TessellatedModel
+from toolpath_lab.core.tessellation import FaceRecord, TessellatedModel
+
+logger = logging.getLogger(__name__)
 
 #: 工程 id 只允许这些字符，避免路径穿越。
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
@@ -220,6 +223,45 @@ class ProjectRepository:
                 np.vstack(face_loops) if face_loops else np.zeros((0, 3), dtype=np.float64)
             ),
         )
+
+    # -- 原始模型文件 ------------------------------------------------------
+    def save_model(self, project_id: str, data: bytes, *, filename: str = "") -> Path | None:
+        """把上传的原始模型文件也存一份。
+
+        网格文件（``mesh.npz``）里只有三角形，没有 BRep 拓扑，而**等高铣要按层剖切 BRep**，
+        所以工程必须留住原始文件。存不下（IO 出错）时返回 None —— 工程本身仍然可用，
+        只是重新打开后等高铣会提示重新导入模型。
+        """
+
+        if not data:
+            return None
+        directory = self._dir(project_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        for old in directory.glob("source.*"):
+            try:
+                old.unlink()
+            except OSError:  # pragma: no cover - 文件被占用等
+                pass
+        suffix = Path(filename or "").suffix.lower() or ".step"
+        path = directory / f"source{suffix}"
+        try:
+            path.write_bytes(data)
+        except OSError as error:  # pragma: no cover - 磁盘满/权限
+            logger.warning("模型源文件没能存进工程 %s：%s", project_id, error)
+            return None
+        return path
+
+    def model_path(self, project_id: str) -> Path | None:
+        """工程里保存的原始模型文件（可能是 ``.step`` / ``.stp`` / ``.iges`` / ``.igs``）。"""
+
+        try:
+            directory = self._dir(project_id)
+        except ParameterError:
+            return None
+        for item in sorted(directory.glob("source.*")):
+            if item.is_file() and item.stat().st_size > 0:
+                return item
+        return None
 
     def load(self, project_id: str) -> Project:
         directory = self._dir(project_id)

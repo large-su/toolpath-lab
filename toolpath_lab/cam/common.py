@@ -21,6 +21,24 @@ from toolpath_lab.core.tool import Tool
 LINK_CLEARANCE_MM = 0.5
 #: 螺旋/斜线下刀的最大半径，避免小刀具时半径过大。
 MAX_RAMP_RADIUS_MM = 0.35
+#: 兼容垫片：旧参数 ``stepover_mm`` 若仍传入，按这个比例反推 ratio。
+#: 0.5 表示“绝对 5 mm 相当于 D10 的 50%”。不在 parameters 里的 mm 值会被忽略。
+_STEPOVER_MM_FALLBACK_RATIO = 0.5
+
+
+def _resolve_stepover(parameters: Mapping[str, Any],
+                      tool_diameter_mm: float) -> tuple[float, str]:
+    """从 parameters 字典里解出步距（mm）与来源标签。"""
+
+    ratio = parameters.get("stepover_ratio")
+    if ratio is not None and float(ratio) > 0:
+        clamped = float(np.clip(float(ratio), 0.05, 0.95))
+        return float(clamped * tool_diameter_mm), "ratio"
+    legacy_mm = parameters.get("stepover_mm")
+    if legacy_mm is not None and float(legacy_mm) > 0:
+        return float(legacy_mm), "legacy_mm"
+    # 两个都没给，按 50% 兜底
+    return float(_STEPOVER_MM_FALLBACK_RATIO * tool_diameter_mm), "default"
 
 
 @dataclass(slots=True)
@@ -54,7 +72,25 @@ class MillingContext:
 
     @property
     def stepover(self) -> float:
-        return float(self.parameters["stepover_mm"])
+        """原始步距（mm）。已按 ``stepover_ratio`` 与直径换算；保留同名以便旧调用方使用。"""
+
+        value, _ = _resolve_stepover(self.parameters, self.tool.diameter_mm)
+        return value
+
+    @property
+    def effective_stepover(self) -> float:
+        """实际下刀用的步距（mm），由 ``stepover_ratio`` 推出。
+
+        比例参数天然不会超过直径，不存在“两条刀轨之间漏切”的问题；
+        若外部仍传旧 ``stepover_mm``，原样返回并在 warn 里给出 deprecation 提示。
+        """
+
+        value, source = _resolve_stepover(self.parameters, self.tool.diameter_mm)
+        if source == "legacy_mm":
+            self.warn(
+                "参数 ``stepover_mm`` 已废弃，请改用 ``stepover_ratio``（刀具直径比例）"
+            )
+        return value
 
     @property
     def cut_depth(self) -> float:

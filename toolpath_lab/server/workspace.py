@@ -9,19 +9,26 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from toolpath_lab.cam import parameters as cam_parameters_module
-from toolpath_lab.cam.service import CAMOperationRequest, CAMOperationResult, execute_operation
+from toolpath_lab.cam.service import (CAMOperationRequest, CAMOperationResult,
+                                      execute_operation, surface_defaults_for,
+                                      surface_parameters_for)
+from toolpath_lab.brep import import_model_bytes_full, import_model_full
 from toolpath_lab.core.errors import ParameterError
-from toolpath_lab.core.operation import OPERATION_KIND_LABELS, Operation, OperationTree, ParameterTemplate
+from toolpath_lab.core.operation import (OPERATION_KIND_LABELS, SURFACE_KINDS, Operation,
+                                         OperationTree, ParameterTemplate)
 from toolpath_lab.core.part import PartModel
 from toolpath_lab.core.stock import build_stock, stock_catalog
+from toolpath_lab.core.tool import Tool, ToolKind
 from toolpath_lab.server.catalog import default_operation_parameters
 from toolpath_lab.storage.repository import Project, ProjectRepository
-from toolpath_lab.step.reader import read_step_bytes
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -32,13 +39,17 @@ class Workspace:
     project: Project | None = None
     #: 最近一次各工序的规划结果（工序 id -> 结果），供仿真与导出复用
     results: dict[str, CAMOperationResult] = field(default_factory=dict)
+    #: 当前工程的 BRep 模型（**只有它才能按层剖切**，等高铣要用）。
+    #: 网格里没有拓扑，所以这份数据必须来自原始 STEP/IGES 文件，而不是 mesh.npz。
+    brep: Any = None
 
     # -- 导入 --------------------------------------------------------------
     def import_step(self, data: bytes, *, filename: str = "",
                     name: str = "") -> Project:
-        """导入 STEP 文件，建立（或替换）当前工程。"""
+        """导入 STEP / IGES 文件，建立（或替换）当前工程。"""
 
-        model = read_step_bytes(data, source_name=filename)
+        imported = import_model_bytes_full(data, source_name=filename)
+        model = imported.model
         from toolpath_lab.core.part import build_part
 
         project_id = ProjectRepository.new_id()
@@ -58,6 +69,9 @@ class Workspace:
             controller_parameters=cam_parameters_module.controller_parameters().defaults(),
         )
         self.repository.save(project)
+        # 原始文件也留一份：等高铣要剖切 BRep，而网格文件里没有拓扑。
+        self.repository.save_model(project_id, data, filename=filename)
+        self.brep = imported.brep
         self.project = project
         self.results.clear()
         return project
@@ -71,11 +85,29 @@ class Workspace:
     def open(self, project_id: str) -> Project:
         project = self.repository.load(project_id)
         self.project = project
+        self.brep = self._reload_brep(project_id)
         self.results.clear()
         return project
 
+    def _reload_brep(self, project_id: str) -> Any:
+        """重新打开工程时把 BRep 读回来。
+
+        读不回来（老工程没存源文件、文件坏了、没装 OCP）不是错误 ——
+        2.5 轴工序照常工作，只有等高铣会给出明确的提示。
+        """
+
+        path = self.repository.model_path(project_id)
+        if path is None:
+            return None
+        try:
+            return import_model_full(path, name=self.project.part.name if self.project else "").brep
+        except Exception as error:  # noqa: BLE001 - 任何读取失败都只是让等高铣不可用
+            logger.warning("工程 %s 的 BRep 没能读回来：%s", project_id, error)
+            return None
+
     def close(self) -> None:
         self.project = None
+        self.brep = None
         self.results.clear()
 
     # -- 毛坯 --------------------------------------------------------------
@@ -108,13 +140,19 @@ class Workspace:
                       parameters: Mapping[str, Any] | None = None,
                       name: str = "") -> tuple[Operation, CAMOperationResult | None]:
         project = self.require_project()
+        if kind not in OPERATION_KIND_LABELS:
+            raise ParameterError(
+                f"未知的加工类型 {kind!r}；可选：{', '.join(sorted(OPERATION_KIND_LABELS))}"
+            )
         faces = _coerce_faces(face_ids)
-        if not faces:
+        if not faces and kind not in SURFACE_KINDS:
             raise ParameterError("请先选择至少一个加工面")
-        values = dict(project.cam_parameters)
+        values = self._parameter_baseline(kind)
         if parameters:
-            values.update(parameters)
-        validated = cam_parameters_module.cam_parameters().coerce(values)
+            # 切类型时旧类型的参数会被前端一并送上来，这里只收本类型认识的键，
+            # 否则一道等高铣工序的参数里会混进平面铣的 stepover_mm。
+            values.update(self._filter_parameters(kind, parameters))
+        validated = self._coerce_parameters(kind, values)
         label = OPERATION_KIND_LABELS.get(kind, kind)
         operation = Operation(
             operation_id=ProjectRepository.new_id("op"),
@@ -128,6 +166,27 @@ class Workspace:
         self.repository.save(project)
         return operation, result
 
+    # -- 参数按类型分流 ----------------------------------------------------
+    def _parameter_baseline(self, kind: str) -> dict[str, Any]:
+        """新工序的起始参数：曲面工序有自己的默认值。"""
+
+        project = self.require_project()
+        if kind in SURFACE_KINDS:
+            return surface_defaults_for(kind)
+        return dict(project.cam_parameters)
+
+    def _parameter_set(self, kind: str):
+        if kind in SURFACE_KINDS:
+            return surface_parameters_for(kind)
+        return cam_parameters_module.cam_parameters()
+
+    def _filter_parameters(self, kind: str, parameters: Mapping[str, Any]) -> dict[str, Any]:
+        known = {item.key for item in self._parameter_set(kind).specs}
+        return {key: value for key, value in parameters.items() if key in known}
+
+    def _coerce_parameters(self, kind: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        return dict(self._parameter_set(kind).coerce(values))
+
     def _unique_name(self, base: str) -> str:
         project = self.require_project()
         existing = {item.name for item in project.tree.operations}
@@ -140,10 +199,12 @@ class Workspace:
 
     def update_operation(self, operation_id: str, **changes: Any) -> Operation:
         project = self.require_project()
+        target = project.tree.get(operation_id)
+        kind = str(changes.get("kind") or target.kind)
         if "parameters" in changes and changes["parameters"] is not None:
-            changes["parameters"] = cam_parameters_module.cam_parameters().coerce(
-                {**project.cam_parameters, **dict(changes["parameters"])}
-            )
+            values = {**self._parameter_baseline(kind),
+                      **self._filter_parameters(kind, changes["parameters"])}
+            changes["parameters"] = self._coerce_parameters(kind, values)
         if "face_ids" in changes and changes["face_ids"] is not None:
             changes["face_ids"] = _coerce_faces(changes["face_ids"])
         operation = project.tree.update(operation_id, **changes)
@@ -185,9 +246,11 @@ class Workspace:
             part=project.part,
             face_ids=tuple(operation.face_ids),
             parameters=dict(operation.parameters),
-            tool=cam_parameters_module.tool_from_cam_parameters(operation.parameters),
+            tool=self._tool_for(operation),
             top_z=None,
             stock=project.stock(),
+            # 等高铣要剖切 BRep；其它类型用不到，给了也无害（不参与计算）。
+            brep=self.brep if operation.kind in SURFACE_KINDS else None,
         )
         result = execute_operation(request)
         operation.statistics = dict(result.toolpath.statistics())
@@ -197,6 +260,22 @@ class Workspace:
         if save:
             self.repository.save(project)
         return result
+
+    def _tool_for(self, operation: Operation) -> Tool:
+        """工序参数的刀具。
+
+        2.5 轴只有平底刀（栅格距离场就是按平底刀建的）；
+        曲面工序的刀具类型由参数决定，球头刀与圆鼻刀在 ``surfacing`` 里是真的支持。
+        """
+
+        if operation.kind in SURFACE_KINDS:
+            values = operation.parameters
+            return Tool(
+                kind=ToolKind(str(values.get("tool_kind") or ToolKind.FLAT.value)),
+                diameter_mm=float(values.get("tool_diameter_mm", 6.0)),
+                length_mm=float(values.get("tool_length_mm", 40.0)),
+            )
+        return cam_parameters_module.tool_from_cam_parameters(operation.parameters)
 
     def generate_all(self, *, save: bool = True) -> list[dict[str, Any]]:
         """按工序顺序生成全部启用的工序。"""

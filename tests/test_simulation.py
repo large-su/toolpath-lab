@@ -12,7 +12,6 @@ import numpy as np
 
 from tests.fixtures import plate_with_pocket
 from toolpath_lab.cam.service import CAMOperationRequest, execute_operation
-from toolpath_lab.core.part import build_part
 from toolpath_lab.core.path import Move, MoveKind, Toolpath
 from toolpath_lab.core.stock import build_stock
 from toolpath_lab.core.tool import Tool
@@ -21,7 +20,6 @@ from toolpath_lab.simulation.cut_sim import (
     cut_move,
     simulate_toolpath,
 )
-from toolpath_lab.step.reader import read_step_bytes
 
 BOX_PARAMETERS = {
     "tool_diameter_mm": 10.0,
@@ -35,8 +33,7 @@ BOX_PARAMETERS = {
 
 
 def part_and_stock(offset_z: float = 2.0):
-    part = build_part(read_step_bytes(plate_with_pocket().encode("latin-1"), source_name="plate"),
-                      model_id="plate")
+    part = plate_with_pocket(name="plate")
     stock = build_stock("rectangular", part,
                         {"offset_x_mm": 2.0, "offset_y_mm": 2.0, "offset_z_mm": offset_z})
     return part, stock
@@ -202,6 +199,46 @@ class SimulationRunTests(unittest.TestCase):
         )
         simulation = simulate_toolpath(toolpath, self.stock, tool_radius=5.0, cell_mm=1.0)
         self.assertGreaterEqual(len(simulation.frames), 1)
+
+    def test_multi_point_cut_produces_frames_along_its_whole_length(self) -> None:
+        """回归：一条切削里塞很多点时，帧要铺满整条刀路，而不是全挤在起点。
+
+        里程原来按"当前折线段的长度 / 整条运动的步数"累加，等于每个子步只前进
+        ``segment/steps``；一条 100mm、201 个点的切削段因此只走了 0.5mm 就"结束"，
+        整个仿真只出得 1 帧 —— 用户看到的就是"曲面加工动画完全不动"。
+        """
+
+        points = np.column_stack([
+            np.linspace(-50.0, 50.0, 201), np.zeros(201), np.full(201, 41.0),
+        ])
+        toolpath = Toolpath(
+            moves=(Move(MoveKind.CUT, points, 800.0),), planner="test", planner_label="测试",
+        )
+        simulation = simulate_toolpath(toolpath, self.stock, tool_radius=3.0,
+                                       cell_mm=1.0, max_frames=10)
+        self.assertGreaterEqual(len(simulation.frames), 8)
+        # 最后一帧必须接近刀路终点，而不是停在起点附近
+        self.assertGreater(float(simulation.frames[-1].position[0]), 30.0)
+        # 帧的 X 位置单调前进
+        xs = [float(frame.position[0]) for frame in simulation.frames]
+        self.assertEqual(xs, sorted(xs))
+        # 时间按"进给 / 弧长"累积：10 帧走完约 90mm，不可能只有零点几秒
+        self.assertGreater(simulation.frames[-1].time_s, 5.0)
+
+    def test_frame_time_matches_feed_over_arc_length(self) -> None:
+        """多段运动的累计时间要与 Toolpath 自己算的工时一致。"""
+
+        points = np.column_stack([
+            np.linspace(-50.0, 50.0, 201), np.zeros(201), np.full(201, 41.0),
+        ])
+        toolpath = Toolpath(
+            moves=(Move(MoveKind.CUT, points, 800.0),), planner="test", planner_label="测试",
+        )
+        simulation = simulate_toolpath(toolpath, self.stock, tool_radius=3.0,
+                                       cell_mm=1.0, max_frames=1000)
+        expected = 100.0 / 800.0 * 60.0
+        self.assertLessEqual(simulation.frames[-1].time_s, expected + 1e-6)
+        self.assertGreater(simulation.frames[-1].time_s, expected * 0.9)
 
 
 if __name__ == "__main__":

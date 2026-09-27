@@ -35,9 +35,14 @@ def plan_face_mill(context: MillingContext, *, notes_prefix: str = "") -> Toolpa
 
     levels = depth_levels(region.top_z, region.floor_z, context.cut_depth,
                           finish_allowance=context.finish_allowance)
+    # BUG-007 修：先前在 levels 为空时塞进 [top_z] 占位，但所有层 depth=0 被 continue，
+    # 末尾 builder.finish 抛"没有生成任何刀轨"，前面的 warn 也被异常吞掉——对用户毫无提示。
+    # 与 pocket_mill 一致：levels 空就直接抛 PlanningError，让上层弹窗给解释。
     if not levels:
-        context.warn("选中面与毛坯顶面等高，平面铣没有可切除的深度")
-        levels = [float(region.top_z)]
+        raise PlanningError(
+            f"平面铣没有可切除的深度：区域顶面 {region.top_z:g} mm，面底 {region.floor_z:g} mm，"
+            "请检查毛坯顶面是否高于选中面、或减小底面余量"
+        )
 
     mode = str(context.parameters.get("cut_mode", "zigzag"))
     if mode == "contour":
@@ -45,6 +50,8 @@ def plan_face_mill(context: MillingContext, *, notes_prefix: str = "") -> Toolpa
         context.warn("平面铣使用往复/单向走刀；已按往复处理")
     angle = float(context.parameters.get("direction_deg", 0.0))
     offset = context.tool_radius + context.stock_allowance
+    # 步距夹到刀具直径内，避免两条刀轨之间残留毛坯（详见 effective_stepover）
+    stepover = context.effective_stepover
     builder = MoveBuilder(context)
     first_cut = True
 
@@ -62,19 +69,23 @@ def plan_face_mill(context: MillingContext, *, notes_prefix: str = "") -> Toolpa
             )
             continue
 
-        intervals = _scan_intervals(region, mask, angle, context.stepover, context)
+        intervals = _scan_intervals(region, mask, angle, stepover, context)
         if not intervals:
             continue
         _emit_layer(builder, context, intervals, target_z, region, mode,
                     first_cut=first_cut, level_index=level_index)
         first_cut = False
 
-        if bool(context.parameters.get("finish_pass", True)) and offset <= 0.5 * context.tool_radius + 1e-9:
-            _emit_finish_contour(builder, context, region, offset, target_z)
+        # BUG-004 修：先前判据 offset ≤ 0.5·R+1e-9 恒假（offset = R+allowance ≥ R），
+        # 精修轮廓永远不会被触发。改成"按刀半径 R 偏置后等距区域仍存在"，且
+        # 调用方传入 R 而非 R+allowance——把侧面余量留到精修这一刀切掉。
+        if bool(context.parameters.get("finish_pass", True)) \
+                and region.offset_area_mm2(context.tool_radius) > 0.0:
+            _emit_finish_contour(builder, context, region, context.tool_radius, target_z)
 
     notes = [
         f"{notes_prefix}平面铣：{len(levels)} 层，每层切深 ≤ {context.cut_depth:g} mm，"
-        f"步距 {context.stepover:g} mm，刀具 D{context.tool.diameter_mm:g} mm",
+        f"步距 {stepover:g} mm，刀具 D{context.tool.diameter_mm:g} mm",
         f"刀心区域按刀具半径 {context.tool_radius:g} mm + 侧面余量 "
         f"{context.stock_allowance:g} mm 向内偏置；底面余量 {context.finish_allowance:g} mm",
     ]

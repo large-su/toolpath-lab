@@ -91,7 +91,11 @@ export class Viewport {
     this.appearance = { shadows: true, white: false, grid: true };
     this.display = {
       showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true,
+      // showStock / showSimulation 由工具栏按钮控制；仿真时毛坯默认让位给 simulationGroup
+      showStock: true, showSimulation: true,
     };
+    // 每帧预构建的 mesh 缓存；setSimulationFrame 只切 visible，不重建几何
+    this.simulationMeshes = [];
     this.bounds = null;
     this.activeView = "fit";
     this._lastTraversed = -1;
@@ -325,6 +329,21 @@ export class Viewport {
     cutting.position.z = flute / 2;
     shank.rotation.x = Math.PI / 2;
     shank.position.z = flute + holder / 2;
+
+    // 球头刀的刀尖是个半球。曲面加工里球头刀是真实可用的（opencamlib 支持），
+    // 画成平底会在对刀位置上看走眼，所以这里按刀型补出来。
+    if (tool.kind === "ball") {
+      const tip = new THREE.Mesh(
+        new THREE.SphereGeometry(radius, 48, 24, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
+        new THREE.MeshStandardMaterial({
+          color: COLORS.tool, metalness: 0.5, roughness: 0.34,
+        })
+      );
+      tip.castShadow = true;
+      tip.receiveShadow = true;
+      this.toolGroup.add(tip);
+    }
+
     this.toolMesh = this.toolGroup;
     this.toolGroup.visible = this.display.showTool;
   }
@@ -697,6 +716,55 @@ export class Viewport {
     this.simulationGroup.add(mesh);
     this._applyVisibility();
     this._updateBounds();
+  }
+
+  /**
+   * 一次性为所有仿真帧构建三角网格并缓存到 simulationGroup。
+   *
+   * 之前的做法是帧切换时调用 setSimulationMesh → 重建整个 BufferGeometry。
+   * 12.7 万顶点的网格上每帧 30~50ms，慢放时每帧都重建 → 画面卡顿。
+   * 改为：首次仿真时把所有帧的 mesh 一次性建好，每帧切 visibility（O(1)）。
+   * 内存代价：N 帧 × ~25 万 int + ~38 万 float ≈ 几十 MB，浏览器可承受。
+   */
+  precomputeSimulationFrames(grid, frames) {
+    this._clear(this.simulationGroup);
+    this.simulationMeshes = [];
+    if (!grid || !frames || frames.length === 0) {
+      this._applyVisibility();
+      return;
+    }
+    const material = new THREE.MeshStandardMaterial({
+      color: COLORS.stockCut, metalness: 0.35, roughness: 0.7,
+      side: THREE.DoubleSide, flatShading: false,
+    });
+    for (let index = 0; index < frames.length; index += 1) {
+      const height = frames[index].height;
+      const geometry = this._heightFieldGeometry(grid, height);
+      if (!geometry) continue;
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.visible = false;
+      this.simulationGroup.add(mesh);
+      this.simulationMeshes.push(mesh);
+    }
+    if (this.simulationMeshes.length > 0) {
+      this.simulationMeshes[0].visible = true;
+    }
+    this._applyVisibility();
+    this._updateBounds();
+  }
+
+  /**
+   * 按帧索引显示对应帧的 mesh（其他帧隐藏）。
+   * 调用前必须先 precomputeSimulationFrames。
+   */
+  setSimulationFrame(index) {
+    if (!this.simulationMeshes || this.simulationMeshes.length === 0) return;
+    const clamped = Math.max(0, Math.min(index | 0, this.simulationMeshes.length - 1));
+    for (let i = 0; i < this.simulationMeshes.length; i += 1) {
+      this.simulationMeshes[i].visible = i === clamped;
+    }
   }
 
   clearSimulation() {

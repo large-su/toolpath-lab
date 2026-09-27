@@ -29,17 +29,51 @@ from toolpath_lab.core.errors import ParameterError
 
 
 class OperationKind(str, Enum):
-    """加工类型。"""
+    """加工类型。
+
+    前三种是 **2.5 轴**加工：先拾取一个面，再由这个面的边界环算出加工区域，
+    刀路只在一层层的水平面里走（``cam``）。
+
+    后两种是 **3 轴曲面**加工：不需要拾取面，直接对整个零件（或选中的面）
+    生成沿曲面起伏的刀路（``surfacing``）。
+    """
 
     FACE_MILL = "face_mill"
     POCKET_MILL = "pocket_mill"
     CONTOUR_MILL = "contour_mill"
+    #: 清边铣：把毛坯比零件大出来的那一圈切掉（不需要选面，按毛坯外框计算）。
+    EDGE_CLEAR = "edge_clear"
+    PARALLEL_SURFACE = "parallel_surface"
+    WATERLINE = "waterline"
 
 
 OPERATION_KIND_LABELS: dict[str, str] = {
     OperationKind.FACE_MILL.value: "平面铣",
     OperationKind.POCKET_MILL.value: "型腔铣",
     OperationKind.CONTOUR_MILL.value: "轮廓铣",
+    OperationKind.EDGE_CLEAR.value: "清边铣",
+    OperationKind.PARALLEL_SURFACE.value: "平行行切",
+    OperationKind.WATERLINE.value: "等高铣",
+}
+
+#: 需要拾取加工面的加工类型（2.5 轴）。不在这个集合里的按整个零件加工。
+FACE_SELECTION_KINDS: frozenset[str] = frozenset({
+    OperationKind.FACE_MILL.value,
+    OperationKind.POCKET_MILL.value,
+    OperationKind.CONTOUR_MILL.value,
+})
+
+#: 曲面加工类型（3 轴），实际计算在 :mod:`toolpath_lab.surfacing`。
+SURFACE_KINDS: frozenset[str] = frozenset({
+    OperationKind.PARALLEL_SURFACE.value,
+    OperationKind.WATERLINE.value,
+})
+
+#: 曲面加工类型 -> ``surfacing`` 的加工策略。类型本身已经决定了策略，
+#: 所以界面上不再单独出一个"策略"下拉框（避免两个控件说同一件事、还可能互相矛盾）。
+SURFACE_STRATEGIES: dict[str, str] = {
+    OperationKind.PARALLEL_SURFACE.value: "parallel",
+    OperationKind.WATERLINE.value: "waterline",
 }
 
 
@@ -264,8 +298,11 @@ class OperationTree:
 
 
 __all__ = [
+    "FACE_SELECTION_KINDS",
     "OPERATION_KIND_LABELS",
     "OPERATION_STATE_LABELS",
+    "SURFACE_KINDS",
+    "SURFACE_STRATEGIES",
     "Operation",
     "OperationKind",
     "OperationState",

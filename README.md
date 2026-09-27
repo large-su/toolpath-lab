@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <img src="toolpath_lab/web/icon.png" width="128" alt="ToolpathLab">
 </p>
 
@@ -13,7 +13,8 @@ ToolpathLab 有两块能力，共用同一个三维视口与后端：
 - **CAM 加工**：导入 STEP 零件 → 创建毛坯 → 工序树 → 自动编程（平面铣 / 型腔铣）→
   **毛坯切除仿真** → 导出 NC 程序。
 
-后端是纯 Python（只依赖 numpy），前端是原生 ES 模块加 three.js，桌面窗口由 Electron 提供。
+后端是 Python，底层几何计算交给成熟库（OCP / pyclipper / opencamlib / trimesh / ezdxf），
+前端是原生 ES 模块加 three.js，桌面窗口由 Electron 提供。
 刀具、区域、毛坯、加工参数都用声明描述，参数面板根据后端的参数声明自动生成。
 
 ![界面](docs/images/screenshot.png)
@@ -22,14 +23,16 @@ ToolpathLab 有两块能力，共用同一个三维视口与后端：
 
 ### CAM 加工（导入模型 → 出程序）
 
-- **导入 STEP/STP**：纯 Python 解析 ISO 10303-21（平面、圆柱、圆锥、球、环面、B 样条曲面），
-  提取拓扑与几何，离散成三角网格并按面渲染；支持面拾取（点一下就能选中加工面）。
+- **导入 STEP/IGES**：由 OpenCascade（OCP）读取 BRep，支持平面、圆柱、圆锥、球、环面、B 样条曲面，
+  自动修复与归一化后离散成三角网格并按面渲染；支持面拾取（点一下就能选中加工面）。
   损坏文件、格式错误、超大文件分别返回 400 / 413 / 422。
 - **毛坯**：矩形块或圆柱，按零件包容盒在 X/Y/Z 方向外扩；实时预览、可切换、可重置。
 - **工序树**：序号 / 名称 / 加工类型 / 参数 / 状态，支持排序、改名、复制、启用禁用、整体导出；
   每生成一步程序就自动同步节点。
 - **自动编程**：平面铣（分层往复 / 单向 + 精修轮廓）、型腔铣（环切 / 平行扫描，自动避让岛屿）、
-  轮廓铣。参数可配置并存成模板。
+  轮廓铣，以及**三维曲面**的平行行切（opencamlib 落刀，可转走刀方向、往复/单向）与
+  等高铣（OCP 分层剖切 + pyclipper 偏置，外轮廓与内腔一起出）。参数可配置并存成模板；
+  曲面加工可以只加工选中的面，也可以不选面直接加工整个零件。
 - **毛坯切除仿真**：Z-Map 高度图材料去除，刀具沿刀路运动时毛坯被真实削掉，
   支持播放 / 暂停 / 单步 / 重置 / 回放 / 变速，结束后给出剩余体积与零件体积偏差。
 - **工程**：模型 + 毛坯 + 参数 + 工序树存成工程文件，重启后恢复。
@@ -137,9 +140,9 @@ from toolpath_lab.cam.service import CAMOperationRequest, execute_operation
 from toolpath_lab.core.part import build_part
 from toolpath_lab.core.stock import build_stock
 from toolpath_lab.simulation import simulate_toolpath
-from toolpath_lab.step import read_step
+from toolpath_lab.brep import import_model
 
-model = read_step("examples/sample_plate.step")
+model = import_model("examples/sample_plate.step")
 part = build_part(model, model_id="demo")
 stock = build_stock("rectangular", part, {"offset_x_mm": 2, "offset_y_mm": 2, "offset_z_mm": 2})
 
@@ -210,8 +213,10 @@ curl -X POST http://127.0.0.1:8770/api/plan \
 
 ```
 toolpath_lab/
-  core/        领域层：参数声明、刀具、区域、刀路、零件、毛坯、工序
-  step/        STEP（ISO 10303-21）读取：词法/语法、几何解释、B 样条求值、面离散
+  core/        领域层：参数声明、刀具、区域、刀路、零件、毛坯、工序、离散模型
+  brep/        BRep 层（OCP）：STEP/IGES 读取、拓扑修复、Z 层剖切、BRep → 三角网格
+  contour2d/   2D 轮廓层（pyclipper）：多边形布尔、偏置（刀具半径补偿）、环切刀路
+  surfacing/   三维曲面层（opencamlib + OCP/pyclipper）：平行行切、等高铣
   cam/         加工层：加工区域（栅格 + 距离）、平面铣 / 型腔铣 / 轮廓铣、工序编排
   planning/    策略层：Planner 基类与注册表、平面多边形几何、栅格刀路
   simulation/  时间层与仿真：按进给速度做时间轴、毛坯切除（Z-Map）
@@ -225,9 +230,14 @@ tests/         单元测试
 docs/          架构与扩展文档
 ```
 
-依赖方向是单向的：`core` 不依赖其它层，`step` / `cam` / `planning` / `simulation` / `export` 只依赖 `core`，
-`storage` 只依赖 `core`，`server` 负责组装，`web` 只通过 HTTP 与后端通信，`electron` 只负责窗口。
+依赖方向是单向的：`core` 不依赖其它层；`brep` / `contour2d` / `surfacing` / `planning` 只依赖
+`core` 与各自的第三方库；`cam` / `simulation` / `export` / `storage` 依赖 `core` 及需要的几何层；
+`server` 负责组装，`web` 只通过 HTTP 与后端通信，`electron` 只负责窗口。
 因此刀路算法可以脱离界面单独运行。详见 [docs/architecture.md](docs/architecture.md)。
+
+库的职责边界（不交叉）：**OCP** 只处理 BRep（读取、拓扑、剖切、离散），不做刀路计算；
+**pyclipper** 只处理 2D 轮廓（布尔、偏置、环切）；**opencamlib** 只接收三角面片网格，生成三轴
+曲面刀路；**trimesh** 负责网格预处理与预览；**ezdxf** 负责 DXF 二维轮廓读取。
 
 ## 配置常量
 
@@ -241,7 +251,7 @@ docs/          架构与扩展文档
 | 每刀采样 | 两个端点（加工面为平面） | `toolpath_lab/planning/raster.py` |
 | CAM 栅格间距 | 0.4 mm（可按工序改） | `toolpath_lab/cam/boundary.py` |
 | 仿真格距 | 0.5 mm / 最多 120 帧 | `toolpath_lab/simulation/cut_sim.py` |
-| STEP 体积上限 | 32 MB | `toolpath_lab/step/reader.py` |
+| STEP 体积上限 | 32 MB | `toolpath_lab/brep/model.py` |
 
 把它们改成可在界面上调整的参数，做法见 [docs/extending.md](docs/extending.md)。
 
@@ -251,12 +261,14 @@ docs/          架构与扩展文档
   [examples/plugins/contour_planner.py](examples/plugins/contour_planner.py) 是一个可直接使用的
   环切（等距轮廓）实现，复制到 `toolpath_lab/planning/` 并在 `__init__.py` 中导入一行即可启用。
 - **新增区域形状**：实现一个返回逆时针边界多边形的 `boundary()`，栅格刀路与三维显示会自动适配。
-- **新增加工类型**（例如钻孔、等高铣）：在 `cam/` 下写一个 `plan_xxx(context)`，
+- **新增加工类型**（例如钻孔、插铣）：在 `cam/` 下写一个 `plan_xxx(context)`，
   在 `cam/service.py` 的 `execute_operation` 里加一个分支，再在
   `toolpath_lab/core/operation.py` 的 `OperationKind` 里加一个枚举值——界面上的加工类型下拉框
-  与工序树的类型标签会自动出现。
+  与工序树的类型标签会自动出现。**三维曲面类**的加工类型要在 `SURFACE_KINDS` 里登记，
+  这样才不需要拾取面、并会去 `surfacing/` 取几何。
 - **新增毛坯类型**：继承 `Stock`、声明参数、注册到 `STOCK_TYPES`。
-- **新增模型格式**：在 `toolpath_lab/step/` 旁边写一个 reader，返回同一个 `TessellatedModel` 即可，
+- **新增模型格式**：在 `toolpath_lab/brep/` 旁边写一个 reader，返回 `BrepModel` 再走
+  `to_tessellated_model()`，或者直接返回同一个 `TessellatedModel`，
   下游（毛坯、特征、刀路、仿真）完全不用改。
 - **新增导出格式**：在 `export/` 中写一个纯函数，并在 HTTP 路由中加一个分支。
 - 完整说明见 [docs/extending.md](docs/extending.md)，开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
@@ -267,8 +279,9 @@ docs/          架构与扩展文档
 python -m unittest discover -s tests
 ```
 
-252 项测试，覆盖几何裁剪、刀路模式与安全高度、时间参数化、G-code 导出、HTTP 接口与静态资源、
-STEP 解析与离散、加工区域与刀路正确性、毛坯切除仿真、工程持久化与 CAM 接口，
+335 项测试，覆盖几何裁剪、刀路模式与安全高度、时间参数化、G-code 导出、HTTP 接口与静态资源、
+BRep 读取与离散、Z 层剖切、2D 轮廓布尔与偏置、三维曲面刀路、加工区域与刀路正确性、
+毛坯切除仿真、工程持久化与 CAM 接口，
 以及**持久连接复用**（同一条 TCP 连接上连续发请求，浏览器就是这么用的）。
 
 前端自检（会真的拉起一个窗口加载界面，检查控制台错误与关键 DOM）：

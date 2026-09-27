@@ -40,11 +40,12 @@ export class CamPanel {
     const camCatalog = this.catalog.cam || { operations: [], parameters: [], defaults: {} };
     const stockCatalog = this.catalog.stock || { shapes: [], default_id: "rectangular", defaults: {} };
 
+    const initialKind = (camCatalog.operations[0] || {}).id || "pocket_mill";
     this.state = {
       stockId: stockCatalog.default_id || "rectangular",
       stockValues: clone(stockCatalog.defaults || {}),
-      kind: (camCatalog.operations[0] || {}).id || "pocket_mill",
-      values: clone(camCatalog.defaults || {}),
+      kind: initialKind,
+      values: this._kindDefaults(initialKind),
       display: {
         showPart: true, showStock: true, showSimulation: true,
         showPath: true, showRapid: true, showTool: true,
@@ -64,10 +65,51 @@ export class CamPanel {
     if (operation) {
       this.state.kind = operation.kind;
       this.state.values = Object.assign(
-        clone(this.catalog.cam?.defaults || {}), clone(operation.parameters || {})
+        this._kindDefaults(operation.kind), clone(operation.parameters || {})
       );
     }
     this.render();
+  }
+
+  /** 后端的加工类型目录。 */
+  _operations() {
+    return (this.catalog.cam && this.catalog.cam.operations) || [];
+  }
+
+  operationEntry(kind = this.state.kind) {
+    return this._operations().find((item) => item.id === kind) || null;
+  }
+
+  /** 这一种加工类型的参数声明（2.5 轴用全局那份，曲面用类型自己那份）。 */
+  _kindSpecs(kind = this.state.kind) {
+    const entry = this.operationEntry(kind);
+    if (entry && entry.parameters) return entry.parameters;
+    return (this.catalog.cam && this.catalog.cam.parameters) || [];
+  }
+
+  /**
+   * 这一种加工类型的起始参数值。
+   *
+   * 曲面加工每种类型有自己的默认值，切类型时必须整份换掉：平行行切的"行距"
+   * 跟着带到等高铣上毫无意义，还会让后端收到一堆用不上的键。
+   * `implied` 是类型隐含、界面上不显示的参数（目前只有 strategy），
+   * 写进参数字典是为了让声明里的 `visible_if` 仍然能正确联动。
+   */
+  _kindDefaults(kind) {
+    const entry = this.operationEntry(kind);
+    const values = entry && entry.defaults
+      ? clone(entry.defaults)
+      : clone((this.catalog.cam && this.catalog.cam.defaults) || {});
+    if (entry && entry.implied) Object.assign(values, entry.implied);
+    return values;
+  }
+
+  /** 当前类型是不是需要拾取加工面（清边铣按毛坯外框算，不需要）。 */
+  needsFaces(kind = this.state.kind) {
+    const entry = this.operationEntry(kind);
+    if (!entry) return true;
+    if (typeof entry.needs_faces === "boolean") return entry.needs_faces;
+    return !entry.surface;
   }
 
   setTemplates(templates) {
@@ -138,7 +180,7 @@ export class CamPanel {
 
   _operationSection() {
     const section = this._section("工序");
-    const operations = (this.catalog.cam && this.catalog.cam.operations) || [];
+    const operations = this._operations();
     const current = operations.find((item) => item.id === this.state.kind) || operations[0];
     if (!current) {
       section.appendChild(this._note("后端没有发布任何加工类型"));
@@ -153,7 +195,10 @@ export class CamPanel {
     };
     const control = buildControl(spec, this.state.kind, (value) => {
       this.state.kind = value;
+      // 换类型 = 换一整套参数：每种类型的参数含义不同，留着旧的只会误导用户
+      this.state.values = this._kindDefaults(value);
       this.render();
+      this.onChange(value, this.parameters());
     });
     section.appendChild(this._row(spec, control, null));
 
@@ -168,7 +213,9 @@ export class CamPanel {
         summary.appendChild(faces);
       }
     } else {
-      summary.textContent = "尚未选中工序：先在下方选择加工面，再点顶部「新增工序」。";
+      summary.textContent = current.surface
+        ? "尚未选中工序：曲面加工可以直接新增（不选面就是加工整个零件）。"
+        : "尚未选中工序：先在下方选择加工面，再点顶部「新增工序」。";
     }
     section.appendChild(summary);
     return section;
@@ -231,7 +278,7 @@ export class CamPanel {
 
   _parameterSection() {
     const section = this._section("加工参数");
-    const specs = (this.catalog.cam && this.catalog.cam.parameters) || [];
+    const specs = this._kindSpecs();
     const groups = new Map();
     for (const spec of specs) {
       const group = spec.group || "常规";
@@ -247,6 +294,13 @@ export class CamPanel {
         this.onChange(this.state.kind, this.parameters());
       }, { onVisibility: () => this.refreshVisibility() });
       this.rows.push(...rows);
+    }
+    const entry = this.operationEntry();
+    if (entry && entry.surface) {
+      section.appendChild(this._note(
+        "曲面加工的刀具类型由这里的「刀具类型」决定：球头刀与圆鼻刀在曲面刀路里"
+        + "是真实支持的（2.5 轴工序仍只支持平底刀）。"
+      ));
     }
     return section;
   }

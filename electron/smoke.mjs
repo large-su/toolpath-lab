@@ -14,6 +14,7 @@ import { app, BrowserWindow } from "electron";
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -304,6 +305,125 @@ async function driveCamFlow(window, base) {
     return { ok: false, steps, reason: "NC 导出失败：" + JSON.stringify(nc) };
   }
 
+  // 9b. 曲面加工（平行行切）：全程走真实界面 —— 参数面板的加工类型下拉框 → 新增工序按钮
+  //     → 刀路画进视口 → 仿真。曲面工序**不需要选面**，所以要先把已选的面清掉再走一遍，
+  //     否则测不出"不选面也能建"这条路径。
+  const surface = await window.webContents.executeJavaScript(`(async () => {
+    const app = window.toolpathLab;
+    // 清空已选的面：第 4 步选过一个，这里把同一个面再点一次（additive = 取消选择）。
+    // 曲面工序必须能在**一个面都没选**的情况下建立。
+    const picked = Array.from(app.viewport.selectedFaces);
+    if (picked.length) app.viewport.onFacePick(picked[0], { additive: true });
+
+    const select = Array.from(document.querySelectorAll("#cam-panel select"))
+      .find((item) => Array.from(item.options).some((o) => o.textContent.includes("平行行切")));
+    if (!select) return { step: "select", reason: "参数面板里没有曲面加工类型" };
+    select.value = "parallel_surface";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const labels = Array.from(document.querySelectorAll("#cam-panel .row > label"))
+      .map((item) => item.textContent.trim());
+    const kind = app.camPanel.state.kind;
+    const parameters = app.camPanel.parameters();
+
+    // 只认**这一步新建出来**的那道工序：数据目录里如果已经有曲面工序（例如上一次
+    // 自检留下的），按类型找会立刻命中旧的，测出来的就不是"能不能新建"。
+    const before = new Set(app.cam.operations.map((item) => item.id));
+    document.querySelector("#btn-op-add").click();
+    const deadline = Date.now() + 60000;
+    let operation = null;
+    while (Date.now() < deadline) {
+      operation = app.cam.operations.find(
+        (item) => item.kind === "parallel_surface" && !before.has(item.id)) || null;
+      if (operation && operation.state === "generated") break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return {
+      kind, labels, parameters, selectedFaces: app.cam.selectedFaces.length,
+      operation: operation ? {
+        id: operation.id, kind: operation.kind, faces: operation.faces,
+        state: operation.state, movers: operation.statistics.move_count,
+        cut: operation.statistics.cut_length_mm,
+      } : null,
+      pathGroups: app.viewport.pathGroup.children.length,
+      toolKind: app.viewport.tool ? app.viewport.tool.kind : null,
+    };
+  })()`);
+  steps.surface = surface;
+  if (!surface || surface.kind !== "parallel_surface") {
+    return { ok: false, steps, reason: "参数面板没有切到平行行切：" + JSON.stringify(surface) };
+  }
+  if (!surface.labels.includes("行距") || surface.labels.includes("层高")) {
+    return { ok: false, steps,
+             reason: "曲面参数面板没有按类型联动（应只有行距、没有层高）："
+                     + JSON.stringify(surface.labels) };
+  }
+  if (!surface.operation || !surface.operation.movers) {
+    return { ok: false, steps, reason: "不选面没能建出曲面工序：" + JSON.stringify(surface) };
+  }
+  if (surface.operation.faces.length) {
+    return { ok: false, steps, reason: "曲面工序不该带上加工面：" + JSON.stringify(surface.operation) };
+  }
+
+  const surfaceSimulation = await request(new URL("api/simulate", base).href, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operation_id: surface.operation.id, cell_mm: 1.5, max_frames: 8 }),
+  });
+  const surfaceSimBody = json(surfaceSimulation.text);
+  const surfaceSim = surfaceSimulation.status === 200 ? {
+    kind: surfaceSimBody.kind,
+    frames: surfaceSimBody.frames.length,
+    removed: surfaceSimBody.summary ? surfaceSimBody.summary.removed_volume_mm3 : 0,
+    cut: surfaceSimBody.toolpath.statistics.cut_length_mm,
+  } : { step: "simulate", status: surfaceSimulation.status, body: surfaceSimBody };
+  steps.surfaceSimulation = surfaceSim;
+  if (!surfaceSim.frames || !surfaceSim.removed) {
+    return { ok: false, steps, reason: "曲面刀路没能仿真：" + JSON.stringify(surfaceSim) };
+  }
+
+  // 9c. 等高铣：同样走界面，但**不选面**（等高铣按整个零件分层，BRep 由后端补）
+  const waterline = await window.webContents.executeJavaScript(`(async () => {
+    const app = window.toolpathLab;
+    // 再清一次选中的面（第 9b 步的平行行切工序建完后，点工序会把它的面选回来）
+    const picked = Array.from(app.viewport.selectedFaces);
+    if (picked.length) app.viewport.onFacePick(picked[0], { additive: true });
+
+    const select = Array.from(document.querySelectorAll("#cam-panel select"))
+      .find((item) => Array.from(item.options).some((o) => o.textContent.includes("等高铣")));
+    if (!select) return { step: "select", reason: "参数面板里没有等高铣" };
+    select.value = "waterline";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const labels = Array.from(document.querySelectorAll("#cam-panel .row > label"))
+      .map((item) => item.textContent.trim());
+    const parameters = app.camPanel.parameters();
+    const before = new Set(app.cam.operations.map((item) => item.id));
+    document.querySelector("#btn-op-add").click();
+    const deadline = Date.now() + 90000;
+    let operation = null;
+    while (Date.now() < deadline) {
+      operation = app.cam.operations.find(
+        (item) => item.kind === "waterline" && !before.has(item.id)) || null;
+      if (operation && operation.state === "generated") break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return {
+      labels, parameters, selectedFaces: app.cam.selectedFaces.length,
+      operation: operation ? {
+        id: operation.id, kind: operation.kind, faces: operation.faces,
+        state: operation.state, movers: operation.statistics.move_count,
+        cut: operation.statistics.cut_length_mm, warnings: operation.warnings,
+      } : null,
+    };
+  })()`);
+  steps.waterline = waterline;
+  if (!waterline || !waterline.labels.includes("层高") || waterline.labels.includes("行距")) {
+    return { ok: false, steps, reason: "等高铣参数面板不对：" + JSON.stringify(waterline) };
+  }
+  if (!waterline.operation || !waterline.operation.movers) {
+    return { ok: false, steps, reason: "等高铣没能建出工序：" + JSON.stringify(waterline) };
+  }
+
   // 10. 切回实验台：CAM 的零件/毛坯必须立刻消失（否则会压住规则工件，还会把相机带偏，
   //     现象就是"实验台的基础模型只剩一角"）。
   const benchState = await window.webContents.executeJavaScript(`(() => {
@@ -354,7 +474,12 @@ async function driveCamFlow(window, base) {
 async function main() {
   const port = await findFreePort();
   const base = `http://127.0.0.1:${port}/`;
-  const backend = spawn(python, ["-m", "toolpath_lab", "--port", String(port), "--no-browser"], {
+  // 自检用一个**临时数据目录**：默认目录里是用户自己的工程，跑一次自检往里塞一个
+  // "sample_plate + 型腔铣 + 曲面工序"的工程，既污染用户列表，又会让下一次自检
+  // 一启动就恢复上次的工程 —— 于是自检结果依赖上一次跑过什么，不再是可重复的。
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tplab-smoke-"));
+  const backend = spawn(python, ["-m", "toolpath_lab", "--port", String(port),
+                                "--no-browser", "--data-dir", dataDir], {
     cwd: projectRoot,
     env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONPATH: projectRoot },
     stdio: ["ignore", "pipe", "pipe"],
@@ -457,7 +582,20 @@ async function main() {
   }
   if (consoleErrors.length || pageErrors.length || failedRequests.length) exitCode = 1;
   try { backend.kill(); } catch (error) { /* 忽略 */ }
+  await removeDataDir(dataDir);
   app.exit(exitCode);
+}
+
+/** 删掉自检的临时数据目录（Windows 上后端刚退出时文件可能还被占着，失败就算了）。 */
+async function removeDataDir(dataDir) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await fs.rm(dataDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
 }
 
 app.whenReady().then(main);

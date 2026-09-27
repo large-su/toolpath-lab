@@ -36,5 +36,5 @@ from toolpath_lab.planning import contour as _contour  # noqa: F401
 
 `examples/sample_plate.step` 是一块带矩形型腔的板（120 × 90 × 40，腔深 15，AP214 B-rep），
 用来试 **CAM 加工**模式：导入它 → 拾取顶面或腔底面 → 建毛坯 → 生成刀路 → 跑切削仿真 → 出 NC。
-它同时也是测试夹具：`tests/test_step.py` 会读它并校验尺寸、面积与边界环。
+它同时也是测试夹具：`tests/test_brep.py` 会读它并校验尺寸、体积与边界环。
 

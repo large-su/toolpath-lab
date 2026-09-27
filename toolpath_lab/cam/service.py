@@ -2,6 +2,15 @@
 
 请求 → 校验 → 拾取特征（面的加工区域）→ 规划 → 统计。
 HTTP 层、脚本、测试都用这一个入口，因此"界面上能做的"和"接口能做的"永远一致。
+
+加工类型分两类，走两条不同的路：
+
+* **2.5 轴**（平面铣 / 型腔铣 / 轮廓铣）：由选中面的边界环建栅格加工区域，刀路在水平层里走；
+* **3 轴曲面**（平行行切 / 等高铣）：交给 :mod:`toolpath_lab.surfacing`，
+  平行行切吃三角网格（opencamlib），等高铣按层剖切 BRep（OCP）再偏置（pyclipper）。
+
+两条路产出的都是同一个 :class:`~toolpath_lab.core.path.Toolpath`，
+所以仿真、G-code 导出、工序树统计一行都不用改。
 """
 
 from __future__ import annotations
@@ -10,18 +19,26 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+from numpy.typing import NDArray
 
 from toolpath_lab.cam import parameters as cam_parameters_module
-from toolpath_lab.cam.boundary import DEFAULT_CELL_MM, adaptive_cell_mm, region_from_face
-from toolpath_lab.cam.common import MillingContext
+from toolpath_lab.cam.boundary import (DEFAULT_CELL_MM, adaptive_cell_mm,
+                                       build_region, offset_outline_polygons,
+                                       region_from_face)
+from toolpath_lab.cam.common import MillingContext, MoveBuilder, depth_levels
 from toolpath_lab.cam.face_mill import plan_face_mill
 from toolpath_lab.cam.pocket_mill import plan_pocket_mill
 from toolpath_lab.core.errors import ParameterError, PlanningError
-from toolpath_lab.core.operation import OPERATION_KIND_LABELS, OperationKind
+from toolpath_lab.core.operation import (FACE_SELECTION_KINDS, OPERATION_KIND_LABELS,
+                                         SURFACE_KINDS, SURFACE_STRATEGIES, OperationKind)
 from toolpath_lab.core.part import PartModel
 from toolpath_lab.core.path import Move, Toolpath
 from toolpath_lab.core.payload import coerce_group
-from toolpath_lab.core.tool import Tool
+from toolpath_lab.core.stock import Mesh
+from toolpath_lab.core.tool import Tool, ToolKind
+from toolpath_lab.surfacing.parameters import (coerce_surface_parameters,
+                                               surface_defaults_for, surface_parameters,
+                                               surface_parameters_for)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +56,13 @@ class CAMOperationRequest:
     cell_mm: float = DEFAULT_CELL_MM
     #: 毛坯（可选）：给了它，加工起始高度就直接取毛坯顶面。
     stock: Any = None
+    #: BRep 模型（等高铣按层剖切需要它；网格里没有拓扑）。
+    #: 由 :class:`~toolpath_lab.server.workspace.Workspace` 注入 —— 它手里才有原始文件。
+    brep: Any = None
+
+    @property
+    def is_surface(self) -> bool:
+        return self.kind in SURFACE_KINDS
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None, part: PartModel) -> "CAMOperationRequest":
@@ -49,17 +73,9 @@ class CAMOperationRequest:
             raise ParameterError(
                 f"未知的加工类型 {kind!r}；可选：{', '.join(sorted(OPERATION_KIND_LABELS))}"
             )
-        faces_raw = payload.get("faces") or payload.get("face_ids") or []
-        if isinstance(faces_raw, (int, str)):
-            faces_raw = [faces_raw]
-        face_ids: list[int] = []
-        for item in faces_raw:
-            try:
-                face_ids.append(int(item))
-            except (TypeError, ValueError) as error:
-                raise ParameterError(f"面序号必须是整数（收到 {item!r}）") from error
-        if not face_ids:
-            raise ParameterError("请先在三维视图中选择至少一个加工面")
+        face_ids = _face_ids_from_payload(payload, kind)
+        if kind in SURFACE_KINDS:
+            return cls._surface(kind, payload, part, face_ids)
 
         values = cam_parameters_module.cam_parameters().coerce(coerce_group(payload, "parameters"))
         top_z = payload.get("top_z")
@@ -74,21 +90,59 @@ class CAMOperationRequest:
         return cls(
             kind=kind,
             part=part,
-            face_ids=tuple(face_ids),
+            face_ids=face_ids,
             parameters=values,
             tool=cam_parameters_module.tool_from_cam_parameters(values),
             top_z=None if top_z is None else float(top_z),
             cell_mm=cell_mm,
         )
 
+    @classmethod
+    def _surface(cls, kind: str, payload: Mapping[str, Any], part: PartModel,
+                 face_ids: tuple[int, ...]) -> "CAMOperationRequest":
+        """曲面工序：参数走 ``surfacing`` 的声明，加工面可以一个都不选。"""
+
+        values = coerce_surface_parameters(coerce_group(payload, "parameters"))
+        # 类型已经决定了策略，这里**覆盖**掉请求里的值：客户端传什么都不影响，
+        # 免得"选了等高铣却带着平行行切的策略"这种自相矛盾的请求悄悄跑出怪刀路。
+        values["strategy"] = SURFACE_STRATEGIES[kind]
+        tool = Tool(
+            kind=ToolKind(str(values.get("tool_kind") or ToolKind.FLAT.value)),
+            diameter_mm=float(values["tool_diameter_mm"]),
+            length_mm=float(values["tool_length_mm"]),
+        )
+        return cls(kind=kind, part=part, face_ids=face_ids, parameters=values, tool=tool)
+
     def header_lines(self) -> list[str]:
         kind_label = OPERATION_KIND_LABELS[self.kind]
+        scope = ("面 " + ", ".join(f"#{item}" for item in self.face_ids)) if self.face_ids \
+            else "整个零件"
         return [
-            f"operation: {kind_label} ({self.kind}) on faces "
-            + ", ".join(f"#{item}" for item in self.face_ids),
-            f"tool: flat D{self.tool.diameter_mm:g} mm L{self.tool.length_mm:g} mm",
+            f"operation: {kind_label} ({self.kind}) on {scope}",
+            f"tool: {self.tool.kind.value} D{self.tool.diameter_mm:g} mm L{self.tool.length_mm:g} mm",
             "parameters: " + ", ".join(f"{key}={value}" for key, value in self.parameters.items()),
         ]
+
+
+def _face_ids_from_payload(payload: Mapping[str, Any], kind: str) -> tuple[int, ...]:
+    """解析加工面。
+
+    2.5 轴工序**必须**选面（没有面就没有加工区域）；曲面工序允许不选，
+    不选就是"整个零件"。
+    """
+
+    faces_raw = payload.get("faces") or payload.get("face_ids") or []
+    if isinstance(faces_raw, (int, str)):
+        faces_raw = [faces_raw]
+    face_ids: list[int] = []
+    for item in faces_raw:
+        try:
+            face_ids.append(int(item))
+        except (TypeError, ValueError) as error:
+            raise ParameterError(f"面序号必须是整数（收到 {item!r}）") from error
+    if not face_ids and kind in FACE_SELECTION_KINDS:
+        raise ParameterError("请先在三维视图中选择至少一个加工面")
+    return tuple(face_ids)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +202,15 @@ def _ceiling_for(request: CAMOperationRequest, floor_z: float) -> float:
 def execute_operation(request: CAMOperationRequest) -> CAMOperationResult:
     """执行一次工序，返回刀路与加工区域摘要。"""
 
+    if request.is_surface:
+        toolpath, warnings = _plan_surface(request)
+        return CAMOperationResult(request=request, toolpath=toolpath,
+                                  regions=(), warnings=tuple(dict.fromkeys(warnings)))
+
+    # 清边铣不需要选面：区域由毛坯外框与零件包围盒算出
+    if request.kind == OperationKind.EDGE_CLEAR.value:
+        return _plan_edge_clear(request)
+
     toolpaths: list[Toolpath] = []
     regions: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -189,6 +252,266 @@ def execute_operation(request: CAMOperationRequest) -> CAMOperationResult:
     )
 
 
+def _plan_edge_clear(request: "CAMOperationRequest") -> "CAMOperationResult":
+    """清边铣：把毛坯比零件大出来的那一圈切掉。
+
+    与型腔铣的"刀具中心必须在区域内"不同，清边的硬约束只有一条：
+    **刀具中心距零件轮廓 ≥ 刀具半径 + 余量**（切削刃不伤零件）。
+    中心允许走出毛坯边（那里没有材料，属于空切），因此环带宽度小于刀半径时
+    依然能清——UG 的清边刀路也是这样贴着零件轮廓走、部分悬在毛坯外。
+
+    实现：合法中心区域 = 零件包围盒外扩 (R + 余量) 之外、毛坯框（或其外扩，
+    当合法区超出毛坯时）之内。对这个环带由外向内逐圈环切，按每层切深分层。
+    """
+
+    stock = request.stock
+    if stock is None:
+        raise PlanningError(
+            "清边铣需要毛坯：请先在毛坯面板创建毛坯，再生成清边刀路"
+        )
+    bounds = getattr(stock, "bounds", None)
+    part_bounds = request.part.bounds
+    if bounds is None or part_bounds is None:
+        raise PlanningError("毛坯或零件缺少包围盒信息，无法计算清边区域")
+
+    kind = str(getattr(stock, "id", "") or "")
+    if "cyl" in kind:
+        raise PlanningError(
+            "清边铣当前只支持矩形毛坯；圆柱毛坯的外圈请用等高铣（按整个零件分层）加工"
+        )
+
+    margin_xy = min(
+        part_bounds.x_min - bounds.x_min, bounds.x_max - part_bounds.x_max,
+        part_bounds.y_min - bounds.y_min, bounds.y_max - part_bounds.y_max,
+    )
+    if margin_xy <= 1e-9:
+        raise PlanningError(
+            f"毛坯比零件只大 {max(margin_xy, 0.0):g} mm：外圈没有可清除的材料，"
+            "清边铣无需执行；若要加工顶面请用平面铣"
+        )
+
+    tool_radius = request.tool.radius_mm
+    allowance = max(0.0, float(request.parameters.get("stock_allowance_mm", 0.0) or 0.0))
+    grow = tool_radius + allowance
+    # 合法中心区的内边界：零件包围盒外扩 (R + 余量)
+    grown = np.asarray([
+        [part_bounds.x_min - grow, part_bounds.y_min - grow],
+        [part_bounds.x_max + grow, part_bounds.y_min - grow],
+        [part_bounds.x_max + grow, part_bounds.y_max + grow],
+        [part_bounds.x_min - grow, part_bounds.y_max + grow],
+    ], dtype=np.float64)
+    # 外边界：毛坯框与合法区内边界的并集矩形（合法区可能超出毛坯 → 空切）
+    outline = np.asarray([
+        [min(bounds.x_min, grown[0, 0]), min(bounds.y_min, grown[0, 1])],
+        [max(bounds.x_max, grown[1, 0]), min(bounds.y_min, grown[0, 1])],
+        [max(bounds.x_max, grown[1, 0]), max(bounds.y_max, grown[2, 1])],
+        [min(bounds.x_min, grown[0, 0]), max(bounds.y_max, grown[2, 1])],
+    ], dtype=np.float64)
+
+    top_z = float(bounds.z_max)
+    floor_z = float(part_bounds.z_max)
+    if top_z - floor_z <= 1e-9:
+        raise PlanningError(
+            "毛坯顶面与零件最高点等高：外圈没有可切除的深度，清边铣无需执行"
+        )
+
+    narrow_margin = grow >= margin_xy - 0.5 * request.cell_mm
+    if narrow_margin:
+        # 窄外圈场景不建环带栅格（合法中心区已越出毛坯框，环带退化为零宽）；
+        # 区域描述用毛坯框本身，刀路走下面两圈保底环。
+        region = build_region(np.asarray([
+            [bounds.x_min, bounds.y_min],
+            [bounds.x_max, bounds.y_min],
+            [bounds.x_max, bounds.y_max],
+            [bounds.x_min, bounds.y_max],
+        ], dtype=np.float64), [], top_z=top_z, floor_z=floor_z,
+            cell_mm=request.cell_mm)
+    else:
+        region = build_region(outline, [grown], top_z=top_z, floor_z=floor_z,
+                              cell_mm=request.cell_mm)
+    parameters = dict(request.parameters)
+    parameters["cut_mode"] = "contour"  # 清边只做环切：窄环带上往复会频繁转向
+    context = MillingContext(
+        tool=request.tool,
+        top_z=top_z,
+        floor_z=floor_z,
+        parameters=parameters,
+        region=region,
+    )
+    builder = MoveBuilder(context)
+
+    levels = depth_levels(top_z, floor_z, context.cut_depth,
+                          finish_allowance=context.finish_allowance)
+    if not levels:
+        raise PlanningError("清边深度不足一层：请检查毛坯顶面与零件高度")
+
+    def _rect_ring(x0: float, y0: float, x1: float, y1: float) -> NDArray[np.float64]:
+        return np.asarray([[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                          dtype=np.float64)
+
+    grown_ring = _rect_ring(float(grown[0, 0]), float(grown[0, 1]),
+                            float(grown[1, 0]), float(grown[1, 1]))
+    stepover = max(context.effective_stepover, 0.5 * region.cell_mm)
+    max_distance = float(region.distance.max()) if region.distance.size else 0.0
+    rings: list[NDArray[np.float64]] = []
+    if narrow_margin:
+        # 窄外圈（外圈宽 ≤ 刀具半径 + 余量）：合法中心区已越出毛坯框，环带退化。
+        # 只走一圈：零件外扩 (R + 余量) 的方框。它的切削刃覆盖距零件
+        # [0, 2R + 2·余量]，外圈 [0, margin] 必然包含在内；而刀心距零件恒为
+        # R + 余量，切削刃不会越过零件轮廓。**不能**再贴毛坯框走一圈——
+        # 那会让刀心距零件小于 R，直接过切。
+        rings = [grown_ring]
+    else:
+        # 常规外圈：由外（毛坯框）向内（零件外扩 R+余量）逐圈环切
+        offset = 0.0
+        guard = 0
+        while guard < 4096:
+            guard += 1
+            polygons = offset_outline_polygons(region, offset, min_area_mm2=1.0)
+            if not polygons:
+                break
+            rings.extend(polygons)
+            offset += stepover
+            if offset > max_distance + 1e-6:
+                break
+    if not rings:
+        raise PlanningError("清边区域为空：请检查毛坯偏移与刀具直径")
+
+    first_cut = True
+    for level_index, target_z in enumerate(levels):
+        for ring_index, ring in enumerate(rings):
+            closed = np.vstack([ring, ring[:1]])
+            points = np.column_stack(
+                (closed, np.full(closed.shape[0], target_z)))
+            builder.rapid_to_safe(points[0], label="清边定位")
+            builder.plunge(points[0], label=f"下刀 Z{target_z:.3f}")
+            builder.cut(points, label=f"清边 第 {level_index + 1} 层 第 {ring_index + 1} 圈")
+            first_cut = False
+    if first_cut:  # pragma: no cover - rings 非空时必不相等
+        raise PlanningError("清边没有生成任何刀轨")
+
+    notes = [
+        f"清边范围：毛坯 {bounds.size[0]:g}×{bounds.size[1]:g} mm，"
+        f"外圈宽 {margin_xy:g} mm，切深 {top_z - floor_z:g} mm",
+        f"{len(levels)} 层，环切 {len(rings)} 圈，步距 {context.effective_stepover:g} mm",
+    ]
+    return CAMOperationResult(
+        request=request,
+        toolpath=builder.finish(planner="edge_clear", label="清边铣", notes=notes),
+        regions=(region.describe(),),
+        warnings=tuple(dict.fromkeys(context.warnings)),
+    )
+
+
+def _plan_surface(request: CAMOperationRequest) -> tuple[Toolpath, list[str]]:
+    """曲面工序（平行行切 / 等高铣）。
+
+    平行行切只需要三角网格，**选中面时按面裁剪网格**（只在这一小片曲面上走刀）；
+    等高铣按整层剖切 BRep，所以要求请求里带着 BRep —— 网格文件里没有拓扑，
+    剖切无从下手。
+    """
+
+    from toolpath_lab.surfacing import (OclUnavailableError, ParallelRequest,
+                                        WaterlineRequest, parallel_toolpath,
+                                        waterline_toolpath, require_ocl)
+
+    values = request.parameters
+    tool_kind = str(values.get("tool_kind") or ToolKind.FLAT.value)
+
+    if request.kind == OperationKind.PARALLEL_SURFACE.value:
+        try:
+            require_ocl()
+        except OclUnavailableError as error:
+            raise PlanningError(f"平行行切需要 opencamlib：{error}") from error
+        mesh = _surface_mesh(request.part, request.face_ids)
+        surface_request = ParallelRequest(
+            stepover_mm=float(values["stepover_mm"]),
+            direction_deg=float(values["direction_deg"]),
+            sampling_mm=float(values["sampling_mm"]),
+            tool_kind=tool_kind,
+            tool_diameter_mm=request.tool.diameter_mm,
+            tool_length_mm=request.tool.length_mm,
+            safe_height_mm=float(values["safe_height_mm"]),
+            feed_mm_per_min=float(values["feed_mm_per_min"]),
+            rapid_feed_mm_per_min=float(values["rapid_feed_mm_per_min"]),
+            cut_mode=str(values["cut_mode"]),
+            stock_allowance_mm=float(values["stock_allowance_mm"]),
+        )
+        try:
+            result = parallel_toolpath(mesh, surface_request,
+                                       bounds=_mesh_bounds(mesh, surface_request))
+        except ValueError as error:
+            raise PlanningError(f"平行行切失败：{error}") from error
+        warnings = list(result.toolpath.notes)
+        if tool_kind != ToolKind.FLAT.value:
+            warnings.append("平行行切用球头/圆鼻刀时刀心高度取自 opencamlib，已按刀型补偿")
+        return result.toolpath, warnings
+
+    if request.brep is None:
+        raise PlanningError(
+            "等高铣需要 BRep 模型：工程里没有保存原始 STEP/IGES 文件，"
+            "请重新导入模型后再生成"
+        )
+    surface_request = WaterlineRequest(
+        step_down_mm=float(values["step_down_mm"]),
+        tool_diameter_mm=request.tool.diameter_mm,
+        side_allowance_mm=float(values["side_allowance_mm"]),
+        safe_height_mm=float(values["safe_height_mm"]),
+        feed_mm_per_min=float(values["feed_mm_per_min"]),
+        rapid_feed_mm_per_min=float(values["rapid_feed_mm_per_min"]),
+        order=str(values["level_order"]),
+    )
+    try:
+        layered = waterline_toolpath(request.brep, surface_request)
+    except ValueError as error:
+        raise PlanningError(f"等高铣失败：{error}") from error
+    warnings = list(layered.toolpath.notes)
+    if tool_kind != ToolKind.FLAT.value:
+        warnings.append(
+            "等高铣的偏置法只对平底刀严格正确：球头/圆鼻刀的等高线要按等残留高度算，"
+            "当前版本仍未实现，结果仅供参考"
+        )
+    if request.face_ids:
+        warnings.append("等高铣按整个零件分层，加工面选择不参与计算")
+    return layered.toolpath, warnings
+
+
+def _surface_mesh(part: PartModel, face_ids: Sequence[int]) -> Mesh:
+    """取曲面加工要用的网格；给了加工面就只保留这些面的三角形。
+
+    不重新编号顶点：opencamlib 只读三角形，用不到的顶点留着毫无影响，
+    却能省掉一次索引重映射 —— 那正是这类代码最容易出错的地方。
+    """
+
+    mesh = part.mesh
+    if not face_ids:
+        return Mesh(positions=mesh.positions, indices=mesh.indices)
+
+    keep = np.zeros(int(mesh.indices.shape[0]), dtype=bool)
+    for face_id in face_ids:
+        record = part.face(int(face_id))
+        if record is None:
+            raise PlanningError(f"模型里没有面 #{face_id}")
+        start = int(record.triangle_start)
+        keep[start:start + int(record.triangle_count)] = True
+    if not keep.any():
+        raise PlanningError("选中的面没有任何三角面，无法生成曲面刀路")
+    return Mesh(positions=mesh.positions, indices=np.asarray(mesh.indices)[keep])
+
+
+def _mesh_bounds(mesh: Mesh, request: Any) -> tuple[float, float, float, float]:
+    """扫描范围：**只用被加工的三角形**算，再按刀半径外扩。
+
+    不这么做的话，只选了一个小面也会沿整个零件铺满扫描线 —— 大部分是空行程，
+    落刀一次一点，纯粹在浪费时间。
+    """
+
+    corners = mesh.positions[np.asarray(mesh.indices).reshape(-1)]
+    radius = float(request.tool_diameter_mm) / 2.0
+    return (float(corners[:, 0].min()) - radius, float(corners[:, 1].min()) - radius,
+            float(corners[:, 0].max()) + radius, float(corners[:, 1].max()) + radius)
+
+
 def _plan_contour_mill(context: MillingContext, prefix: str = "") -> Toolpath:
     """轮廓铣：只沿选中面的外轮廓走一刀（用于清边、倒角前的开粗）。"""
 
@@ -223,30 +546,63 @@ def _plan_contour_mill(context: MillingContext, prefix: str = "") -> Toolpath:
     return builder.finish(planner="contour_mill", label="轮廓铣", notes=notes)
 
 
+def surface_defaults() -> dict[str, Any]:
+    """曲面工序参数的默认值（完整集合，含内部键 ``strategy``）。"""
+
+    return surface_parameters().defaults()
+
+
+def _operation_entry(kind: OperationKind, description: str) -> dict[str, Any]:
+    """目录里的一个加工类型条目（含它自己的参数声明与默认值）。"""
+
+    entry: dict[str, Any] = {
+        "id": kind.value,
+        "label": OPERATION_KIND_LABELS[kind.value],
+        "description": description,
+        "surface": kind.value in SURFACE_KINDS,
+        # 清边铣按毛坯外框计算，不需要拾取加工面；其余 2.5 轴工序必须选面
+        "needs_faces": kind.value in FACE_SELECTION_KINDS,
+    }
+    if kind.value in SURFACE_KINDS:
+        entry["parameters"] = surface_parameters_for(kind.value).to_dicts()
+        entry["defaults"] = surface_defaults_for(kind.value)
+        # 类型隐含、界面上不显示的参数：前端切换类型时直接写进参数字典，
+        # 这样参数声明里的 visible_if 仍然能正确联动。
+        entry["implied"] = {"strategy": SURFACE_STRATEGIES[kind.value]}
+    return entry
+
+
 def planning_catalog() -> dict[str, Any]:
     """CAM 能力的目录：加工类型、参数声明、默认值、固定值。"""
 
     operation_parameters = cam_parameters_module.cam_parameters()
+    surface = surface_parameters()
     return {
         "operations": [
-            {
-                "id": OperationKind.FACE_MILL.value,
-                "label": OPERATION_KIND_LABELS[OperationKind.FACE_MILL.value],
-                "description": "把选中的平面区域铣平：分层往复/单向扫描，可选精修轮廓",
-            },
-            {
-                "id": OperationKind.POCKET_MILL.value,
-                "label": OPERATION_KIND_LABELS[OperationKind.POCKET_MILL.value],
-                "description": "把选中的型腔按层切除：环切或平行扫描，自动避让岛屿",
-            },
-            {
-                "id": OperationKind.CONTOUR_MILL.value,
-                "label": OPERATION_KIND_LABELS[OperationKind.CONTOUR_MILL.value],
-                "description": "沿选中面的外轮廓走一刀：清边、开粗前的轮廓准备",
-            },
+            _operation_entry(OperationKind.FACE_MILL, "把选中的平面区域铣平：分层往复/单向扫描，可选精修轮廓"),
+            _operation_entry(OperationKind.POCKET_MILL, "把选中的型腔按层切除：环切或平行扫描，自动避让岛屿"),
+            _operation_entry(OperationKind.CONTOUR_MILL, "沿选中面的外轮廓走一刀：清边、开粗前的轮廓准备"),
+            _operation_entry(
+                OperationKind.EDGE_CLEAR,
+                "把毛坯比零件大出来的外圈切掉：按毛坯外框与零件包围盒之间的环带环切，"
+                "不需要选面（毛坯顶面 → 零件最高点）",
+            ),
+            _operation_entry(
+                OperationKind.PARALLEL_SURFACE,
+                "沿一族平行线在曲面上落刀（opencamlib）：三轴曲面的粗加工与半精加工主力。"
+                "选中若干面就只加工这些面，不选面则加工整个零件",
+            ),
+            _operation_entry(
+                OperationKind.WATERLINE,
+                "按层高逐层剖切零件并沿截面轮廓走刀（OCP 剖切 + pyclipper 偏置）："
+                "适合陡壁，能同时加工外轮廓与内腔，按整个零件计算",
+            ),
         ],
         "parameters": operation_parameters.to_dicts(),
         "defaults": operation_parameters.defaults(),
+        # 曲面参数的完整声明（含 strategy）：脚本与测试用它，界面用上面每个类型自己的那份。
+        "surface_parameters": surface.to_dicts(),
+        "surface_defaults": surface.defaults(),
         "controller": cam_parameters_module.controller_parameters().to_dicts(),
         "controller_defaults": cam_parameters_module.controller_parameters().defaults(),
         "fixed": dict(cam_parameters_module.CAM_FIXED),
@@ -258,4 +614,7 @@ __all__ = [
     "CAMOperationResult",
     "execute_operation",
     "planning_catalog",
+    "surface_defaults",
+    "surface_defaults_for",
+    "surface_parameters_for",
 ]

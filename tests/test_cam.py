@@ -21,7 +21,6 @@ from toolpath_lab.core.operation import Operation, OperationTree, ParameterTempl
 from toolpath_lab.core.part import build_part
 from toolpath_lab.core.path import MoveKind
 from toolpath_lab.core.stock import build_stock
-from toolpath_lab.step.reader import read_step_bytes
 
 SQUARE = np.array([[-20.0, -20.0], [20.0, -20.0], [20.0, 20.0], [-20.0, 20.0]])
 ISLAND = np.array([[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0]])
@@ -39,8 +38,13 @@ BASE_PARAMETERS = {
 }
 
 
-def make_part(text: str, name: str = "part"):
-    return build_part(read_step_bytes(text.encode("latin-1"), source_name=name), model_id=name)
+def make_part(part, name: str = "part"):
+    """夹具现在直接返回 PartModel（几何由 OCP 生成），这里只统一一下 id/名字。"""
+
+    part.model_id = name
+    if name:
+        part.name = name
+    return part
 
 
 def context_for(region, **overrides):

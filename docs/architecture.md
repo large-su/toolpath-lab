@@ -11,19 +11,40 @@
    │         │            │              │
  planning ── simulation ──┴──────────────┤
    │            │                        │
-   └──► core ◄──┴──── step ── cam ───────┘
-        ▲
+   └──► core ◄──┴── brep ── cam ─────────┘
+        ▲            contour2d
+        │            surfacing
         │ 静态文件
       web（原生 ES 模块 + three.js）
 ```
 
-依赖只有一个方向。`core` 不认识任何其它层；`step` / `cam` / `planning` / `simulation` / `export` / `storage`
-只依赖 `core`（`cam` 还用到 `step` 的面拓扑，`storage` 用到 `step` 的模型）；`server` 组装全部，
+依赖只有一个方向。`core` 不认识任何其它层，也不认识任何 CAD 格式；`brep`（OCP）/
+`contour2d`（pyclipper）/ `surfacing`（opencamlib）/ `cam` / `planning` / `simulation` /
+`export` / `storage` 只依赖 `core`（`cam` 还用到 `brep` 的面拓扑，`surfacing` 用到
+`brep` 的剖切与 `contour2d` 的偏置，`storage` 用到中立模型）；`server` 组装全部，
 `web` 只通过 HTTP 说话，`electron` 只负责窗口。由此得到三个好处：
 
 - 刀路算法可以脱离界面单独跑（`examples/headless_plan.py`，CAM 链路见 README 的脚本示例）；
 - 换传输层（CLI、gRPC、ROS 节点）不需要动算法；
 - 把 `core` + `planning` + `cam` 搬进别的项目不会拖入框架依赖。
+
+### 第三方库的职责边界
+
+底层几何计算全部交给成熟库，但**每个库只做一件事，互不越界**：
+
+| 库 | 入口模块 | 只负责 | 不碰 |
+| --- | --- | --- | --- |
+| **OCP**（OpenCascade） | `brep/` | STEP/IGES 解析、BRep 拓扑、`ShapeFix` 修复、`BRepAlgoAPI_Section` 剖切、`BRepMesh` 离散 | 刀路 |
+| **pyclipper** | `contour2d/` | 2D 多边形布尔、偏置（刀具半径补偿）、型腔环切 | 三维、文件读取 |
+| **opencamlib** | `surfacing/` | 吃三角网格用 drop cutter 出 3 轴行切刀路 | BRep |
+| **trimesh** | `meshkit/`（待接入） | 网格预处理、校验、导出 | BRep、刀路 |
+| **ezdxf** | `dxfio/`（待接入） | DXF 2D 轮廓读取 | 其它 |
+| **numpy** | 各层 | 向量 / 矩阵 | 其它 |
+
+层与层之间只交换**中立数据结构**，任何第三方类型都不出现：`TessellatedModel` / `FaceRecord`
+是不依赖 CAD 内核的中立网格与面拓扑，`Region2D` / `Polygon2D` 是不依赖 pyclipper 的中立 2D
+轮廓，`Mesh(positions, indices)` 是不依赖 trimesh 的中立三角网格，`Toolpath` / `Move` 是最终产物。
+换掉任何一个库，只要新库能产出同样的中立结构，上层一行都不用改。
 
 ## 各层职责
 
@@ -35,24 +56,48 @@
 | `tool.py` | 刀具：类型、直径、长度，以及由类型推出的**足迹半径**（刀路相对轮廓的偏置量） |
 | `region.py` | 区域形状：方形与圆形，统一输出逆时针边界多边形 |
 | `part.py` | 零件：导入结果 + 面特征摘要（是否平面、法向、平面方程、面积、边界环） |
+| `tessellation.py` | **中立网格契约**：`TessellatedModel` / `FaceRecord`，与任何 CAD 内核无关 |
 | `stock.py` | 毛坯：矩形块 / 圆柱，尺寸计算、坐标定位、预览网格 |
 | `operation.py` | 工序与工序树：类型、参数、状态机、排序、参数模板 |
 | `path.py` | `Move`（切削/连接/快移 + 进给）与 `Toolpath`（统计、载荷） |
 | `registry.py` | 通用能力注册表（区域形状、策略、毛坯共用） |
 | `payload.py` | 请求字典 → 领域对象的拆解工具 |
 
-### step —— STEP 读取层
+### brep —— BRep 层（OCP）
 
 | 模块 | 职责 |
 | --- | --- |
-| `parser.py` | ISO 10303-21 实例表解析（字符串 / 枚举 / 引用 / 嵌套列表、复杂实例、注释、脏数据容错） |
-| `geometry.py` | 实体解释：坐标系变换、平面/圆柱/圆锥/球/环面/B 样条曲面、直线/圆/椭圆/B 样条曲线 |
-| `freeform.py` | B 样条求值：节点展开、Cox-de Boor 基函数、有理曲线/曲面求值（纯 numpy） |
-| `tessellate.py` | 面离散：平面用带孔耳切法，解析曲面/B 样条在参数域裁剪；输出网格 + 面拓扑 + 边界环 |
-| `reader.py` | 入口与校验：体积上限、格式/几何错误分类、坐标系归一 |
+| `backend.py` | 依赖探测与统一报错（缺 OCP 时给出可执行的安装提示，整组功能优雅降级） |
+| `model.py` | `BrepModel`：读 STEP/IGES、拓扑与面类型统计、**解析精确**的体积/面积、坐标系归一、`ShapeFix` 修复 |
+| `tessellate_model.py` | `to_tessellated_model()`：BRep → 中立网格。OCP 与上层的**唯一转换点** |
+| `section.py` | `slice_at` / `slice_range`：Z 向剖切，把每条剖切线缝合成闭合环，产出 `Region2D` |
+| `importer.py` | 生产入口 `import_model` / `import_model_bytes` / `probe_model`，含体积上限与错误分型 |
+| `errors.py` | `BrepFormatError`(400) / `BrepSizeError`(413) / `BrepUnsupportedError`(422) |
 
-设计取舍：**不引入 OpenCASCADE**。覆盖最常见的解析曲面与 B 样条，遇到冷门曲面
-（`OFFSET_SURFACE`、`SWEPT_SURFACE`）跳过并记警告，而不是让整个导入失败。
+### contour2d —— 2D 轮廓层（pyclipper）
+
+| 模块 | 职责 |
+| --- | --- |
+| `polygon.py` | `Polygon2D` / `Region2D`：中立 2D 轮廓（有向面积、内外环定向、包含判定） |
+| `clipper.py` | `ContourClipper`：偏置（圆角/尖角/斜接）、布尔（并/交/差/异或）、清理与合并 |
+| `pocket.py` | `ring_passes`：型腔环切的分层等距环，含顺序（由外向内/由内向外）与残料统计 |
+| `grouping.py` | 一堆散多边形 → 带孔区域的层次还原（按包含深度奇偶判定内外环） |
+
+### surfacing —— 三维曲面层（opencamlib + OCP/pyclipper）
+
+| 模块 | 职责 |
+| --- | --- |
+| `mesh_input.py` | 中立网格 → OCL `STLSurf`，以及平底/球头/圆鼻刀的构造 |
+| `dropcutter.py` | `parallel_toolpath`：OCL drop cutter 扫平行行切（往复/单向、可旋转、可留余量） |
+| `waterline.py` | `waterline_toolpath`：OCP 分层剖切 + pyclipper 偏置出等高铣（外轮廓与内腔一起出） |
+| `parameters.py` | 曲面工序的参数声明，前端据此自动生成面板 |
+
+**为什么等高铣不用 OCL 自带的 `Waterline`**：实测球头刀半径偏移偏差 1.5 mm
+（21.5 vs 理论 23.0），`Waterline` 还会输出 700 多个碎片环，结果不可用。
+改用 OCP 剖切 + pyclipper 偏置后，R20 圆柱 / D6 平底刀实测 22.998（理论 23.000）。
+边界没有破：OCP 依然只剖切，pyclipper 依然只做 2D 偏置，OCL 只承担它擅长的行切。
+
+已知限制：偏置法只对**平底刀**严格正确；球头/圆鼻刀的等高线需要等残留高度计算，当前未实现。
 
 ### cam —— 加工层
 
@@ -96,8 +141,15 @@
 - `web`：`panel.js` 依据目录生成控件，`controls.js` 是共用的参数控件，`cam-panel.js` 是 CAM 面板，
   `tree.js` 是工序树，`modal.js` 是模态框/提示条/进度条，`viewport.js` 负责 three.js 场景、相机与面拾取，
   `playback.js` 是纯逻辑的时间插值器，`main.js` 负责串联两种模式；
+
+  CAM 面板的参数**按加工类型分流**：目录里每个加工类型可以带自己的一份 `parameters` / `defaults`
+  （曲面加工就是），没有的话回退到全局那份（2.5 轴）。切类型时整份参数被替换，
+  于是"平行行切的行距"不会跟着带到等高铣上。类型隐含、界面上不显示的键放在 `implied` 里
+  （目前只有 `strategy`），写进参数字典是为了让声明里的 `visible_if` 仍然能联动。
 - `electron/main.mjs`：挑一个空闲端口 → 拉起 `python -m toolpath_lab` → 轮询 `/api/health` →
-  装进原生窗口；关窗时结束后端。`electron/smoke.mjs` 是无头自检，用于验证前端能真的加载。
+  装进原生窗口；关窗时结束后端。`electron/smoke.mjs` 是无头自检，用于验证前端能真的加载，
+  它会把 CAM 主链路（导入 → 毛坯 → 2.5 轴工序 → 仿真 → NC → 曲面工序 → 曲面仿真 → 切回实验台）
+  完整走一遍。
 
 ## 关键算法
 
@@ -120,6 +172,26 @@
 4. 等距轮廓 = 对该掩码取边界环（按行行程拼接 + 右转优先行走），得到闭合、正交的多段线，
    正好是环切需要的形状；
 5. 平行扫描则在可行区域里按走刀方向取扫描线区间。
+
+### 平行行切（opencamlib drop cutter）
+
+1. 中立网格 → `ocl.STLSurf`，刀按类型构造（平底 / 球头 / 圆鼻）；
+2. 在 XY 平面按**切宽**布一族平行线（整族可绕 Z 旋转一个角度，避开陡壁与圆角）；
+3. 每条线上按**采样间距**取点，每点做一次 drop cutter——把刀从高处沿 −Z 落下，
+   求出它与三角网格的接触高度，这就是该点的刀位 Z；
+4. 没有接触的点（空行程）直接丢弃，避免把刀路引到零件外面；
+5. 相邻两线的端点按模式连接：往复直接连过去，单向抬到安全高度再从同侧下刀。
+
+### 等高铣（OCP 剖切 + pyclipper 偏置）
+
+1. 按**层高**在 Z 方向布一层层剖切面（顶面往下，或底面往上）；
+2. 每层用 `BRepAlgoAPI_Section` 切零件，把得到的散乱边**缝合成闭合环**——
+   OCP 返回的是 edge 不是 wire，必须自己拼接（见 `brep/section.py`）；
+3. 缝合后的环按包含深度还原成"外轮廓 + 内腔"，得到该层**材料截面**；
+4. 对截面轮廓做偏置：`offset(材料, +刀具半径 + 侧壁余量)`。
+   **符号不能反**：向外偏置会让外轮廓变大、内腔变小，两边正好都是刀心轨迹；
+   若按"刀心区域"的思路取负号，圆柱会被算成 R−r 而不是 R+r；
+5. 每层输出若干闭合环，层间按自上而下或自下而上连接，可选择性插入安全高度连刀。
 
 ### 毛坯切除仿真（Z-Map）
 

@@ -1,4 +1,21 @@
-# Runtime dependency. ToolpathLab deliberately keeps this list at one entry:
-# the front-end ships as static files (three.js is vendored under
-# toolpath_lab/web/vendor), so there is no npm install and no build step.
-numpy>=1.24
+# Runtime dependencies.
+#
+# 前端仍然是静态文件（three.js 自带在 toolpath_lab/web/vendor 下），没有 npm 安装、没有打包步骤。
+#
+# 几何/刀路全部交给成熟库，按职责分工：
+#   OCP        —— STEP/IGES 解析、BRep 拓扑与修复、Z 向切片、BRep 转三角网格
+#   pyclipper  —— 2D 轮廓布尔与偏置（刀具半径补偿）、型腔环切
+#   opencamlib —— 吃三角网格出 3 轴曲面刀路（平行行切 / 等高铣）
+#   trimesh    —— 三角网格预处理、校验、导出
+#   ezdxf      —— DXF 2D 轮廓读取
+#   numpy      —— 向量 / 矩阵
+numpy>=1.26
+
+# OCP 由 CadQuery 维护。注意 PyPI 上另有一个同名无关包 `ocp`（只含一个可执行文件），
+# 装错的话 `import OCP` 会失败 —— 所以这里必须写 cadquery-ocp。
+cadquery-ocp>=7.7
+
+pyclipper>=1.3
+opencamlib>=2023.1
+trimesh>=4.0
+ezdxf>=1.1

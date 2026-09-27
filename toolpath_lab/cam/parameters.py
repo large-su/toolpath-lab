@@ -7,7 +7,7 @@
 ============  ==========================================================
 刀具          tool_diameter_mm、tool_length_mm、tool_flute_mm
 切削          spindle_rpm、feed_mm_per_min、plunge_feed_mm_per_min、
-              stepover_mm、cut_depth_mm、stock_allowance_mm、
+              stepover_ratio、cut_depth_mm、stock_allowance_mm、
               finish_allowance_mm、stepdown_mm（仅型腔铣）
 安全          safe_height_mm、clearance_mm、rapid_feed_mm_per_min、
               spindle_direction、coolant
@@ -80,8 +80,10 @@ def cutting_parameters() -> ParameterSet:
                  help="切削进给；下刀与快移另有各自的速度"),
             spec("plunge_feed_mm_per_min", "下刀进给", K.FLOAT, 300.0, minimum=5.0,
                  maximum=10000.0, step=25.0, unit="mm/min", group="切削"),
-            spec("stepover_mm", "步距 ae", K.FLOAT, 5.0, minimum=0.1, maximum=200.0,
-                 step=0.5, unit="mm", group="切削", help="相邻两条刀轨的间距"),
+            spec("stepover_ratio", "步距 ae", K.FLOAT, 0.5, minimum=0.05,
+                 maximum=0.95, step=0.05, unit="D %", group="切削",
+                 help="相邻两条刀轨的间距占刀具直径的比例（UG NX 风格）；"
+                 "0.5 = 直径的 50%，换刀具时自动跟随"),
             spec("cut_depth_mm", "每层切深 ap", K.FLOAT, 2.0, minimum=0.05,
                  maximum=200.0, step=0.5, unit="mm", group="切削",
                  help="单层切除的深度；总深度由所选面的高度差决定"),

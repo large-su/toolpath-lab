@@ -311,8 +311,17 @@ function wireButtons() {
   });
   dom.importButton.addEventListener("click", () => openImport());
   dom.stockButton.addEventListener("click", () => {
+    // CAM 模式下：切换毛坯显隐（规划时方便切换；仿真时若显示毛坯，
+    // 会与 simulationGroup 并存——按习惯"自动显示切除效果"是 simulationGroup，
+    // 毛坯由用户自行选择）。
     setMode("cam");
-    camPanel.root.scrollIntoView({ behavior: "smooth", block: "start" });
+    const current = viewport.display ? viewport.display.showStock : true;
+    const next = !current;
+    viewport.setDisplayOptions({ showStock: next });
+    dom.stockButton.textContent = next ? "隐藏毛坯" : "显示毛坯";
+    dom.stockButton.title = next
+      ? "点击隐藏毛坯网格（毛坯仍参与加工面/刀路计算）"
+      : "点击显示毛坯网格";
   });
   dom.simulateButton.addEventListener("click", () => runSimulation());
   dom.projectButton.addEventListener("click", () => openProjectDialog());
@@ -364,6 +373,7 @@ function setMode(next) {
   dom.treePanel.hidden = !isCam;
   dom.pickToolbar.hidden = !isCam;
   dom.stockButton.hidden = !isCam;
+  if (isCam) syncStockButton();
   dom.simulateButton.hidden = !isCam;
   dom.projectButton.hidden = !isCam;
   dom.sidebar.classList.toggle("cam-mode", isCam);
@@ -573,13 +583,25 @@ function renderStockNote(stock) {
   dom.stockButton.title = `毛坯 ${stock.label}：${stock.bounds.size.map((v) => v.toFixed(1)).join(" × ")} mm，余量 ${residual}`;
 }
 
+/** 同步"显示/隐藏毛坯"按钮文案与 viewport 当前状态。 */
+function syncStockButton() {
+  const shown = viewport.display && viewport.display.showStock !== false;
+  dom.stockButton.textContent = shown ? "隐藏毛坯" : "显示毛坯";
+  dom.stockButton.title = shown
+    ? "点击隐藏毛坯网格（毛坯仍参与加工面/刀路计算）"
+    : "点击显示毛坯网格";
+}
+
 // ------------------------------------------------------------------ 工序
 async function createOperation() {
   if (!cam.model) {
     showBanner("请先导入 STEP 模型");
     return;
   }
-  if (!cam.selectedFaces.length) {
+  // 曲面加工（平行行切 / 等高铣）可以不选面：不选就是整个零件，
+  // 选了面就只加工这些面（平行行切按面裁剪网格，等高铣按整层剖切）。
+  const needsFaces = camPanel.needsFaces();
+  if (needsFaces && !cam.selectedFaces.length) {
     showBanner("请先在三维视图中选择加工面（打开左上角「拾取面」，点击面）");
     return;
   }
@@ -824,13 +846,16 @@ async function runSimulation() {
   setBusy(true, "正在计算毛坯切除仿真…");
   try {
     // 不写死 cell_mm：后端按毛坯大小自适应（200 mm 的件给 0.5 mm 会变成 40 万格、
-    // 响应几十 MB，仿真要几分钟）。这里只限制帧数。
-    const payload = { operation_id: cam.activeOperationId || undefined, max_frames: 120 };
+    // 响应几十 MB，仿真要几分钟）。默认 max_frames 调大让动画更细。
+    const payload = { operation_id: cam.activeOperationId || undefined, max_frames: 180 };
     const result = await simulate(payload);
     cam.simulation = result;
     cam.simulationFrame = 0;
     cam.playing = false;
     playback.load(null);
+    // 一次性为所有帧构建 mesh 缓存；后续帧切换只是切 visible 不重建几何，
+    // 慢放时不再卡。setSimulationFrame(0) 把首帧显示出来。
+    viewport.precomputeSimulationFrames(result.grid, result.frames);
     applySimulationFrame(0);
     renderSimulationStats(result);
     if (result.summary && result.summary.warnings && result.summary.warnings.length) {
@@ -853,8 +878,11 @@ function applySimulationFrame(index) {
   const clamped = Math.max(0, Math.min(index, frames.length - 1));
   cam.simulationFrame = clamped;
   const frame = frames[clamped];
-  viewport.setSimulationMesh(cam.simulation.grid, frame.height);
-  // 原始毛坯由 setSimulationMesh 内部的可见性规则自动让位，不再手动隐藏
+  // 关键：只切 visible，不再每帧重建 BufferGeometry
+  viewport.setSimulationFrame(clamped);
+  // 仿真时毛坯仍可见（由 showStock 决定），但 simulationGroup 永远显示"切除效果"。
+  // 显示规则在 viewport._applyVisibility 里：仿真时毛坯默认让位给 simulationGroup
+  // —— 想要"边切边看到原貌"则把 btn-stock 切到"显示"。
   if (cam.simulation.toolpath) {
     drawToolpath(cam.simulation.toolpath, { keepTool: true });
   }

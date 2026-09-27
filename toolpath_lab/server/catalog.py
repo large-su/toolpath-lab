@@ -13,13 +13,13 @@ from __future__ import annotations
 from typing import Any
 
 from toolpath_lab import __version__
+from toolpath_lab.brep import ALLOWED_SUFFIXES, DEFAULT_MAX_BYTES
 from toolpath_lab.cam.service import planning_catalog
 from toolpath_lab.core.region import REGION_SHAPES, region_catalog
 from toolpath_lab.core.stock import stock_catalog
 from toolpath_lab.core.tool import tool_parameters
 from toolpath_lab.planning import RAPID_FEED_MM_PER_MIN, SAFE_HEIGHT_MM
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
-from toolpath_lab.step.reader import ALLOWED_SUFFIXES, DEFAULT_MAX_BYTES
 
 DEFAULT_REGION_ID = "square"
 DEFAULT_PLANNER_ID = "raster"

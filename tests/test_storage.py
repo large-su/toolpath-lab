@@ -12,14 +12,12 @@ import numpy as np
 from tests.fixtures import plate_with_pocket
 from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.operation import Operation, ParameterTemplate
-from toolpath_lab.core.part import build_part
-from toolpath_lab.step.reader import read_step_bytes
 from toolpath_lab.storage.repository import Project, ProjectRepository
 
 
-def make_project(payload: str = plate_with_pocket()) -> Project:
-    model = read_step_bytes(payload.encode("latin-1"), source_name="plate")
-    part = build_part(model, model_id="p1", name="板件")
+def make_project(part=None) -> Project:
+    part = part if part is not None else plate_with_pocket(name="板件")
+    part.model_id = "p1"
     project = Project(project_id=ProjectRepository.new_id("test"), name="测试工程", part=part)
     project.stock_parameters = {"offset_x_mm": 3.0, "offset_y_mm": 3.0, "offset_z_mm": 1.5}
     project.cam_parameters = {"stepover_mm": 4.0}

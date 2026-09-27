@@ -36,8 +36,14 @@ MIN_CELL_MM = 0.1
 MAX_CELL_MM = 5.0
 #: 栅格总数上限（约 400 万格，对应几 MB 的高度图）。
 MAX_CELLS = 4_000_000
-#: 默认导出帧数上限。
-DEFAULT_MAX_FRAMES = 120
+#: 默认导出帧数上限。180 ≈ 总长 / 12.5 mm/帧（典型零件），能让慢放也看得清，
+#: 又不至于把 JSON payload 撑到几十 MB。改大要在 server 端按 cell 数限速。
+DEFAULT_MAX_FRAMES = 180
+#: 子步间距 = ``STEPS_CELL_RATIO × cell_mm``（mm）。0.5 让平底刀端面切除在长刀路上
+#: 不会出现"两帧之间跨过几条刀轨"的台阶感；代价是切除阶段耗时按平方增长。
+STEPS_CELL_RATIO = 0.5
+#: 帧间最小里程（mm）。小于此值会让相邻帧差别 < cell，前端看不出区别，徒增 payload。
+MIN_SAMPLE_MM = 0.0
 #: 导出网格时是否包含侧壁与底面（关闭可显著减小载荷，只用于纯动画）。
 INCLUDE_SIDES = True
 
@@ -373,8 +379,9 @@ def simulate_toolpath(toolpath: Toolpath, stock: Stock, *, tool_radius: float,
     if sample_mm <= 0.0:
         frames_target = max(2, int(max_frames))
         sample_mm = max(toolpath.cell_hint() if hasattr(toolpath, "cell_hint") else 0.0, 0.0)
-        sample_mm = max(total_length / frames_target, cell_mm)
-    sample_mm = max(sample_mm, cell_mm)
+        # 自动步长：以 cell 为下界，避免两帧落在同一格子上看不出区别
+        sample_mm = max(total_length / frames_target, STEPS_CELL_RATIO * cell_mm)
+    sample_mm = max(max(sample_mm, MIN_SAMPLE_MM), STEPS_CELL_RATIO * cell_mm)
 
     frames: list[SimulationFrame] = []
     removed_total = 0.0
@@ -392,7 +399,9 @@ def simulate_toolpath(toolpath: Toolpath, stock: Stock, *, tool_radius: float,
         if move_length <= 1e-12:
             continue
         feed = max(float(move.feed_mm_per_min), 1e-6)
-        steps = max(1, int(ceil(move_length / max(cell_mm, 0.05))))
+        # 子步间距 = 0.5 × cell_mm（STEPS_CELL_RATIO）：让切削更细，慢放时也看得清。
+        # 旧版用 cell_mm 在长刀路上会出现"两帧跨多条刀轨"的台阶。
+        steps = max(1, int(ceil(move_length / max(STEPS_CELL_RATIO * cell_mm, 0.025))))
         segment_count = max(1, lengths.size)
         for step in range(steps):
             ratio = (step + 1) / steps
@@ -415,8 +424,14 @@ def simulate_toolpath(toolpath: Toolpath, stock: Stock, *, tool_radius: float,
                 segment = Move(move.kind, np.vstack([previous, current]), move.feed_mm_per_min)
                 removed_total += cut_move(field, segment, tool_radius)
 
-            travelled += segment_length / max(steps, 1) if steps else 0.0
-            time_s += (segment_length / max(steps, 1)) / feed * 60.0
+            # 子步是按**弧长参数化**切的（target = ratio * move_length），所以每一步
+            # 前进的距离就是 move_length / steps。这里原来写的是 segment_length / steps
+            # （当前折线段的长度），对"一条刀只有一个线段"的栅格刀路恰好相等，
+            # 但一条切削里塞了几百个点的曲面刀路会因此把里程算小两个数量级——
+            # 表现为"整个仿真只出 1 帧"，动画完全不动。
+            increment = move_length / steps
+            travelled += increment
+            time_s += increment / feed * 60.0
             if travelled + 1e-9 >= next_frame_at:
                 frames.append(SimulationFrame(
                     time_s=time_s, move_index=move_index, position=position,

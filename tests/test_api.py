@@ -3,12 +3,45 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from toolpath_lab.server.app import ToolpathLabHandler, create_server
+
+
+class CliTests(unittest.TestCase):
+    """命令行入口：参数解析与数据目录。"""
+
+    def test_parser_accepts_a_data_dir(self) -> None:
+        from toolpath_lab.cli import build_parser
+
+        args = build_parser().parse_args(["--port", "8899", "--data-dir", "D:/tmp/x"])
+        self.assertEqual(args.port, 8899)
+        self.assertEqual(args.data_dir, "D:/tmp/x")
+
+    def test_data_dir_defaults_to_empty(self) -> None:
+        """不给就用用户目录，不能变成一个空字符串目录把工程写丢。"""
+
+        from toolpath_lab.cli import build_parser
+
+        self.assertEqual(build_parser().parse_args([]).data_dir, "")
+
+    def test_data_dir_flag_isolates_projects(self) -> None:
+        """`--data-dir` 指向哪，工程就落在哪 —— 自检靠它不污染用户的工程列表。"""
+
+        from toolpath_lab.cli import build_parser
+
+        with tempfile.TemporaryDirectory(prefix="tplab-cli-") as folder:
+            args = build_parser().parse_args(["--data-dir", folder])
+            server = create_server("127.0.0.1", 0, data_dir=Path(args.data_dir))
+            try:
+                self.assertEqual(Path(server.workspace.repository.root), Path(folder))
+            finally:
+                server.server_close()
 
 
 class ApiTestCase(unittest.TestCase):

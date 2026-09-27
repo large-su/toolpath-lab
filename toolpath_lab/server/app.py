@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import os
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,11 +33,11 @@ from toolpath_lab.core.part import PartModel
 from toolpath_lab.export import toolpath_to_gcode
 from toolpath_lab.server.catalog import catalog_payload
 from toolpath_lab.server.multipart import MAX_PART_BYTES, parse_multipart, part_json
+from toolpath_lab.brep.errors import BrepFormatError, BrepSizeError, BrepUnsupportedError
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.server.service import execute_plan
 from toolpath_lab.server.workspace import Workspace
 from toolpath_lab.simulation.cut_sim import simulate_toolpath
-from toolpath_lab.step.errors import StepSizeError, StepUnsupportedError
 from toolpath_lab.storage.repository import ProjectRepository
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
@@ -138,11 +138,11 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         query = parse_qs(parts.query)
         try:
             response = self._route(method, path, query)
-        except (ParameterError, RegistryError, ValueError) as error:
+        except (ParameterError, RegistryError, ValueError, BrepFormatError) as error:
             response = error_response(str(error), HTTPStatus.BAD_REQUEST)
-        except StepSizeError as error:
+        except BrepSizeError as error:
             response = error_response(str(error), HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-        except (StepUnsupportedError, PlanningError) as error:
+        except (BrepUnsupportedError, PlanningError) as error:
             response = error_response(str(error), HTTPStatus.UNPROCESSABLE_ENTITY)
         except BrokenPipeError:  # pragma: no cover - 客户端提前断开
             return
@@ -379,11 +379,8 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             from toolpath_lab.cam.service import CAMOperationRequest, execute_operation
 
             request = CAMOperationRequest.from_payload(payload, project.part)
-            request = CAMOperationRequest(
-                kind=request.kind, part=request.part, face_ids=request.face_ids,
-                parameters=request.parameters, tool=request.tool, top_z=request.top_z,
-                cell_mm=request.cell_mm, stock=project.stock(),
-            )
+            # 只补上工作空间才知道的东西（毛坯、BRep）：等高铣在仿真路径上同样要剖切 BRep。
+            request = replace(request, stock=project.stock(), brep=self.workspace.brep)
             result = execute_operation(request)
             toolpath = result.toolpath
             tool_radius = result.request.tool.radius_mm

@@ -16,7 +16,7 @@ from http.client import HTTPConnection
 from pathlib import Path
 from typing import Any
 
-from tests.fixtures import plate_with_pocket, simple_box
+from tests.fixtures import solid_bytes
 from toolpath_lab.server.app import create_server
 
 PARAMETERS: dict[str, Any] = {
@@ -63,6 +63,14 @@ def post_json(base: str, path: str, payload: Any = None) -> tuple[int, dict]:
     return status, json.loads(body)
 
 
+def _step_base64(kind: str) -> str:
+    """把夹具的 STEP 字节编成 base64，用于 JSON 方式导入。"""
+
+    import base64
+
+    return base64.b64encode(solid_bytes(kind)).decode("ascii")
+
+
 def upload(base: str, content: bytes, filename: str = "plate.step") -> tuple[int, dict]:
     body = (
         f"--{_BOUNDARY}\r\n"
@@ -103,7 +111,7 @@ class ServerCase(unittest.TestCase):
         return http(self.base, method, path, **kwargs)
 
     def import_plate(self):
-        status, body = upload(self.base, plate_with_pocket().encode("latin-1"))
+        status, body = upload(self.base, solid_bytes("plate"))
         self.assertEqual(status, 200, body)
         return body
 
@@ -158,7 +166,7 @@ class ImportTests(ServerCase):
         self.assertFalse(body["ok"])
 
     def test_truncated_step_is_rejected(self) -> None:
-        status, body = upload(self.base, plate_with_pocket().encode("latin-1")[:400])
+        status, body = upload(self.base, solid_bytes("plate")[:400])
         self.assertIn(status, (400, 422))
         self.assertFalse(body["ok"])
 
@@ -170,7 +178,7 @@ class ImportTests(ServerCase):
 
     def test_json_content_import(self) -> None:
         status, body = self.post("/api/import/step", {"filename": "box.step",
-                                                      "content": simple_box()})
+                                                      "content": _step_base64("box")})
         self.assertEqual(status, 200)
         self.assertEqual(body["project"]["part"]["size_mm"], [40.0, 30.0, 20.0])
 
@@ -197,7 +205,7 @@ class StockApiTests(ServerCase):
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        status, _ = upload(cls.base, plate_with_pocket().encode("latin-1"))
+        status, _ = upload(cls.base, solid_bytes("plate"))
         assert status == 200
 
     def test_stock_defaults_to_rectangular(self) -> None:
@@ -241,7 +249,7 @@ class OperationApiTests(ServerCase):
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        status, _ = upload(cls.base, plate_with_pocket().encode("latin-1"))
+        status, _ = upload(cls.base, solid_bytes("plate"))
         assert status == 200
         _, cls.top, cls.floor = horizontal_faces(cls.base)
         _, catalog = get_json(cls.base, "/api/catalog")
@@ -444,7 +452,7 @@ class SimulationAndExportTests(ServerCase):
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        status, _ = upload(cls.base, plate_with_pocket().encode("latin-1"))
+        status, _ = upload(cls.base, solid_bytes("plate"))
         assert status == 200
         _, cls.top, cls.floor = horizontal_faces(cls.base)
         status, body = post_json(cls.base, "/api/operations", {
@@ -485,7 +493,7 @@ class SimulationAndExportTests(ServerCase):
             threading.Thread(target=server.serve_forever, daemon=True).start()
             base = f"http://127.0.0.1:{port}"
             try:
-                status, _ = upload(base, simple_box().encode("latin-1"), "box.step")
+                status, _ = upload(base, solid_bytes("box"), "box.step")
                 self.assertEqual(status, 200)
                 status, body = post_json(base, "/api/simulate", {})
                 self.assertEqual(status, 400)
@@ -609,7 +617,7 @@ class KeepAliveTests(ServerCase):
                 self.assertEqual(status, 200, (path, body))
 
             # 2. 紧接着在**同一条连接**上导入模型：请求行必须还是完好的
-            uploaded = plate_with_pocket().encode("latin-1")
+            uploaded = solid_bytes("plate")
             body = (
                 f"--{_BOUNDARY}\r\n"
                 f'Content-Disposition: form-data; name="file"; filename="plate.step"\r\n'

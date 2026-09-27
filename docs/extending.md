@@ -167,6 +167,24 @@ class DrillPlanner:
 | offset_mask(mm) / offset_outline_polygons(mm) | 等距区域与它的闭合边界环 |
 | scanline_levels / scanline_intervals | 按走刀方向布刀线与取区间 |
 
+### 曲面类加工类型（不吃加工区域的那一类）
+
+上面的路子都建立在"选中面的边界环 → 栅格加工区域"上。**沿曲面起伏**的刀路（平行行切、
+等高铣、投影加工、清根）没有这个前提，它们吃的是网格或 BRep，因此多两步、少一步：
+
+1. 在 `OperationKind` 里加枚举值，并把它登记进 `SURFACE_KINDS`
+   （`toolpath_lab/core/operation.py`）。这一步决定了两件事：请求**可以不选加工面**，
+   以及工作空间在生成时会把 BRep 递进来。
+2. 在 `toolpath_lab/surfacing/` 下写规划函数，返回一个 `Toolpath`。
+   平行行切那样的网格刀路可以直接用 `cam/service.py` 里的 `_surface_mesh()`
+   拿到（选中面时它只保留这些面的三角形）。
+3. 在 `cam/service.py` 里给 `CAMOperationRequest._surface` 补上参数分支、
+   在 `_plan_surface` 里加一条分支、在 `planning_catalog()` 里用
+   `_operation_entry()` 加一条目录（`surface=True` 时它会自动带上该类型的参数声明）。
+
+曲面类型的参数走 `surfacing/parameters.py` 的声明，用 `visible_if={"strategy": ...}`
+区分策略；`surface_parameters_for(kind)` 会按类型过滤好，界面上就只出现用得上的那几个。
+
 ## 6. 新增毛坯类型
 
 继承 `Stock`、声明参数、注册到 `STOCK_TYPES`（`toolpath_lab/core/stock.py`）。
@@ -175,9 +193,11 @@ class DrillPlanner:
 
 ## 7. 新增三维模型格式
 
-在 `toolpath_lab/step/` 旁边写一个 reader，返回同一个 `TessellatedModel`
+在 `toolpath_lab/brep/` 里加一个 `_read_xxx`，用 `load_brep()` 的思路返回 `BrepModel`，
+再交给 `to_tessellated_model()` 得到 `TessellatedModel`
 （positions / indices / normals / face_of_triangle / faces / loops），然后让
 `PartModel` 指向它即可——毛坯、特征、刀路、仿真全都不用改。
+如果格式本身不是 BRep（比如 STL 这类纯网格），直接构造 `TessellatedModel` 也可以。
 `FaceRecord.loops` 是型腔铣的区域来源，务必把边界环填上。
 
 ## 8. 约定与检查清单
@@ -185,7 +205,8 @@ class DrillPlanner:
 - 单位：毫米、秒、度；角度只在 API 边界出现，核心内部用弧度；
 - 坐标：右手系、Z 轴向上、XY 是加工平面；数组一律 float64；
 - 错误：参数问题抛 ParameterError（HTTP 400），几何不可行抛 PlanningError（HTTP 422），
-  文件格式错误抛 StepFormatError（400）、体积超限抛 StepSizeError（413）；
+  文件格式错误抛 BrepFormatError（400）、体积超限抛 BrepSizeError（413）、
+  没有可用几何抛 BrepUnsupportedError（422）；
 - 用户可见文案用中文（放在 label / help），代码注释与文档字符串用中文；
 - 每个新能力都要补测试，`python -m unittest discover -s tests` 必须全绿；
 - 动了前端就顺手跑一次 `electron/smoke.mjs`：它会真的把界面加载起来，检查控制台错误与关键 DOM。

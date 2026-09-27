@@ -7,8 +7,8 @@
 - 统一到机床坐标系后的摆放（XY 居中、Z 最低为 0）。
 
 后续的毛坯计算、特征识别、刀路生成、切削仿真都从这里取数据，而不是自己再解析一次
-STEP。因此"换一种模型格式"只需要在 :mod:`toolpath_lab.step` 旁边再写一个 reader，
-把结果塞进 PartModel 即可。
+模型文件。因此"换一种模型格式"只需要换 :mod:`toolpath_lab.brep` 的读取器，
+把结果组装成 :class:`~toolpath_lab.core.tessellation.TessellatedModel` 即可。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from toolpath_lab.core.errors import ParameterError
-from toolpath_lab.step.tessellate import FaceRecord, TessellatedModel
+from toolpath_lab.core.tessellation import FaceRecord, TessellatedModel
 
 
 @dataclass(frozen=True, slots=True)

@@ -48,6 +48,8 @@ def plan_pocket_mill(context: MillingContext, *, notes_prefix: str = "") -> Tool
     builder = MoveBuilder(context)
     first_cut = True
     base_offset = context.tool_radius + context.stock_allowance
+    # 步距夹到刀具直径内，避免两条刀轨之间残留毛坯（详见 effective_stepover）
+    stepover = context.effective_stepover
     ring_count = 0
 
     for level_index, target_z in enumerate(levels):
@@ -56,7 +58,7 @@ def plan_pocket_mill(context: MillingContext, *, notes_prefix: str = "") -> Tool
         if depth <= 1e-9:
             continue
         if mode == "contour":
-            rings = _contour_rings(region, base_offset, context.stepover)
+            rings, last_offset = _contour_rings(region, base_offset, stepover)
             if not rings:
                 context.warn(
                     f"第 {level_index + 1} 层：区域在偏置 {base_offset:g} mm 后为空，已跳过"
@@ -68,30 +70,47 @@ def plan_pocket_mill(context: MillingContext, *, notes_prefix: str = "") -> Tool
                                           np.full(polygon.shape[0] + 1, target_z)))
                 _emit_ring(builder, context, points, first_cut, level_index, ring_index)
                 first_cut = False
+            # BUG-025 修：最后一环到区域最深点的距离若超过刀半径，中心会剩一块
+            # 谁都切不到的"内岛"（中心处的小等距轮廓已被 min_area 过滤）。
+            # 在最深点补一个小清理环，把内岛吃掉。
+            max_distance = float(region.distance.max()) if region.distance.size else 0.0
+            if max_distance - last_offset > context.tool_radius + 1e-6:
+                cleanup = _cleanup_loop(region, target_z)
+                if cleanup is not None:
+                    ring_count += 1
+                    _emit_ring(builder, context, cleanup, first_cut,
+                               level_index, len(rings), label_suffix="（中心清理）")
+                    first_cut = False
         else:
             mask = region.offset_mask(base_offset)
             if not mask.any():
                 context.warn(f"第 {level_index + 1} 层：偏置后区域为空，已跳过")
                 continue
             angle = float(context.parameters.get("direction_deg", 0.0))
-            passes = _zigzag_passes(region, mask, angle, context.stepover)
-            zig = mode == "zigzag"
+            passes = _zigzag_passes(region, mask, angle, stepover)
+            # BUG-009 修：先前 one_way / zigzag 两个分支效果相同（都翻折），
+            # 单向走刀失效。单向走刀的语义是"每刀抬刀 → 同向落刀"，不翻折；
+            # 往复（zigzag）才是"奇数刀翻折 + 邻刀相连"。
+            force_safe_link = (mode == "one_way")
             for pass_index, world_pass in enumerate(passes):
-                if not zig and pass_index % 2 == 1:
-                    world_pass = world_pass[::-1]
-                elif zig and pass_index % 2 == 1:
+                if mode == "zigzag" and pass_index % 2 == 1:
                     world_pass = world_pass[::-1]
                 points = np.column_stack((world_pass,
                                           np.full(world_pass.shape[0], target_z)))
-                _emit_ring(builder, context, points, first_cut, level_index, pass_index)
+                _emit_ring(builder, context, points, first_cut, level_index, pass_index,
+                           force_safe_link=force_safe_link)
                 first_cut = False
 
-        if bool(context.parameters.get("finish_pass", True)):
-            _emit_wall_finish(builder, context, region, base_offset, target_z)
+        # BUG-005 修：先前精修用 base_offset (= R + stock_allowance) 偏置——
+        # 与开粗第一环原样重走，既没切掉余量又多一圈空程。改成"按刀半径 R 偏置"
+        # 开粗按 R+allowance、精修按 R，侧面余量恰好被精修这一刀吃掉。
+        if bool(context.parameters.get("finish_pass", True)) \
+                and region.offset_area_mm2(context.tool_radius) > 0.0:
+            _emit_wall_finish(builder, context, region, context.tool_radius, target_z)
 
     notes = [
         f"{notes_prefix}型腔铣（{'环切' if mode == 'contour' else '平行扫描'}）："
-        f"{len(levels)} 层，每层切深 ≤ {context.cut_depth:g} mm，步距 {context.stepover:g} mm，"
+        f"{len(levels)} 层，每层切深 ≤ {context.cut_depth:g} mm，步距 {stepover:g} mm，"
         f"共 {ring_count} 条刀轨",
         f"刀具 D{context.tool.diameter_mm:g} mm；径向余量 {context.stock_allowance:g} mm，"
         f"底面余量 {context.finish_allowance:g} mm；岛屿自动避让",
@@ -109,12 +128,19 @@ def _empty_notes_toolpath(context: MillingContext, region: MachiningRegion,
 
 # ------------------------------------------------------------------ 内部
 def _contour_rings(region: MachiningRegion, base_offset: float, stepover: float
-                   ) -> list[NDArray[np.float64]]:
-    """由外向内逐圈取等距轮廓，直到区域中心。"""
+                   ) -> tuple[list[NDArray[np.float64]], float]:
+    """由外向内逐圈取等距轮廓，直到区域中心。
+
+    返回 ``(rings, last_offset)``：``last_offset`` 是最后一圈所在的等距层级，
+    调用方用它判断"最深点是否已被最后一圈 + 刀半径覆盖"（BUG-025：环切在
+    型腔中心留残料——最后一环到最深点的距离可以超过刀半径，而中心处的小
+    等距轮廓又被 ``min_area_mm2`` 过滤，谁都不补这一刀）。
+    """
 
     rings: list[NDArray[np.float64]] = []
     offset = base_offset
     max_distance = float(region.distance.max()) if region.distance.size else 0.0
+    last_offset = -1.0
     guard = 0
     while offset <= max_distance + 1e-9 and guard < 4096:
         guard += 1
@@ -122,8 +148,11 @@ def _contour_rings(region: MachiningRegion, base_offset: float, stepover: float
         if not polygons:
             break
         rings.extend(polygons)
-        offset += max(stepover, region.cell_mm)
-    return rings
+        last_offset = offset
+        # 间距下限取半格（等距轮廓的分辨极限），不再取整格：
+        # 整格下限会在"粗栅格 + 小刀具"时间距超过刀直径，两环之间留下残料。
+        offset += max(stepover, 0.5 * region.cell_mm)
+    return rings, last_offset
 
 
 def _zigzag_passes(region: MachiningRegion, mask: NDArray[np.bool_], angle: float,
@@ -144,10 +173,11 @@ def _zigzag_passes(region: MachiningRegion, mask: NDArray[np.bool_], angle: floa
 
 
 def _emit_ring(builder: MoveBuilder, context: MillingContext, points: NDArray[np.float64],
-               first_cut: bool, level_index: int, ring_index: int) -> None:
+               first_cut: bool, level_index: int, ring_index: int, *,
+               force_safe_link: bool = False, label_suffix: str = "") -> None:
     """走一条闭合环（或一段扫描线）。"""
 
-    label = f"第 {level_index + 1} 层 第 {ring_index + 1} 条刀轨"
+    label = f"第 {level_index + 1} 层 第 {ring_index + 1} 条刀轨{label_suffix}"
     previous = builder.last_point
     if previous is None or first_cut:
         builder.rapid_to_safe(points[0], label="定位到下刀点")
@@ -155,12 +185,31 @@ def _emit_ring(builder: MoveBuilder, context: MillingContext, points: NDArray[np
         builder.cut(points, label=label)
         return
     gap = float(np.linalg.norm(previous[:2] - points[0][:2]))
-    if SAFE_LINK_BETWEEN_RINGS or gap > 4.0 * context.tool_radius:
+    if force_safe_link or SAFE_LINK_BETWEEN_RINGS or gap > 4.0 * context.tool_radius:
         builder.rapid_to_safe(points[0], label="环间转移")
         builder.plunge(points[0])
     elif abs(float(previous[2]) - float(points[0][2])) > 1e-9:
         builder.link(points, label="环间连接")
     builder.cut(points, label=label)
+
+
+def _cleanup_loop(region: MachiningRegion, target_z: float) -> NDArray[np.float64] | None:
+    """在区域最深点构造一个小清理环（BUG-025：环切中心残料）。
+
+    内岛一定在最后一环 + 刀半径之外、且距离最深点不超过一个步距，
+    因此以最深点为圆心走一个半格小圆即可全部吃掉。
+    """
+
+    if not region.distance.size:
+        return None
+    di, dj = np.unravel_index(int(np.argmax(region.distance)), region.distance.shape)
+    center_x = region.bounds[0] + (di + 0.5) * region.cell_mm
+    center_y = region.bounds[1] + (dj + 0.5) * region.cell_mm
+    radius = max(0.5 * region.cell_mm, 0.2)
+    angles = np.linspace(0.0, 2.0 * np.pi, 24, endpoint=True)
+    loop = np.column_stack((center_x + radius * np.cos(angles),
+                            center_y + radius * np.sin(angles)))
+    return np.column_stack((loop, np.full(loop.shape[0], target_z)))
 
 
 def _emit_wall_finish(builder: MoveBuilder, context: MillingContext,

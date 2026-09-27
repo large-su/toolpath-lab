@@ -36,7 +36,9 @@ MAX_CELLS = 4_000_000
 MIN_CELL_MM = 0.05
 MAX_CELL_MM = 5.0
 #: 自适应分辨率：沿最长边大致取多少格。见 :func:`adaptive_cell_mm`。
-TARGET_CELLS_PER_AXIS = 220
+#: 360 ≈ 0.28 mm/cell @ 100 mm 毛坯 / 0.56 mm/cell @ 200 mm 毛坯，
+#: 在常规零件上保持细腻，同时不会让大零件炸掉内存。
+TARGET_CELLS_PER_AXIS = 360
 
 
 def adaptive_cell_mm(extent_mm: float, *, target: int = TARGET_CELLS_PER_AXIS,
@@ -185,18 +187,37 @@ class MachiningRegion:
         selected = np.abs(v - float(level_mm)) <= band
         if not selected.any():
             return []
-        inside_values = np.unique(u[selected])
-        inside_values.sort()
-        # 栅格列之间可能有间隙（岛屿、区域变窄），按间距断开成独立区间
+        # BUG-008 修：先前按 u unique 后判 value - previous > cell*1.6 拆区间。
+        # "1.6*cell" 把 1 cell 宽窄缝（u 间距 = cell）错误合并：
+        # 桥接会让刀轨把窄岛/孔直接横切过去（过切）。
+        # 改成按 (row, col) 邻接判据——同一栅格内 8 邻接连通，仅在 8 邻接断开时拆区间。
+        sel_u = u[selected]
+        sel_rows = rows[selected]
+        sel_cols = cols[selected]
+        order = np.lexsort((sel_cols, sel_rows))
+        sorted_u = sel_u[order]
+        sorted_rows = sel_rows[order]
+        sorted_cols = sel_cols[order]
+
+        def _adjacent(k: int) -> bool:
+            return (
+                (sorted_rows[k] == prev_row and sorted_cols[k] - prev_col == 1)
+                or (sorted_cols[k] == prev_col and sorted_rows[k] - prev_row == 1)
+            )
+
         intervals: list[tuple[float, float, float]] = []
-        start = inside_values[0]
-        previous = inside_values[0]
-        for value in inside_values[1:]:
-            if value - previous > self.cell_mm * 1.6:
-                intervals.append((float(start - band), float(previous + band), float(level_mm)))
-                start = value
-            previous = value
-        intervals.append((float(start - band), float(previous + band), float(level_mm)))
+        start_u = float(sorted_u[0])
+        prev_row = int(sorted_rows[0])
+        prev_col = int(sorted_cols[0])
+        prev_u = float(sorted_u[0])
+        for k in range(1, sorted_u.size):
+            if not _adjacent(k):
+                intervals.append((float(start_u - band), float(prev_u + band), float(level_mm)))
+                start_u = float(sorted_u[k])
+            prev_row = int(sorted_rows[k])
+            prev_col = int(sorted_cols[k])
+            prev_u = float(sorted_u[k])
+        intervals.append((float(start_u - band), float(prev_u + band), float(level_mm)))
         return intervals
 
     def scanline_levels(self, angle_deg: float, stepover_mm: float,
@@ -213,7 +234,9 @@ class MachiningRegion:
         angle = np.radians(float(angle_deg))
         v = -np.sin(angle) * px + np.cos(angle) * py
         low, high = float(v.min()), float(v.max())
-        step = max(float(stepover_mm), self.cell_mm)
+        # 间距下限取半格即可：整格下限会在粗栅格 + 小刀具时把刀线间距
+        # 抬到超过刀直径，两条刀线之间留下切不到的残料。
+        step = max(float(stepover_mm), 0.5 * self.cell_mm)
         count = int(np.floor((high - low) / step + 1e-9)) + 1
         levels = low + np.arange(count, dtype=np.float64) * step
         if high - float(levels[-1]) > 0.25 * step:
@@ -248,6 +271,14 @@ def region_from_face(part: PartModel, face_id: int, *, cell_mm: float = DEFAULT_
         raise PlanningError(
             f"面 #{face_id} 的法向不朝上（{tuple(round(float(v), 3) for v in normal)}），"
             "请在三维视图中选择朝上的加工面"
+        )
+    # BUG-003 修：先前对斜面也放行，但 floor_z 取的是平面方程的常数项 d=n·atan(r00)，
+    # 仅当 n=(0,0,1) 时它才是 Z；任意倾斜面（nz<1）下 d 与高度无关 → 深度计算错误。
+    # 2.5D 平面铣/型腔铣仅支持朝上的水平面，曲面工序请走 surface_strategy。
+    if normal[2] < 1.0 - 1e-3:
+        raise PlanningError(
+            f"面 #{face_id} 不是近水平面（nz={normal[2]:.4f}），"
+            "平面铣/型腔铣仅支持朝上的水平面；倾斜面请改用曲面工序"
         )
 
     loops_2d: list[NDArray[np.float64]] = []
@@ -430,9 +461,11 @@ def offset_outline_polygons(region: MachiningRegion, offset_mm: float,
     for pixels in _trace_mask_boundaries(mask):
         if len(pixels) < 4:
             continue
+        # BUG-002 修：_trace_mask_boundaries 返回的是角点格 (i, j) 而非单元中心，
+        # 之前按 (i+0.5)*cell 写世界坐标导致所有 2.5D 轮廓类刀路整体偏移半格。
         points = np.asarray(
-            [(region.bounds[0] + (i + 0.5) * region.cell_mm,
-              region.bounds[1] + (j + 0.5) * region.cell_mm) for i, j in pixels],
+            [(region.bounds[0] + i * region.cell_mm,
+              region.bounds[1] + j * region.cell_mm) for i, j in pixels],
             dtype=np.float64,
         )
         polygon = _simplify(points, region.cell_mm * 0.35)
