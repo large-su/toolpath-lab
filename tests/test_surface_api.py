@@ -36,13 +36,13 @@ def _plate(name: str = "plate"):
 class CatalogTests(unittest.TestCase):
     """目录是界面的唯一来源，所以类型与参数必须先在这里对。"""
 
-    def test_catalog_publishes_five_operation_kinds(self) -> None:
+    def test_catalog_publishes_six_operation_kinds(self) -> None:
         from toolpath_lab.cam.service import planning_catalog
 
         catalog = planning_catalog()
         ids = [item["id"] for item in catalog["operations"]]
         self.assertEqual(ids, ["face_mill", "pocket_mill", "contour_mill",
-                               "parallel_surface", "waterline"])
+                               "edge_clear", "parallel_surface", "waterline"])
 
     def test_surface_operations_carry_own_parameters(self) -> None:
         from toolpath_lab.cam.service import planning_catalog

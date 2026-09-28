@@ -345,11 +345,14 @@ class ContourAndRequestTests(unittest.TestCase):
             region_from_face(self.part, 999999)
 
     def test_parameters_are_coerced_with_defaults(self) -> None:
+        # 步距已改为按刀具直径的比例（``stepover_ratio``）；旧 ``stepover_mm`` 只是
+        # 兼容垫片（见 test_cam_regressions.StepoverRatioTests），不在参数声明里。
         request = CAMOperationRequest.from_payload(
-            {"kind": "face_mill", "faces": [self.top["face_id"]], "parameters": {"stepover_mm": 3}},
+            {"kind": "face_mill", "faces": [self.top["face_id"]],
+             "parameters": {"stepover_ratio": 0.3}},
             self.part,
         )
-        self.assertEqual(request.parameters["stepover_mm"], 3.0)
+        self.assertEqual(request.parameters["stepover_ratio"], 0.3)
         self.assertEqual(request.parameters["spindle_rpm"], 3000.0)
         self.assertEqual(request.tool.diameter_mm, 10.0)
 
@@ -357,7 +360,7 @@ class ContourAndRequestTests(unittest.TestCase):
         with self.assertRaises(ParameterError):
             CAMOperationRequest.from_payload(
                 {"kind": "face_mill", "faces": [self.top["face_id"]],
-                 "parameters": {"stepover_mm": -5}}, self.part,
+                 "parameters": {"stepover_ratio": -5}}, self.part,
             )
 
     def test_catalog_lists_operations_and_parameters(self) -> None:
@@ -366,7 +369,7 @@ class ContourAndRequestTests(unittest.TestCase):
         self.assertIn("face_mill", ids)
         self.assertIn("pocket_mill", ids)
         keys = {item["key"] for item in catalog["parameters"]}
-        for key in ("feed_mm_per_min", "spindle_rpm", "cut_depth_mm", "stepover_mm",
+        for key in ("feed_mm_per_min", "spindle_rpm", "cut_depth_mm", "stepover_ratio",
                     "stock_allowance_mm", "tool_diameter_mm", "safe_height_mm"):
             self.assertIn(key, keys)
         self.assertIn("tool_diameter_mm", catalog["defaults"])

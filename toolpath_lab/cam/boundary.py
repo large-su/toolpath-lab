@@ -187,37 +187,30 @@ class MachiningRegion:
         selected = np.abs(v - float(level_mm)) <= band
         if not selected.any():
             return []
-        # BUG-008 修：先前按 u unique 后判 value - previous > cell*1.6 拆区间。
-        # "1.6*cell" 把 1 cell 宽窄缝（u 间距 = cell）错误合并：
-        # 桥接会让刀轨把窄岛/孔直接横切过去（过切）。
-        # 改成按 (row, col) 邻接判据——同一栅格内 8 邻接连通，仅在 8 邻接断开时拆区间。
-        sel_u = u[selected]
-        sel_rows = rows[selected]
-        sel_cols = cols[selected]
-        order = np.lexsort((sel_cols, sel_rows))
-        sorted_u = sel_u[order]
-        sorted_rows = sel_rows[order]
-        sorted_cols = sel_cols[order]
-
-        def _adjacent(k: int) -> bool:
-            return (
-                (sorted_rows[k] == prev_row and sorted_cols[k] - prev_col == 1)
-                or (sorted_cols[k] == prev_col and sorted_rows[k] - prev_row == 1)
-            )
-
+        # 区间 = **本层带宽内所有单元在 u 上投影的并集**。
+        #
+        # 先前按 (row, col) 邻接判据（BUG-008 的修法）在"带宽覆盖两列单元"时会把每一列
+        # 交接处都当成断开：一个 60×40 的型腔一层会返回几十段几毫米的碎刀轨（既慢又碎）。
+        # 而最早按 u 间距 1.6*cell 合并又太松，会把 1 格宽的窄岛直接桥接过去（过切）。
+        # 投影并集同时满足两条：相邻单元的半格投影正好相接（不拆），
+        # 隔 1 格的窄缝留下 1 格的空档（必拆）。
+        half = band * (abs(float(u_axis[0])) + abs(float(u_axis[1])))
+        starts = u[selected] - half
+        ends = u[selected] + half
+        order = np.argsort(starts, kind="stable")
+        starts = starts[order]
+        ends = ends[order]
         intervals: list[tuple[float, float, float]] = []
-        start_u = float(sorted_u[0])
-        prev_row = int(sorted_rows[0])
-        prev_col = int(sorted_cols[0])
-        prev_u = float(sorted_u[0])
-        for k in range(1, sorted_u.size):
-            if not _adjacent(k):
-                intervals.append((float(start_u - band), float(prev_u + band), float(level_mm)))
-                start_u = float(sorted_u[k])
-            prev_row = int(sorted_rows[k])
-            prev_col = int(sorted_cols[k])
-            prev_u = float(sorted_u[k])
-        intervals.append((float(start_u - band), float(prev_u + band), float(level_mm)))
+        start_u = float(starts[0])
+        end_u = float(ends[0])
+        for k in range(1, starts.size):
+            if float(starts[k]) <= end_u + 1e-9:
+                end_u = max(end_u, float(ends[k]))
+                continue
+            intervals.append((start_u, end_u, float(level_mm)))
+            start_u = float(starts[k])
+            end_u = float(ends[k])
+        intervals.append((start_u, end_u, float(level_mm)))
         return intervals
 
     def scanline_levels(self, angle_deg: float, stepover_mm: float,

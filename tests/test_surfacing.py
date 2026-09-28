@@ -165,7 +165,10 @@ class WaterlineTests(unittest.TestCase):
         model = _cylinder_model(radius=20.0, height=40.0)
         result = waterline_toolpath(model, WaterlineRequest(
             step_down_mm=5.0, tool_diameter_mm=6.0, z_top=35.0, z_bottom=5.0))
-        self.assertEqual(result.level_count, 5)
+        # 35 → 5、层高 5：30/25/20/15/10 之外还必须补一层贴底（BUG-006），
+        # 否则底部 [5, 10) 这一整段没有刀路。
+        self.assertEqual(result.level_count, 6)
+        self.assertAlmostEqual(result.levels[-1][0], 5.0, delta=1e-3)
         for z, loops in result.levels:
             self.assertEqual(len(loops), 1)
             radius = np.hypot(loops[0][:, 0], loops[0][:, 1])

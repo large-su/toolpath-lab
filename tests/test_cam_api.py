@@ -23,7 +23,9 @@ PARAMETERS: dict[str, Any] = {
     "tool_diameter_mm": 10.0,
     "spindle_rpm": 3200.0,
     "feed_mm_per_min": 900.0,
-    "stepover_mm": 5.0,
+    # 步距按刀具直径的比例声明（``stepover_ratio``）；接口只存声明过的键，
+    # 旧的 ``stepover_mm`` 送上来会被静默丢掉，所以这里用新键。
+    "stepover_ratio": 0.5,
     "cut_depth_mm": 2.0,
     "stock_allowance_mm": 0.0,
     "finish_allowance_mm": 0.0,
@@ -290,12 +292,12 @@ class OperationApiTests(ServerCase):
         重算，刀路看起来"完全没反应"。
         """
 
-        created = self._create(tool_diameter_mm=10.0, stepover_mm=5.0)
+        created = self._create(tool_diameter_mm=10.0, stepover_ratio=0.5)
         operation_id = created["operation"]["id"]
         before = created["result"]["toolpath"]["statistics"]
 
         status, updated = self.post(f"/api/operations/{operation_id}", {
-            "parameters": {"tool_diameter_mm": 20.0, "stepover_mm": 12.0},
+            "parameters": {"tool_diameter_mm": 20.0, "stepover_ratio": 0.6},
         })
         self.assertEqual(status, 200, updated)
         self.assertEqual(updated["operation"]["parameters"]["tool_diameter_mm"], 20.0)
@@ -343,9 +345,9 @@ class OperationApiTests(ServerCase):
     def test_update_parameters_regenerates(self) -> None:
         operation = self._create()["operation"]
         status, body = self.post(f"/api/operations/{operation['id']}",
-                                 {"parameters": {"stepover_mm": 2.0}})
+                                 {"parameters": {"stepover_ratio": 0.2}})
         self.assertEqual(status, 200)
-        self.assertEqual(body["operation"]["parameters"]["stepover_mm"], 2.0)
+        self.assertEqual(body["operation"]["parameters"]["stepover_ratio"], 0.2)
         self.assertEqual(body["operation"]["state"], "draft")
         status, body = self.post(f"/api/operations/{operation['id']}/generate")
         self.assertEqual(status, 200)
@@ -423,12 +425,12 @@ class OperationApiTests(ServerCase):
 
     def test_templates_round_trip(self) -> None:
         status, body = self.post("/api/templates", {
-            "name": "开粗模板", "kind": "pocket_mill", "parameters": {"stepover_mm": 3.5},
+            "name": "开粗模板", "kind": "pocket_mill", "parameters": {"stepover_ratio": 0.35},
         })
         self.assertEqual(status, 200)
         template = body["template"]
         self.assertEqual(template["name"], "开粗模板")
-        self.assertEqual(template["parameters"]["stepover_mm"], 3.5)
+        self.assertEqual(template["parameters"]["stepover_ratio"], 0.35)
         _, tree = self.get("/api/operations")
         self.assertIn(template["id"], [item["id"] for item in tree["templates"]])
         status, _, _ = self.send("DELETE", f"/api/templates/{template['id']}")
@@ -438,11 +440,11 @@ class OperationApiTests(ServerCase):
 
     def test_global_parameters_round_trip(self) -> None:
         status, body = self.post("/api/parameters", {
-            "cam": {"stepover_mm": 4.5},
+            "cam": {"stepover_ratio": 0.45},
             "controller": {"program_number": 2024, "work_offset": "g55"},
         })
         self.assertEqual(status, 200)
-        self.assertEqual(body["cam"]["stepover_mm"], 4.5)
+        self.assertEqual(body["cam"]["stepover_ratio"], 0.45)
         self.assertEqual(body["controller"]["program_number"], 2024)
         _, fresh = self.get("/api/parameters")
         self.assertEqual(fresh["controller"]["work_offset"], "g55")
@@ -559,7 +561,7 @@ class ProjectLifecycleTests(ServerCase):
         self.assertTrue(opened["project"]["part"]["mesh"]["positions"])
         _, tree = self.get("/api/operations")
         self.assertIn(operation_id, [item["id"] for item in tree["operations"]])
-        self.assertEqual(tree["operations"][0]["parameters"]["stepover_mm"], 5.0)
+        self.assertEqual(tree["operations"][0]["parameters"]["stepover_ratio"], 0.5)
 
     def test_delete_project(self) -> None:
         self.import_plate()

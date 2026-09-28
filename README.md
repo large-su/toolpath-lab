@@ -151,7 +151,7 @@ face = next(f for f in part.features if f["horizontal"])
 
 request = CAMOperationRequest.from_payload(
     {"kind": "pocket_mill", "faces": [face["face_id"]],
-     "parameters": {"tool_diameter_mm": 10, "stepover_mm": 5, "cut_depth_mm": 2},
+     "parameters": {"tool_diameter_mm": 10, "stepover_ratio": 0.5, "cut_depth_mm": 2},
      "stock": stock},
     part,
 )
@@ -194,7 +194,7 @@ curl -X POST http://127.0.0.1:8770/api/import/step \
 curl -X POST http://127.0.0.1:8770/api/operations \
   -H "Content-Type: application/json" \
   -d '{"kind":"pocket_mill","faces":[197],
-       "parameters":{"tool_diameter_mm":10,"stepover_mm":5,"cut_depth_mm":2}}'
+       "parameters":{"tool_diameter_mm":10,"stepover_ratio":0.5,"cut_depth_mm":2}}'
 
 curl -X POST http://127.0.0.1:8770/api/simulate \
   -H "Content-Type: application/json" -d '{"cell_mm":0.6}' -o simulation.json
