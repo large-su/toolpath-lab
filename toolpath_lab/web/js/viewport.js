@@ -9,6 +9,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "../vendor/OrbitControls.js";
 import { RoomEnvironment } from "../vendor/RoomEnvironment.js";
+import { StockSimulation } from "./stock.js";
 
 const COLORS = {
   background: 0x071014,
@@ -20,6 +21,7 @@ const COLORS = {
   rapid: 0x4fc3f7,
   trace: 0x54d6c4,
   pose: 0xff4fd8,
+  stock: 0x75899b,
   tool: 0xffcc00,
   holder: 0xb0bcc6,
 };
@@ -88,6 +90,7 @@ export class Viewport {
     this.appearance = { shadows: true, white: false, grid: true };
     this.display = {
       showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true,
+      showStock: false,
     };
     this.bounds = null;
     this.activeView = "fit";
@@ -143,16 +146,21 @@ export class Viewport {
     this.pathGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
     this.poseGroup = new THREE.Group();
+    this.stockGroup = new THREE.Group();
     this.toolGroup = new THREE.Group();
     this.scene.add(
       this.gridGroup, this.workpieceGroup,
-      this.contourGroup, this.pathGroup, this.traceGroup, this.poseGroup, this.toolGroup
+      this.contourGroup, this.pathGroup, this.traceGroup, this.poseGroup,
+      this.stockGroup, this.toolGroup
     );
 
     this.tool = null;
     this.toolMesh = null;
     this.traceLine = null;
     this.rapidLine = null;
+    this.stockMesh = null;
+    this.stockSimulation = null;
+    this.stockPayload = null;
 
     this.resize();
     if (typeof ResizeObserver !== "undefined") {
@@ -185,6 +193,10 @@ export class Viewport {
     this._clear(this.pathGroup);
     this._clear(this.traceGroup);
     this._clear(this.poseGroup);
+    this._clear(this.stockGroup);
+    this.stockMesh = null;
+    this.stockSimulation = null;
+    this.stockPayload = payload;
 
     const region = payload.region;
     const [xMin, xMax] = region.bounds_mm[0];
@@ -243,6 +255,8 @@ export class Viewport {
         new THREE.LineBasicMaterial({ color: COLORS.pose, transparent: true, opacity: 0.9 })
       ));
     }
+
+    if (this.display.showStock) this._enableStock();
 
     this.bounds = new THREE.Box3().setFromObject(this.workpieceGroup);
     const pathBounds = new THREE.Box3().setFromObject(this.pathGroup);
@@ -340,6 +354,10 @@ export class Viewport {
     this.toolGroup.position.set(position[0], position[1], position[2]);
     const axis = new THREE.Vector3(toolAxis[0], toolAxis[1], toolAxis[2]).normalize();
     this.toolGroup.quaternion.setFromUnitVectors(Z_UP, axis);
+    if (this.stockSimulation && traversedSegments !== this.stockSimulation.cursor) {
+      this.stockSimulation.setIndex(traversedSegments);
+      this._updateStockMesh();
+    }
     if (this.traceLine && traversedSegments !== this._lastTraversed) {
       this._lastTraversed = traversedSegments;
       this.traceLine.geometry.setDrawRange(0, Math.max(0, traversedSegments) * 2);
@@ -348,13 +366,57 @@ export class Viewport {
 
   setDisplayOptions(options) {
     this.display = Object.assign({}, this.display, options || {});
-    this.workpieceGroup.visible = this.display.showWorkpiece;
+    if (this.display.showStock) this._enableStock();
+    else this._disableStock();
+    this.workpieceGroup.visible = this.display.showWorkpiece && !this.display.showStock;
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.poseGroup.visible = this.display.showPath;
     this.toolGroup.visible = this.display.showTool;
+    this.stockGroup.visible = this.display.showWorkpiece && this.display.showStock;
     if (this.rapidLine) this.rapidLine.visible = this.display.showRapid;
     this.contourGroup.visible = this.display.showWorkpiece;
+  }
+
+  _enableStock() {
+    if (this.stockSimulation || !this.stockPayload || !this.stockPayload.stock
+        || !this.stockPayload.timeline) return;
+    this.stockSimulation = new StockSimulation(
+      this.stockPayload.stock, this.stockPayload.timeline, this.stockPayload.tool
+    );
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      "position", new THREE.Float32BufferAttribute(this.stockSimulation.positions(), 3)
+    );
+    geometry.setIndex(this.stockSimulation.indices());
+    geometry.computeVertexNormals();
+    this.stockMesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: COLORS.stock, metalness: 0.35, roughness: 0.58,
+        transparent: true, opacity: 0.9,
+      })
+    );
+    this.stockMesh.castShadow = true;
+    this.stockMesh.receiveShadow = true;
+    this.stockGroup.add(this.stockMesh);
+    this.stockSimulation.setIndex(0);
+    this._updateStockMesh();
+  }
+
+  _disableStock() {
+    this._clear(this.stockGroup);
+    this.stockMesh = null;
+    this.stockSimulation = null;
+    this.stockGroup.visible = false;
+  }
+
+  _updateStockMesh() {
+    if (!this.stockMesh || !this.stockSimulation) return;
+    const attribute = this.stockMesh.geometry.getAttribute("position");
+    attribute.array.set(this.stockSimulation.positions());
+    attribute.needsUpdate = true;
+    this.stockMesh.geometry.computeVertexNormals();
   }
 
   setAppearance(options) {

@@ -140,7 +140,7 @@ curl -X POST http://127.0.0.1:8770/api/export/gcode \
 toolpath_lab/
   core/        领域层：参数声明、刀具、区域、曲面、刀路与运动段模型
   planning/    策略层：Planner 基类与注册表、扫描线几何、栅格、交叉栅格与五轴刀路
-  simulation/  时间层：按进给速度把刀路参数化为时间轴
+  simulation/  时间层：播放时间轴与可选材料切除高度场
   export/      G-code 导出
   server/      标准库 HTTP 服务：接口路由、请求校验、能力目录、静态文件
   web/         前端：原生 ES 模块 + three.js（随仓库提供，无打包步骤）

@@ -9,6 +9,10 @@ const DISPLAY_OPTIONS = [
   { key: "showTool", label: "刀具" },
 ];
 
+const SIMULATION_OPTIONS = [
+  { key: "showStock", label: "材料切除仿真" },
+];
+
 const FIXED_NOTES = [
   ["安全高度", "fixed.safe_height_mm", "mm"],
   ["快移速度", "fixed.rapid_feed_mm_per_min", "mm/min"],
@@ -59,7 +63,10 @@ export class ParameterPanel {
         id: this.catalog.planners.default_id,
         values: clone(this.catalog.planners.defaults),
       },
-      display: { showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true },
+      display: {
+        showWorkpiece: true, showPath: true, showRapid: true, showTrace: true,
+        showTool: true, showStock: false,
+      },
     };
     this.rows = [];
     this.render();
@@ -87,6 +94,7 @@ export class ParameterPanel {
       this._surfaceSection(),
       this._plannerSection(),
       this._displaySection(),
+      this._simulationSection(),
       this._noteSection()
     );
     this.refreshVisibility();
@@ -238,6 +246,32 @@ export class ParameterPanel {
       row.appendChild(text);
       section.appendChild(row);
     }
+    return section;
+  }
+
+  _simulationSection() {
+    const section = this._section("仿真");
+    for (const option of SIMULATION_OPTIONS) {
+      const row = document.createElement("label");
+      row.className = "checkbox-row";
+      row.title = "勾选后才创建毛坯高度场，并随播放或拖动时间轴切除材料";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = this.state.display[option.key];
+      input.addEventListener("change", () => {
+        this.state.display[option.key] = input.checked;
+        this.onDisplayChange(this.displayOptions());
+      });
+      row.append(input);
+      const text = document.createElement("span");
+      text.textContent = option.label;
+      row.append(text);
+      section.append(row);
+    }
+    const hint = document.createElement("div");
+    hint.className = "note";
+    hint.textContent = "高度场教学仿真：播放刀路时逐步降低毛坯顶部高度。";
+    section.append(hint);
     return section;
   }
 

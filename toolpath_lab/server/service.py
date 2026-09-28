@@ -12,7 +12,7 @@ from toolpath_lab import __version__
 from toolpath_lab.core.path import Toolpath
 from toolpath_lab.planning import run_plan
 from toolpath_lab.server.schema import PlanRequest
-from toolpath_lab.simulation import Timeline, build_timeline
+from toolpath_lab.simulation import Timeline, build_timeline, stock_spec_for
 
 #: 播放采样的上限，决定响应的体积。
 DEFAULT_MAX_SAMPLES = 4000
@@ -44,6 +44,7 @@ class PlanResult:
                 ],
             },
             "surface": request.surface.describe(request.region),
+            "stock": stock_spec_for(request.region, request.surface, request.tool).to_payload(),
             "toolpath": self.toolpath.to_payload(),
             "timeline": None if self.timeline is None else self.timeline.to_payload(),
             "warnings": list(self.warnings),

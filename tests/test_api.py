@@ -221,6 +221,13 @@ class PlanTests(ApiTestCase):
         axis = oriented_moves[0]["tool_axes"][0]
         self.assertAlmostEqual(sum(value * value for value in axis), 1.0, places=4)
 
+    def test_plan_returns_independent_stock_simulation_spec(self) -> None:
+        status, payload, _ = self.plan({})
+        self.assertEqual(status, 200)
+        self.assertIn("stock", payload)
+        self.assertEqual(payload["stock"]["grid_shape"], [41, 41])
+        self.assertGreater(payload["stock"]["initial_top_z_mm"], 0.0)
+
     def test_unknown_surface_is_a_bad_request(self) -> None:
         status, payload, _ = self.plan({"surface": {"type": "saddle"}})
         self.assertEqual(status, 400)

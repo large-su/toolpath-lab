@@ -51,6 +51,10 @@ planning ── simulation ┘
 总采样数（默认 4000），同时保留每段边界，所以播放不会跨段插值。载荷里 `times` / `positions`
 是逐采样数组，`kind_runs` / `move_runs` 是游程编码。
 
+`stock.py` 提供 `StockSpec` 与 `StockState`。它用规则 XY 高度场表达毛坯顶部，按刀具圆形足迹
+降低局部高度，并支持从任意时间轴采样点重置后重放。前端只有在勾选“材料切除仿真”时才创建
+对应状态和网格；未勾选时仍沿用原来的轻量刀路播放。
+
 ### export / server / web / electron
 
 - `export/gcode.py`：G21 / G90 / G17 + G0 / G1 带 F 的最常见 ISO 子集；
@@ -93,5 +97,5 @@ G-code 导出以 A（方位角）和 B（相对 +Z 的倾角）表达，真实�
 - 想加**形状**：写一个 `boundary()` 返回逆时针多边形；
 - 想加**策略**：继承 `Planner` 并注册，见 extending.md；
 - 想加**曲面 / 三维区域**：给区域加高度场和 `normal_at()`，策略即可逐点采样；
-- 想加**材料切除仿真**：在 `simulation/` 中增加 StockState，由现有 Timeline 驱动材料状态更新，不改规划策略；
+- 想加**更精确的材料切除仿真**：替换 `simulation/stock.py` 的高度场为体素或三角网格扫掠体，保持 `StockSpec` 元数据和 Timeline 驱动接口不变；
 - 想加**导出格式**：在 `export/` 写一个纯函数，在 `server/app.py` 加一个分支。
