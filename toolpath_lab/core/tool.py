@@ -71,12 +71,19 @@ class Tool:
     kind: ToolKind = ToolKind.FLAT
     diameter_mm: float = 6.0
     length_mm: float = 30.0
+    #: 刀尖圆角半径。``None`` 表示按类型推导（球头刀 = 半径，其余 = 0）。
+    corner_radius: float | None = None
 
     def __post_init__(self) -> None:
         if not isfinite(self.diameter_mm) or self.diameter_mm <= 0:
             raise ParameterError("刀具直径必须是有限正数")
         if not isfinite(self.length_mm) or self.length_mm <= 0:
             raise ParameterError("刀具长度必须是有限正数")
+        if self.corner_radius is not None:
+            if not isfinite(self.corner_radius) or self.corner_radius < 0:
+                raise ParameterError("刀尖圆角半径不能是负数")
+            if self.kind is not ToolKind.BULL and self.corner_radius > 1e-9:
+                raise ParameterError("只有圆鼻刀可以设置刀尖圆角半径")
 
     @classmethod
     def from_parameters(cls, params: Mapping[str, Any]) -> "Tool":
@@ -94,10 +101,14 @@ class Tool:
 
     @property
     def corner_radius_mm(self) -> float:
-        """刀尖圆角半径（平底刀为 0，球头刀等于半径）。"""
+        """刀尖圆角半径（平底刀为 0，球头刀等于半径，圆鼻刀取设定值）。"""
 
         if self.kind is ToolKind.BALL:
             return self.radius_mm
+        if self.kind is ToolKind.BULL:
+            if self.corner_radius is None:
+                return 0.0
+            return min(float(self.corner_radius), self.radius_mm)
         return 0.0
 
     @property

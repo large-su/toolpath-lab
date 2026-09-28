@@ -76,16 +76,27 @@ def parse_multipart(body: bytes, content_type: str | None,
     for chunk in chunks[1:]:
         if chunk in (b"", b"--", b"--\r\n", b"\r\n"):
             continue
-        if chunk.startswith(b"--"):
-            break  # 结束标记
+        # 结束标记：分隔符后面紧跟 `--`。**不能**用 `chunk.startswith(b"--")` 判断 ——
+        # 浏览器生成的 boundary 本身就常带连字符（`----WebKitFormBoundaryXXXX`），
+        # split 之后剩下的内容正好以 `--` 开头，会被误判成结束标记，
+        # 于是整个请求"一个部件都没有"（实测 Chromium 上传就是这么失败的）。
+        if chunk.startswith(b"--\r\n") or chunk.startswith(b"--\n") or chunk == b"--":
+            break
         cleaned = chunk.lstrip(b"\r\n")
         header_end = cleaned.find(b"\r\n\r\n")
         if header_end < 0:
-            continue
-        raw_headers = cleaned[:header_end].decode("latin-1", errors="replace")
-        content = cleaned[header_end + 4:]
+            header_end = cleaned.find(b"\n\n")
+            if header_end < 0:
+                continue
+            raw_headers = cleaned[:header_end].decode("latin-1", errors="replace")
+            content = cleaned[header_end + 2:]
+        else:
+            raw_headers = cleaned[:header_end].decode("latin-1", errors="replace")
+            content = cleaned[header_end + 4:]
         if content.endswith(b"\r\n"):
             content = content[:-2]
+        elif content.endswith(b"\n"):
+            content = content[:-1]
         if len(content) > MAX_PART_BYTES:
             raise ParameterError(
                 f"上传内容 {len(content) / 1048576:.1f} MB 超过上限 "

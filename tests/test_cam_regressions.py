@@ -73,32 +73,38 @@ def _square_region(side: float = 60.0, *, cell_mm: float = DEFAULT_CELL_MM,
 def _make_part_with_face(*, normal: tuple[float, float, float],
                          plane: tuple[float, float, float, float],
                          loop_xy: np.ndarray) -> PartModel:
-    """手工构造一个仅有一个面、给定法向与平面的 PartModel（仅供 region_from_face 测试）。"""
+    """手工构造一个仅有一个面、给定法向与平面的 PartModel（仅供 region_from_face 测试）。
 
-    # 平面 n·p = d 上把 loop_xy 抬到 plane 对应的 Z：选 loop 的平均 X/Y 代入 n·p=d
+    **顶点必须落在真实的平面上**（``z = (d − nx·x − ny·y) / nz``）。早先这里把所有顶点的
+    z 取成同一个数（面的"平均高度"），倾斜面的网格因此是**平的**：老代码只读平面方程的
+    常数项、看不出问题，而按底面三角面片判共面/曲面的新代码会把它当成水平底面。
+    """
+
     nx, ny, nz, d = plane
-    sample = loop_xy.mean(axis=0)
-    z = (d - nx * sample[0] - ny * sample[1]) / nz if nz else 0.0
-    positions = np.column_stack([loop_xy, np.full(loop_xy.shape[0], float(z))])
+    if nz:
+        z_values = (d - nx * loop_xy[:, 0] - ny * loop_xy[:, 1]) / nz
+    else:  # pragma: no cover - 竖直面，本测试用不到
+        z_values = np.zeros(loop_xy.shape[0], dtype=np.float64)
+    z_mid = float(np.mean(z_values))
+    positions = np.column_stack([loop_xy, z_values])
     indices = np.array([[0, 1, 2]], dtype=np.int64)
     normal_arr = np.asarray(normal, dtype=np.float64)
-    face_loop_3d = np.column_stack(
-        [loop_xy, np.full(loop_xy.shape[0], float(z))]
-    )
+    face_loop_3d = np.column_stack([loop_xy, z_values])
     face = FaceRecord(
         id=1,
         surface_kind="plane",
         triangle_start=0,
         triangle_count=1,
-        area_mm2=float(abs(np.linalg.norm(loop_xy[1] - loop_xy[0])) *
-                         np.linalg.norm(loop_xy[2] - loop_xy[1])),
+        area_mm2=float(abs(np.linalg.norm(loop_xy[1] - loop_xy[0]) *
+                         np.linalg.norm(loop_xy[2] - loop_xy[1]))),
         normal=tuple(float(v) for v in normal),
         boundary_points=loop_xy.shape[0],
         loop_count=1,
         is_planar=True,
         plane=plane,
-        bounds=(float(loop_xy[:, 0].min()), float(loop_xy[:, 1].min()), float(z),
-                float(loop_xy[:, 0].max()), float(loop_xy[:, 1].max()), float(z)),
+        bounds=(float(loop_xy[:, 0].min()), float(loop_xy[:, 1].min()),
+                float(z_values.min()), float(loop_xy[:, 0].max()),
+                float(loop_xy[:, 1].max()), float(z_values.max())),
         loops=(face_loop_3d,),
     )
     mesh = TessellatedModel(
@@ -115,8 +121,10 @@ def _make_part_with_face(*, normal: tuple[float, float, float],
         name="regression_fixture",
         mesh=mesh,
         bounds=PartBounds(
-            float(loop_xy[:, 0].min()), float(loop_xy[:, 1].min()), float(z),
-            float(loop_xy[:, 0].max()), float(loop_xy[:, 1].max()), float(z),
+            float(loop_xy[:, 0].min()), float(loop_xy[:, 1].min()),
+            float(z_values.min()),
+            float(loop_xy[:, 0].max()), float(loop_xy[:, 1].max()),
+            float(z_values.max()),
         ),
         features=[],
     )
@@ -183,28 +191,48 @@ class BoundaryOffsetAlignmentTests(unittest.TestCase):
 
 # ================================================================== BUG-003
 class RegionFromFacePlanarityTests(unittest.TestCase):
-    """BUG-003：斜面不应被 region_from_face 接受。"""
+    """BUG-003：斜面不应被 **平面铣** 接受（型腔铣现在支持斜面/曲面底）。
 
-    def test_inclined_face_is_rejected(self) -> None:
+    老版本里 ``region_from_face`` 无条件拒绝斜面，因为当时 ``floor_z`` 取的是平面方程的
+    常数项、对倾斜面根本不是高度。现在底面高度由
+    :class:`~toolpath_lab.cam.floor_field.FloorField` 逐点给出，斜面/曲面是支持的；
+    但**平面铣**（``require_horizontal=True``）仍然只收水平面 —— 它的分层与
+    "一刀铣平一个面"的语义都建立在"底面是平的"之上。
+    """
+
+    def _part(self, normal, plane):
         loop_xy = np.array([[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
                            dtype=np.float64)
-        # 任意斜面：法向 (0, sin10°, cos10°) —— nz ≈ 0.985 < 1
+        return _make_part_with_face(normal=normal, plane=plane, loop_xy=loop_xy)
+
+    def test_inclined_face_is_rejected_for_face_mill(self) -> None:
         normal = (0.0, do_sin(np.deg2rad(10.0)), do_cos(np.deg2rad(10.0)))
-        plane = (normal[0], normal[1], normal[2], 0.0)
-        part = _make_part_with_face(normal=normal, plane=plane, loop_xy=loop_xy)
+        part = self._part(normal, (normal[0], normal[1], normal[2], 0.0))
         with self.assertRaises(PlanningError) as cm:
-            region_from_face(part, 1)
+            region_from_face(part, 1, require_horizontal=True)
         self.assertIn("近水平面", str(cm.exception))
 
+    def test_inclined_face_is_accepted_for_pocket_mill(self) -> None:
+        """斜面作为型腔底面：底面高度逐点不同，最低处就是加工目标高度。"""
+
+        angle = np.deg2rad(10.0)
+        normal = (0.0, float(do_sin(angle)), float(do_cos(angle)))
+        part = self._part(normal, (normal[0], normal[1], normal[2], 0.0))
+        region = region_from_face(part, 1, ceiling_z=1.0)
+        self.assertFalse(region.is_flat_floor)
+        # 底面沿 +Y 倾斜：y=0 处 z=0，y=4 处 z=-4·tan10°
+        self.assertAlmostEqual(float(region.floor_z_at(0.0, 0.0)), 0.0, places=6)
+        self.assertAlmostEqual(float(region.floor_z_at(0.0, 4.0)), -4.0 * np.tan(angle),
+                               places=4)
+        # region.floor_z 是区域内最低点（y 最大那一侧）
+        self.assertLess(region.floor_z, -0.5)
+
     def test_horizontal_face_is_accepted(self) -> None:
-        loop_xy = np.array([[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
-                           dtype=np.float64)
-        normal = (0.0, 0.0, 1.0)
-        plane = (0.0, 0.0, 1.0, 0.0)
-        part = _make_part_with_face(normal=normal, plane=plane, loop_xy=loop_xy)
+        part = self._part((0.0, 0.0, 1.0), (0.0, 0.0, 1.0, 0.0))
         region = region_from_face(part, 1, ceiling_z=1.0)
         self.assertAlmostEqual(region.floor_z, 0.0)
         self.assertAlmostEqual(region.top_z, 1.0)
+        self.assertTrue(region.is_flat_floor)
 
 
 # ================================================================== BUG-004

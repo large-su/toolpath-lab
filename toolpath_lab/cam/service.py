@@ -217,10 +217,17 @@ def execute_operation(request: CAMOperationRequest) -> CAMOperationResult:
 
     for index, face_id in enumerate(request.face_ids):
         record = request.part.face(face_id)
-        floor_z = float(record.plane[3]) if record is not None and record.plane else 0.0
+        # 层高的起算点：平面面读平面方程，曲面/斜面无平面方程时用零件顶面，
+        # 真正的底面高度由 region.floor_z（区域内底面最低点）给出。
+        floor_z = float(record.plane[3]) if record is not None and record.plane else \
+            float(request.part.bounds.z_max)
+        # 只有平面铣要求"必须是水平面"：型腔铣要支持斜面/曲面底，轮廓铣沿边界走一刀
+        # 也不在乎底面是否水平。
+        horizontal_only = request.kind == OperationKind.FACE_MILL.value
         region = region_from_face(
             request.part, face_id, cell_mm=request.cell_mm,
             ceiling_z=_ceiling_for(request, floor_z),
+            require_horizontal=horizontal_only,
         )
         regions.append(region.describe())
         warnings.extend(region.notes)

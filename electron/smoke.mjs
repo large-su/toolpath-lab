@@ -305,7 +305,87 @@ async function driveCamFlow(window, base) {
     return { ok: false, steps, reason: "NC 导出失败：" + JSON.stringify(nc) };
   }
 
-  // 9b. 曲面加工（平行行切）：全程走真实界面 —— 参数面板的加工类型下拉框 → 新增工序按钮
+  // 9d. 斜面 / 曲面型腔：用真实接口在**倾斜底面**上建一道型腔铣。
+  //     这一步专门验证"底面不是水平面"这条新路径：区域要带上高度场、刀路要按底面取 Z。
+  const slopedPocket = await (async () => {
+    const sample = path.join(projectRoot, "examples", "sample_plate.step");
+    const contents2 = await fs.readFile(sample);
+    const form2 = new FormData();
+    form2.append("file", new Blob([contents2], { type: "application/step" }),
+                 path.basename(sample));
+    // 用示例零件的**侧面**当"倾斜底面"：它的法向不朝上，应当被拒绝；
+    // 再找一个朝上但不水平的斜面，验证型腔铣接受它。
+    const response = await request(new URL("api/model/features", base).href);
+    const features = json(response.text).features || [];
+    const inclined = features.filter(
+      (item) => item.normal && item.normal[2] > 0.5 && item.normal[2] < 0.999
+    );
+    const downward = features.filter((item) => item.normal && item.normal[2] < -0.2);
+    let downwardRejected = null;
+    if (downward.length) {
+      const rejected = await request(new URL("api/operations", base).href, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "pocket_mill", faces: [downward[0].face_id],
+                               parameters: { tool_diameter_mm: 6 } }),
+      });
+      // 朝下的面必须被拒（422：几何上不可加工）。
+      // 回 200 就说明"底面必须朝上"这条校验漏了。
+      downwardRejected = rejected.status === 422;
+    }
+    if (!inclined.length) {
+      // 示例零件是个方板，没有朝上的斜面：这一段只做"朝下的面被拒"这条检查。
+      return { skipped: true, reason: "示例零件里没有朝上的斜面",
+               featureCount: features.length, downwardCount: downward.length,
+               downwardRejected: downwardRejected };
+    }
+    const target = inclined[0];
+    const created2 = await request(new URL("api/operations", base).href, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "pocket_mill", faces: [target.face_id],
+        parameters: { tool_diameter_mm: 6, cut_depth_mm: 1, stepover_ratio: 0.5,
+                      cut_mode: "contour", finish_pass: false },
+      }),
+    });
+    const body2 = json(created2.text);
+    if (created2.status !== 200) {
+      return { status: created2.status, error: body2.error, face: target.face_id };
+    }
+    const region = (body2.result.regions || [])[0] || {};
+    const cuts = (body2.result.toolpath.moves || []).filter((m) => m.kind === "cut");
+    const zs = cuts.flatMap((m) => m.points.map((p) => p[2]));
+    return {
+      face: target.face_id,
+      floorCapable: target.floor_capable,
+      kinds: target.machinable_kinds,
+      floor: region.floor || null,
+      floorZ: region.floor_z,
+      cutMoves: cuts.length,
+      zSpread: zs.length ? Math.max(...zs) - Math.min(...zs) : 0,
+      // 注意用外层算好的布尔（422 才算"被拒"）：rejected 是 if 块内的 const，
+      // 出了块就取不到；这里原先写成不存在的 downwardResult，一旦样件上真有
+      // 朝上的斜面（走到这个 return）就会 ReferenceError。
+      downwardRejected: downwardRejected,
+    };
+  })();
+  steps.slopedPocket = slopedPocket;
+  // 示例零件是个方板，正常不会命中"斜底"那一段（会被 skip）；命中时把断言查完。
+  // 无论哪种情况都必须确认："朝下的面不能当型腔底"。
+  if (slopedPocket.downwardRejected === false) {
+    return { ok: false, steps, reason: "朝下的面居然被接受为型腔底：" + JSON.stringify(slopedPocket) };
+  }
+  if (!slopedPocket.skipped) {
+    if (!slopedPocket.floor || slopedPocket.floor.flat !== false) {
+      return { ok: false, steps, reason: "倾斜底面的加工区域没有带上高度场："
+        + JSON.stringify(slopedPocket) };
+    }
+    if (!(slopedPocket.cutMoves > 0) || !(slopedPocket.zSpread > 0.1)) {
+      return { ok: false, steps, reason: "斜底型腔的刀路没有跟着底面起伏："
+        + JSON.stringify(slopedPocket) };
+    }
+  }
+
+  // 9e. 曲面加工（平行行切）：全程走真实界面 —— 参数面板的加工类型下拉框 → 新增工序按钮
   //     → 刀路画进视口 → 仿真。曲面工序**不需要选面**，所以要先把已选的面清掉再走一遍，
   //     否则测不出"不选面也能建"这条路径。
   const surface = await window.webContents.executeJavaScript(`(async () => {

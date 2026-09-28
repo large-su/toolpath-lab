@@ -25,6 +25,7 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
+from toolpath_lab.cam.floor_field import FloorField, constant_floor, floor_field_from_face
 from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.part import PartModel
 
@@ -112,12 +113,240 @@ class MachiningRegion:
     cell_mm: float = DEFAULT_CELL_MM
     inside: NDArray[np.bool_] = field(default_factory=lambda: np.zeros((0, 0), dtype=bool))
     distance: NDArray[np.float64] = field(default_factory=lambda: np.zeros((0, 0)))
+    #: 加工底面的高度场。水平面时是一张常数场，斜面/曲面时随位置变化。
+    #: 刀路的 Z 与"刀具会不会扎进底面"的判断都从这里取，不再假设底面是平的。
+    floor: FloorField = field(default_factory=lambda: constant_floor(0.0))
+    #: 底面高度的区域栅格缓存（形状与 ``inside`` 一致，由 :meth:`prepare_floor_grid` 填）。
+    #: 斜面/曲面的高度场铺得比区域大一圈，区域之外的值没有意义，
+    #: 所以"环切到哪一层、哪一段还能切"一律以这张栅格为准。
+    floor_grid_cache: NDArray[np.float64] | None = None
+    #: 防过切抬升的区域栅格缓存（与 ``floor_grid_cache`` 配套）。
+    lift_grid_cache: NDArray[np.float64] | None = None
+    #: 刀轴高度场的缓存（底面高度 + 防过切抬升），见 :meth:`axis_grid`。
+    axis_grid_cache: NDArray[np.float64] | None = None
     notes: list[str] = field(default_factory=list)
 
     # -- 基本量 ------------------------------------------------------------
     @property
     def depth_mm(self) -> float:
         return max(0.0, float(self.top_z - self.floor_z))
+
+    @property
+    def is_flat_floor(self) -> bool:
+        """底面是不是水平的（水平底面走原来的常数逻辑，逐点取值等价）。"""
+
+        return bool(self.floor.is_flat)
+
+    @property
+    def floor_slope_deg(self) -> float:
+        return 0.0 if self.is_flat_floor else float(self.floor.max_slope_deg())
+
+    def floor_z_at(self, x: NDArray[np.float64] | float,
+                   y: NDArray[np.float64] | float) -> NDArray[np.float64]:
+        """底面在 (x, y) 处的高度（斜面/曲面逐点不同）。"""
+
+        return self.floor.height_at(x, y)
+
+    def floor_grid(self) -> NDArray[np.float64]:
+        """整张区域栅格上的底面高度，形状与 ``inside`` 一致。"""
+
+        if self.floor_grid_cache is not None:
+            return self.floor_grid_cache
+        xs = self.bounds[0] + (np.arange(self.shape[0], dtype=np.float64) + 0.5) * self.cell_mm
+        ys = self.bounds[1] + (np.arange(self.shape[1], dtype=np.float64) + 0.5) * self.cell_mm
+        grid_x, grid_y = np.meshgrid(xs, ys, indexing="ij")
+        values = np.asarray(self.floor.height_at(grid_x, grid_y), dtype=np.float64)
+        # 高度场铺得比区域大一圈，区域之外的值没有意义：一律夹到区域内的最高/最低，
+        # 免得倾斜面在区域外继续往下走，把"最深点"算到区域外面去。
+        if self.inside.size == self.inside.shape and self.inside.any():
+            inside_values = values[self.inside]
+            values = np.clip(values, float(inside_values.min()), float(inside_values.max()))
+        self.floor_grid_cache = values
+        return values
+
+    def lift_grid(self, tool: Any) -> NDArray[np.float64]:
+        """区域栅格上的"防过切抬升"（与 :meth:`floor_grid` 配套，按刀具缓存一次）。
+
+        抬升 = 刀心放在该格时，刀体为了不扎进底面必须比"刀尖贴住格心底面"再高多少。
+        两条互补的界取较大的那条：
+
+        * **解析界**（``required_lift``）：把底面当局部平面看——平底刀正好是
+          ``R·tanθ``、球头刀约一半。对平面底面它是精确值；
+        * **足迹采样界**：直接在高度场上取足迹圆内的最高点再减去刀体轮廓高度。
+          曲面底面上解析界会偏小（曲率项 ≈ ``R²·|∇k|/2``，实测 0.05 mm 量级），
+          这一条把差额兜住。
+
+        两者都只与坡度有关，所以按"坡度值 → 抬升"缓存一次标量表就够了——
+        刀路动辄几千个点，逐点扫描足迹没必要。
+        """
+
+        if self.lift_grid_cache is not None:
+            return self.lift_grid_cache
+        from toolpath_lab.cam.tool_engagement import required_lift
+
+        if self.is_flat_floor:
+            grid = np.zeros(self.shape, dtype=np.float64)
+            self.lift_grid_cache = grid
+            return grid
+        xs = self.bounds[0] + (np.arange(self.shape[0], dtype=np.float64) + 0.5) * self.cell_mm
+        ys = self.bounds[1] + (np.arange(self.shape[1], dtype=np.float64) + 0.5) * self.cell_mm
+        grid_x, grid_y = np.meshgrid(xs, ys, indexing="ij")
+        normals = np.asarray(self.floor.normal_at(grid_x, grid_y), dtype=np.float64).reshape(-1, 3)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            slope = np.hypot(normals[:, 0], normals[:, 1]) / np.maximum(
+                np.abs(normals[:, 2]), 1e-9)
+        unique, inverse = np.unique(np.round(slope, 6), return_inverse=True)
+        table = np.asarray([required_lift(tool, (float(value), 0.0)) for value in unique],
+                           dtype=np.float64)
+        analytic = (table[inverse] if table.size else np.zeros_like(slope)).reshape(self.shape)
+        grid = np.maximum(analytic, self._footprint_lift_grid(tool))
+        self.lift_grid_cache = grid
+        return grid
+
+    def _footprint_lift_grid(self, tool: Any) -> NDArray[np.float64]:
+        """足迹采样抬升：刀放在格心时，足迹圆内最高底面相对格心底面的高差。
+
+        与"落刀测试"（drop cutter）同一个判据，只是限制在区域栅格上、并按预算限制
+        采样点数：格点数 × 采样点数超过预算时自动加粗采样（此时栅格本身也很粗，
+        解析界仍在兜底）。
+        """
+
+        from toolpath_lab.cam.tool_engagement import profile_height
+
+        floor = self.floor_grid()
+        rows, cols = floor.shape
+        radius = float(getattr(tool, "radius_mm", 0.0) or 0.0)
+        cell = float(self.cell_mm)
+        lift = np.zeros_like(floor)
+        if radius <= 1e-9 or cell <= 1e-9 or rows < 2 or cols < 2:
+            return lift
+        reach = max(1, int(np.ceil(radius / cell)))
+        # 采样预算：一次规划里这一步只做一次，但大件上"格点数 × 采样数"仍要封顶
+        budget = 4_000_000
+        stride = max(1, int(np.ceil(reach / max(1.0, np.sqrt(budget / max(rows * cols, 1))))))
+        offsets: list[tuple[int, int, float]] = []
+        for di in range(-reach, reach + 1, stride):
+            for dj in range(-reach, reach + 1, stride):
+                offset = float(np.hypot(di, dj)) * cell
+                if offset > radius + 1e-9 or offset <= 1e-12:
+                    continue
+                height = profile_height(tool, offset)
+                if not np.isfinite(height):
+                    continue
+                offsets.append((di, dj, float(height)))
+        if not offsets:
+            return lift
+        padded = np.full((rows + 2 * reach, cols + 2 * reach), -np.inf, dtype=np.float64)
+        padded[reach:reach + rows, reach:reach + cols] = floor
+        for di, dj, height in offsets:
+            shifted = padded[reach + di:reach + di + rows, reach + dj:reach + dj + cols]
+            np.maximum(lift, shifted - height - floor, out=lift)
+        return lift
+
+    def axis_grid(self, tool: Any) -> NDArray[np.float64]:
+        """区域栅格上的**刀轴高度场**：刀心放在格心时，刀尖不扎进底面的最低 Z。
+
+        ``axis = 底面高度 + 防过切抬升``。它是这一层"能不能切"和"该切到多高"的唯一
+        依据：水平底面时等于底面的常数高度（与引入高度场之前完全一致）。
+        """
+
+        if self.axis_grid_cache is not None:
+            return self.axis_grid_cache
+        grid = self.floor_grid() + self.lift_grid(tool)
+        self.axis_grid_cache = grid
+        return grid
+
+    def axis_z_at(self, x: NDArray[np.float64] | float, y: NDArray[np.float64] | float,
+                  tool: Any) -> NDArray[np.float64]:
+        """任意 (x, y) 处不过切的刀轴高度（栅格形式，取周边四格的**最大值**）。
+
+        刀位点通常落在格点上，周边四格的足迹并集覆盖该点的足迹圆，取最大值因此偏保守
+        （宁可多留一点台阶，也不扎进底面）。
+        """
+
+        px = np.asarray(x, dtype=np.float64)
+        py = np.asarray(y, dtype=np.float64)
+        if self.is_flat_floor or self.inside.size == 0:
+            return np.asarray(self.floor_z_at(px, py), dtype=np.float64)
+        grid = self.axis_grid(tool)
+        rows, cols = grid.shape
+        fi = np.clip((px - self.bounds[0]) / self.cell_mm - 0.5, 0.0, float(rows - 1))
+        fj = np.clip((py - self.bounds[1]) / self.cell_mm - 0.5, 0.0, float(cols - 1))
+        i0 = np.floor(fi).astype(np.int64)
+        j0 = np.floor(fj).astype(np.int64)
+        i1 = np.minimum(i0 + 1, rows - 1)
+        j1 = np.minimum(j0 + 1, cols - 1)
+        return np.maximum(np.maximum(grid[i0, j0], grid[i1, j0]),
+                          np.maximum(grid[i0, j1], grid[i1, j1]))
+
+    def deepest_axis_z(self, tool: Any, mask: NDArray[np.bool_] | None = None) -> float:
+        """``mask`` 范围内刀轴能落到的**最低**高度（斜/曲面底面的真实加工底）。
+
+        不能直接用 :attr:`floor_z`：刀尖要贴住底面还得再抬一个 ``required_lift``，
+        于是 ``floor_z`` 对倾斜底面永远够不着——按它分层，最底下几层会被判成
+        "区域为空"整层跳过，底面留下整整一层甚至几毫米的残料。
+        """
+
+        return self._axis_extreme(tool, mask, np.min)
+
+    def highest_axis_z(self, tool: Any, mask: NDArray[np.bool_] | None = None) -> float:
+        """``mask`` 范围内刀轴高度的**最高**值（决定第一层够不够高）。"""
+
+        return self._axis_extreme(tool, mask, np.max)
+
+    def _axis_extreme(self, tool: Any, mask: NDArray[np.bool_] | None,
+                      reduce_fn: Any) -> float:
+        if self.is_flat_floor:
+            return float(self.floor_z)
+        grid = self.axis_grid(tool)
+        active = self.inside if mask is None else (mask & self.inside)
+        if active.shape != grid.shape or not bool(active.any()):
+            return float(self.floor_z)
+        values = grid[active]
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            return float(self.floor_z)
+        return float(reduce_fn(values))
+
+    def level_mask(self, level_z: float, tool: Any,
+                   mask: NDArray[np.bool_] | None = None) -> NDArray[np.bool_]:
+        """这一层**还能切**的区域。
+
+        判据是"刀轴放在这里、刀尖贴住该点底面"时，刀体不会扎进底面：
+
+            axis(x, y) = floor(x, y) + lift(∇floor) ≤ level_z
+
+        水平底面时抬升为 0、底面高度是常数，于是这一条对本层没有约束（等价于老行为）；
+        斜面/曲面时层高降到某处底面之下，掩码会自然把那一块裁掉，
+        否则刀会在层高上平着切过去、把高处的底面切掉。
+        """
+
+        if self.is_flat_floor:
+            return self.inside if mask is None else mask
+        allowed = self.axis_grid(tool) <= float(level_z) + 1e-9
+        if mask is not None:
+            allowed = allowed & mask
+        # 与"刀心可行区域"求交：层高落到某处底面之下时被裁掉，而刀具半径/余量
+        # 本来就要留出的那圈边距不能因此丢掉。
+        return self.offset_mask(0.0) & allowed
+
+    def deepest_floor_z(self) -> float:
+        """**加工区域内**的底面最低点（斜底/曲底的最低处）。
+
+        不能直接用高度场的全局最小值：高度场为了插值完整，范围比区域大一圈，
+        倾斜面在区域之外会继续往下走，取全局最小值会把加工深度算大。
+        也不能用 :meth:`floor_grid` —— 它对区域外的值做了夹取，用在"区域内最低点"
+        上会把结果压在区域最低值上、反而算不准。这里直接对区域内单元求值。
+        """
+
+        if self.inside.size and self.inside.any():
+            rows, cols = np.nonzero(self.inside)
+            xs = self.bounds[0] + (rows + 0.5) * self.cell_mm
+            ys = self.bounds[1] + (cols + 0.5) * self.cell_mm
+            values = np.asarray(self.floor_z_at(xs, ys), dtype=np.float64)
+            if values.size and np.isfinite(values).any():
+                return float(np.nanmin(values))
+        return float(self.floor_z)
 
     @property
     def area_mm2(self) -> float:
@@ -144,6 +373,7 @@ class MachiningRegion:
             "area_mm2": round(self.area_mm2, 3),
             "cell_mm": round(self.cell_mm, 4),
             "grid": list(self.shape),
+            "floor": self.floor.describe(),
             "notes": list(self.notes),
         }
 
@@ -239,25 +469,32 @@ class MachiningRegion:
 
 # ------------------------------------------------------------------ 构造
 def region_from_face(part: PartModel, face_id: int, *, cell_mm: float = DEFAULT_CELL_MM,
-                     ceiling_z: float | None = None) -> MachiningRegion:
-    """由选中的平面面构造加工区域。
+                     ceiling_z: float | None = None,
+                     require_horizontal: bool = False) -> MachiningRegion:
+    """由选中的面构造加工区域。
 
-    ``ceiling_z`` 是这一层加工的**起始高度**（毛坯顶面或上一层的底），
-    ``floor_z`` 取自面本身的平面方程。两者之差就是这一道工序要切除的深度：
+    ``ceiling_z`` 是这一层加工的**起始高度**（毛坯顶面或上一层的底）。两者之差就是
+    这一道工序要切除的深度：
 
     - 平面铣顶面时，ceiling 取毛坯顶面，于是深度 = 毛坯余量；
     - 型腔铣腔底时，ceiling 取毛坯顶面，深度 = 从毛坯顶到腔底的整段深度。
 
     不传 ``ceiling_z`` 时退回零件顶面，此时平面铣的深度为 0（只做一刀光面）。
+
+    **底面可以是斜面或曲面**：加工区域始终是 XY 平面上的栅格（外轮廓 + 岛屿 + 距离场），
+    但底面高度不再是常数，而是随位置变化的
+    :class:`~toolpath_lab.cam.floor_field.FloorField`。这样"区域运算"仍是一套成熟的
+    2.5D 逻辑，而刀轴 Z 可以逐点跟随实际面形。
+    ``require_horizontal=True`` 时恢复老行为（只接受水平面），平面铣用它。
+
+    底面类型与范围都交给 :func:`~toolpath_lab.cam.floor_field.floor_field_from_face` 判定：
+    曲面底在 STEP 里常被离散成几十个小平面片，只看选中那一片的平面方程会把整张底面
+    当成一个小斜面。
     """
 
     record = part.face(int(face_id))
     if record is None:
         raise PlanningError(f"找不到序号为 {face_id} 的面")
-    if not record.is_planar:
-        raise PlanningError(f"面 #{face_id} 不是平面（{record.surface_kind}），暂不支持加工")
-    if record.plane is None:
-        raise PlanningError(f"面 #{face_id} 缺少平面方程")
 
     normal = np.asarray(record.normal, dtype=np.float64)
     if normal[2] <= 0.0:
@@ -265,14 +502,14 @@ def region_from_face(part: PartModel, face_id: int, *, cell_mm: float = DEFAULT_
             f"面 #{face_id} 的法向不朝上（{tuple(round(float(v), 3) for v in normal)}），"
             "请在三维视图中选择朝上的加工面"
         )
-    # BUG-003 修：先前对斜面也放行，但 floor_z 取的是平面方程的常数项 d=n·atan(r00)，
-    # 仅当 n=(0,0,1) 时它才是 Z；任意倾斜面（nz<1）下 d 与高度无关 → 深度计算错误。
-    # 2.5D 平面铣/型腔铣仅支持朝上的水平面，曲面工序请走 surface_strategy。
-    if normal[2] < 1.0 - 1e-3:
-        raise PlanningError(
-            f"面 #{face_id} 不是近水平面（nz={normal[2]:.4f}），"
-            "平面铣/型腔铣仅支持朝上的水平面；倾斜面请改用曲面工序"
-        )
+    if require_horizontal:
+        if not record.is_planar or record.plane is None:
+            raise PlanningError(f"面 #{face_id} 不是平面（{record.surface_kind}），暂不支持加工")
+        if normal[2] < 1.0 - 1e-3:
+            raise PlanningError(
+                f"面 #{face_id} 不是近水平面（nz={normal[2]:.4f}），"
+                "平面铣只支持朝上的水平面；倾斜面请改用型腔铣"
+            )
 
     loops_2d: list[NDArray[np.float64]] = []
     for loop in record.loops:
@@ -292,36 +529,77 @@ def region_from_face(part: PartModel, face_id: int, *, cell_mm: float = DEFAULT_
     islands = tuple(_ensure_ccw(loop)[::-1] for index, loop in enumerate(loops_2d)
                     if index != outer_index and areas[index] > 1e-6)
 
-    floor_z = float(record.plane[3])
+    floor, outline, islands, inside_mask = resolve_floor_surface(
+        part, face_id, outline, islands, cell_mm=cell_mm)
     start_z = float(part.bounds.z_max if ceiling_z is None else ceiling_z)
+    # floor_z 只是"最深处的参考值"：斜面/曲面时底面的最低点就是加工目标高度，
+    # 所以先建区域、再用区域内实际取到的底面高度修正它（build_region 里会再做一次）。
+    floor_z = float(floor.z_min)
     if start_z < floor_z:
         start_z = floor_z
 
-    return build_region(outline, islands, top_z=start_z, floor_z=floor_z, cell_mm=cell_mm)
+    region = build_region(outline, islands, top_z=start_z, floor_z=floor_z, cell_mm=cell_mm,
+                          floor=floor, inside_mask=inside_mask)
+    region.floor_z = region.deepest_floor_z()
+    return region
 
 
 def planar_features(part: PartModel) -> list[dict[str, Any]]:
-    """可用于加工的平面面清单（供前端做特征树与快速选择）。"""
+    """可用于加工的面清单（供前端做特征树与快速选择）。
+
+    除了平面面，**朝上的曲面**（圆柱/圆锥/B 样条……）也列进来并标记为可加工：
+    型腔铣现在支持斜面与曲面底，前端得能把它们选出来。
+    每项都带 ``machinable_kinds``，界面据此禁用不支持的加工类型。
+    """
 
     result: list[dict[str, Any]] = []
     for feature in part.features:
-        if not feature.get("planar"):
+        normal = np.asarray(feature.get("normal") or (0.0, 0.0, 1.0), dtype=np.float64)
+        planar = bool(feature.get("planar"))
+        if not planar:
+            item = dict(feature)
+            # 朝上的曲面可以作为型腔底面；朝下的（零件底部）排除
+            item["machinable"] = bool(normal[2] > 0.05)
+            item["role"] = "曲面（可作型腔底）" if item["machinable"] else "曲面（朝下）"
+            item["machinable_kinds"] = ["pocket_mill", "contour_mill"] \
+                if item["machinable"] else []
+            item["floor_capable"] = bool(item["machinable"])
+            result.append(item)
             continue
-        normal = feature["normal"]
         item = dict(feature)
-        item["machinable"] = bool(normal[2] > 0.0)
+        upward = bool(normal[2] > 0.0)
+        level = bool(normal[2] > 0.999)
+        item["machinable"] = upward
         item["role"] = (
-            "顶面/台阶面" if normal[2] > 0.999
+            "顶面/台阶面" if level
             else ("侧面" if abs(normal[2]) < 0.001 else "斜面")
         )
+        kinds: list[str] = []
+        if upward:
+            # 平面铣要求水平面；型腔铣与轮廓铣斜面/曲面都行
+            kinds.append("pocket_mill")
+            kinds.append("contour_mill")
+            if level:
+                kinds.append("face_mill")
+        item["machinable_kinds"] = kinds
+        item["floor_capable"] = bool(upward)
         result.append(item)
     return result
 
 
 def build_region(outline: NDArray[np.float64], islands: Sequence[NDArray[np.float64]] = (),
-                 *, top_z: float, floor_z: float, cell_mm: float = DEFAULT_CELL_MM
-                 ) -> MachiningRegion:
-    """由外轮廓与岛屿建栅格、算距离场。"""
+                 *, top_z: float, floor_z: float, cell_mm: float = DEFAULT_CELL_MM,
+                 floor: FloorField | None = None,
+                 inside_mask: NDArray[np.bool_] | None = None) -> MachiningRegion:
+    """由外轮廓与岛屿建栅格、算距离场。
+
+    ``floor`` 是加工底面的高度场：不传时按常数 ``floor_z`` 建一张水平底面，
+    行为与引入高度场之前完全一致。
+
+    ``inside_mask`` 是"已经在同一张栅格上算好的实心掩码"：曲面型腔的底轮廓由
+    底面三角面片光栅化得到（退化面片拼出来的轮廓用多边形拼不准），走这条路进来时
+    就直接用它当内部区域，并把它的边界当作距离场的轮廓。
+    """
 
     x_min = float(outline[:, 0].min())
     x_max = float(outline[:, 0].max())
@@ -354,6 +632,11 @@ def build_region(outline: NDArray[np.float64], islands: Sequence[NDArray[np.floa
     for island in islands:
         if island.shape[0] >= 3:
             inside &= ~_rasterize(island, grid_x, grid_y)
+    if inside_mask is not None and inside_mask.shape == inside.shape:
+        inside = inside_mask
+        outline = _outline_from_mask(mask=inside, bounds=(x_min, y_min, x_max, y_max),
+                                     spacing=spacing, fallback=outline)
+        islands = ()
 
     # 到轮廓的距离：外轮廓与所有岛屿取最小，直接对原始多边形求，没有阶梯误差
     distance = _distance_to_contour(inside, np.asarray(outline, dtype=np.float64),
@@ -385,8 +668,83 @@ def build_region(outline: NDArray[np.float64], islands: Sequence[NDArray[np.floa
         cell_mm=spacing,
         inside=inside,
         distance=distance,
+        floor=constant_floor(floor_z) if floor is None else floor,
         notes=notes,
     )
+
+
+def _mask_from_triangles(positions: NDArray[np.float64], triangles: NDArray[np.int64],
+                         x_min: float, y_min: float, spacing: float,
+                         shape: tuple[int, int]) -> NDArray[np.bool_]:
+    """把一组三角面片在 XY 上光栅化成掩码（底面轮廓的"证据"）。"""
+
+    rows, cols = shape
+    mask = np.zeros((rows, cols), dtype=bool)
+    if triangles.size == 0:
+        return mask
+    xs = x_min + (np.arange(rows) + 0.5) * spacing
+    ys = y_min + (np.arange(cols) + 0.5) * spacing
+    corners = positions[triangles]
+    for index in range(int(triangles.shape[0])):
+        triangle = corners[index]
+        x_lo = int(max(0, np.floor((triangle[:, 0].min() - x_min) / spacing - 0.5)))
+        x_hi = int(min(rows - 1, np.ceil((triangle[:, 0].max() - x_min) / spacing - 0.5)))
+        y_lo = int(max(0, np.floor((triangle[:, 1].min() - y_min) / spacing - 0.5)))
+        y_hi = int(min(cols - 1, np.ceil((triangle[:, 1].max() - y_min) / spacing - 0.5)))
+        if x_hi < x_lo or y_hi < y_lo:
+            continue
+        block_x, block_y = np.meshgrid(xs[x_lo:x_hi + 1], ys[y_lo:y_hi + 1], indexing="ij")
+        a, b, c = triangle[0], triangle[1], triangle[2]
+        denominator = ((b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]))
+        if abs(float(denominator)) < 1e-12:
+            continue
+        wa = ((b[1] - c[1]) * (block_x - c[0]) + (c[0] - b[0]) * (block_y - c[1])) / denominator
+        wb = ((c[1] - a[1]) * (block_x - c[0]) + (a[0] - c[0]) * (block_y - c[1])) / denominator
+        wc = 1.0 - wa - wb
+        mask[x_lo:x_hi + 1, y_lo:y_hi + 1] |= ((wa >= -1e-9) & (wb >= -1e-9) & (wc >= -1e-9))
+    return mask
+
+
+def _outline_from_mask(mask: NDArray[np.bool_], bounds: tuple[float, float, float, float],
+                       spacing: float, fallback: NDArray[np.float64]) -> NDArray[np.float64]:
+    """从掩码里取**面积最大**的那条边界环当外轮廓（孔洞不进外轮廓）。"""
+
+    x0, y0 = bounds[0], bounds[1]
+    best: NDArray[np.float64] | None = None
+    best_area = 0.0
+    for pixels in _trace_mask_boundaries(mask):
+        if len(pixels) < 4:
+            continue
+        points = np.asarray([(x0 + i * spacing, y0 + j * spacing) for i, j in pixels],
+                            dtype=np.float64)
+        polygon = _simplify(points, spacing * 0.35)
+        if polygon.shape[0] < 3:
+            continue
+        area = abs(_polygon_area(polygon))
+        if area > best_area:
+            best_area = area
+            best = polygon
+    if best is None:  # pragma: no cover - 掩码为空时退回调用方的轮廓
+        return np.asarray(fallback, dtype=np.float64)
+    return _ensure_ccw(best)
+
+
+def resolve_floor_surface(part: PartModel, face_id: int,
+                          outline: NDArray[np.float64],
+                          islands: Sequence[NDArray[np.float64]] = (),
+                          *, cell_mm: float = DEFAULT_CELL_MM):
+    """底面模型：高度场 + 由底面三角面片推出来的加工轮廓。
+
+    返回 ``(floor, outline, islands, inside_mask)``。``inside_mask`` 只有"底面被切成
+    很多小平面片、选中那一片的边界环不足以代表整块底面"时才不是 None ——
+    这时轮廓由面片光栅化后跟踪边界得到（曲面型腔的底面就是这种情形）。
+    """
+
+    from toolpath_lab.cam.floor_field import floor_surface_from_face
+
+    surface = floor_surface_from_face(part, face_id, cell_mm=cell_mm,
+                                      outline=outline, islands=islands)
+    return surface.floor, surface.outline, surface.islands, surface.inside_mask
 
 
 def _rasterize(polygon: NDArray[np.float64], grid_x: NDArray[np.float64],
@@ -439,19 +797,29 @@ def _distance_to_contour(inside: NDArray[np.bool_], polygon: NDArray[np.float64]
 
 
 def offset_outline_polygons(region: MachiningRegion, offset_mm: float,
-                            *, min_area_mm2: float = 1.0) -> list[NDArray[np.float64]]:
+                            *, min_area_mm2: float = 1.0,
+                            mask: NDArray[np.bool_] | None = None
+                            ) -> list[NDArray[np.float64]]:
     """把等距区域的边界提取成多边形（用于精修轮廓、环切与界面显示）。
 
     实现方式：对等距掩码做 **Moore 邻域边界跟踪**。距离场是栅格量，等值线天然呈阶梯状，
     直接上 marching squares 会得到互不相接的碎线段；而"取等距掩码、跟踪它的边界"
     得到的是闭合环，且每环恰好一条，正好就是环切需要的形状。
+
+    ``mask`` 用来限定"这一层还能切的区域"（斜面/曲面时层高以上的部分会被裁掉）：
+    给了它就把等距掩码与它求交，环只出现在两者都允许的地方。
     """
 
-    mask = region.offset_mask(offset_mm)
-    if not mask.any():
+    active = region.offset_mask(offset_mm)
+    if mask is not None:
+        if mask.shape != active.shape:  # pragma: no cover - 调用方保证同栅格
+            mask = None
+        else:
+            active = active & mask
+    if not active.any():
         return []
     result: list[NDArray[np.float64]] = []
-    for pixels in _trace_mask_boundaries(mask):
+    for pixels in _trace_mask_boundaries(active):
         if len(pixels) < 4:
             continue
         # BUG-002 修：_trace_mask_boundaries 返回的是角点格 (i, j) 而非单元中心，
@@ -470,132 +838,76 @@ def offset_outline_polygons(region: MachiningRegion, offset_mm: float,
     return result
 
 
-_MOORE = ((-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1))
+#: 实心格的四条边对应的有向偏移：沿边走时**实心格在左侧**，于是
+#: 外轮廓逆时针、孔洞顺时针，接链时每个顶点只有一个自然后继。
+_BOUNDARY_STEPS: tuple[tuple[int, int], ...] = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
-def _build_corner_table() -> dict[int, tuple[tuple[int, int], ...]]:
-    """按"实心格在左"的规则，为一个 2×2 单元生成 16 种状态的有向边界。
+def _boundary_edge_selections(mask: NDArray[np.bool_]) -> tuple[NDArray[np.bool_], ...]:
+    """四条有向边界边的选择掩码（向量化，一次性筛出全部边界）。
 
-    直接按几何推导，而不是手写 16 行——手写极易把角的顺序弄反，而这类错误在大网格上
-    表现为"轮廓接不上"，很难定位。方向约定：沿边走时实心格在左侧，于是
-    "下边 0→1、右边 2→1、上边 2→3、左边 3→0"。
-    """
+    掩码单元 ``(i, j)`` 覆盖角点 ``(i, j)…(i+1, j+1)``。对每个角点 ``(I, J)``，
+    它的四条邻边分别隔开两对单元；"实心格在左"的约定把每条边归属唯一确定：
 
-    # 位顺序: bit0=(0,0), bit1=(1,0), bit2=(1,1), bit3=(0,1)
-    table: dict[int, tuple[tuple[int, int], ...]] = {}
-    for state in range(16):
-        solid = [bool(state >> bit & 1) for bit in range(4)]
+    ==================  =====================  ==========================
+    边（方向）          左侧实心格              触发条件
+    ==================  =====================  ==========================
+    ``(I,J)→(I+1,J)``   ``cell(I, J)``         ``cell(I,J)`` 实心、``cell(I,J-1)`` 空
+    ``(I,J)→(I-1,J)``   ``cell(I-1, J-1)``     ``cell(I-1,J-1)`` 实心、``cell(I-1,J)`` 空
+    ``(I,J)→(I,J+1)``   ``cell(I-1, J)``       ``cell(I-1,J)`` 实心、``cell(I,J)`` 空
+    ``(I,J)→(I,J-1)``   ``cell(I, J-1)``       ``cell(I,J-1)`` 实心、``cell(I-1,J-1)`` 空
+    ==================  =====================  ==========================
 
-        def at(i: int, j: int) -> bool:
-            if i < 0 or j < 0 or i > 1 or j > 1:
-                return False
-            return solid[i + 2 * j]
-
-        edges: list[tuple[int, int]] = []
-        if solid[0]:
-            if not at(0, -1):  # 下边暴露
-                edges.append((0, 1))
-            if not at(1, 0):   # 右边暴露
-                edges.append((2, 1))
-            if not at(1, 1):   # 上边暴露
-                edges.append((2, 3))
-            if not at(-1, 0):  # 左边暴露
-                edges.append((3, 0))
-        if solid[1]:
-            if not at(1, -1):
-                edges.append((1, 2))
-            if not at(2, 0):
-                edges.append((3, 2))
-            if not at(2, 1):
-                edges.append((3, 0))
-            if not at(0, 0):
-                edges.append((0, 1))
-        if solid[2]:
-            if not at(1, 0):
-                edges.append((2, 3))
-            if not at(2, 1):
-                edges.append((0, 3))
-            if not at(2, 2):
-                edges.append((0, 1))
-            if not at(1, 1):
-                edges.append((1, 2))
-        if solid[3]:
-            if not at(0, 1):
-                edges.append((3, 0))
-            if not at(1, 1):
-                edges.append((1, 0))
-            if not at(1, 2):
-                edges.append((1, 2))
-            if not at(0, 0):
-                edges.append((2, 0))
-        table[state] = tuple(edges)
-    return table
-
-
-_CORNER_TABLE: dict[int, tuple[tuple[int, int], ...]] = _build_corner_table()
-
-
-def _trace_mask_boundaries(mask: NDArray[np.bool_]) -> list[list[tuple[int, int]]]:
-    """由栅格掩码构造闭合边界环（按行"行程"拼接，坐标为格点坐标）。
-
-    关键点是**按相邻行的覆盖把每条行程切成若干段**：被上一行完全盖住的部分是内部，
-    暴露的部分才产生上边界；下边界同理。整条行程只有"全盖"或"全露"两种状态的想法
-    是错的——部分覆盖（行的两端同时进出）正是孔洞与窄缝出现的地方，切分之后每条边界
-    线段都是整齐的格点对，接链必然闭合。
+    这四条与逐行程拼边是**同一个边集**，只是这里一次性用 numpy 算出来：
+    复杂度是 O(格点数) 的向量运算 + O(周长) 的 Python 接链，而逐行程实现是
+    O(实心格数) 的纯 Python 循环（大掩码上慢两个数量级）。
     """
 
     rows, cols = mask.shape
-    runs_by_row: list[list[tuple[int, int]]] = []
-    for i in range(rows):
-        row = mask[i]
-        if not row.any():
-            runs_by_row.append([])
+    padded = np.zeros((rows + 2, cols + 2), dtype=bool)
+    padded[1:-1, 1:-1] = mask
+    here = padded[1:, 1:]          # cell(I, J)
+    left = padded[1:, :-1]         # cell(I, J-1)
+    above = padded[:-1, 1:]        # cell(I-1, J)
+    corner = padded[:-1, :-1]      # cell(I-1, J-1)
+    return (
+        here & ~left,
+        corner & ~above,
+        above & ~here,
+        left & ~corner,
+    )
+
+
+def _trace_mask_boundaries(mask: NDArray[np.bool_]) -> list[list[tuple[int, int]]]:
+    """由栅格掩码构造闭合边界环（坐标为**格点**坐标，不是单元中心）。
+
+    先把四种朝向的边界边一次性向量化筛出来，再按端点接链成环：方向统一为
+    "实心格在左"，因此外轮廓逆时针、孔洞顺时针，互不串环，接链本身就是一次哈希查找。
+    """
+
+    rows, cols = mask.shape
+    if rows == 0 or cols == 0 or not bool(np.asarray(mask, dtype=bool).any()):
+        return []
+    starts: list[NDArray[np.int64]] = []
+    ends: list[NDArray[np.int64]] = []
+    for selection, (di, dj) in zip(_boundary_edge_selections(mask), _BOUNDARY_STEPS):
+        index = np.argwhere(selection)
+        if index.size == 0:
             continue
-        padded = np.concatenate(([False], row, [False]))
-        changes = np.flatnonzero(padded[1:] != padded[:-1])
-        runs_by_row.append([(int(changes[k]), int(changes[k + 1] - 1))
-                            for k in range(0, changes.size, 2)])
+        starts.append(index)
+        ends.append(index + np.array([di, dj], dtype=np.int64))
+    if not starts:
+        return []
+    first = np.vstack(starts)
+    second = np.vstack(ends)
 
     successors: dict[tuple[int, int], list[tuple[int, int]]] = {}
     predecessors: dict[tuple[int, int], list[tuple[int, int]]] = {}
-
-    def add_edge(start: tuple[int, int], end: tuple[int, int]) -> None:
+    for k in range(int(first.shape[0])):
+        start = (int(first[k, 0]), int(first[k, 1]))
+        end = (int(second[k, 0]), int(second[k, 1]))
         successors.setdefault(start, []).append(end)
         predecessors.setdefault(end, []).append(start)
-
-    def covered(row_runs: list[tuple[int, int]], column: int) -> bool:
-        return any(j0 <= column <= j1 for j0, j1 in row_runs)
-
-    for i in range(rows):
-        above = runs_by_row[i - 1] if i > 0 else []
-        below = runs_by_row[i + 1] if i + 1 < rows else []
-        for j0, j1 in runs_by_row[i]:
-            # 上边界：上方未覆盖的连续列段（方向自右向左）
-            start: int | None = None
-            for column in range(j0, j1 + 1):
-                exposed = not covered(above, column)
-                if exposed and start is None:
-                    start = column
-                if start is not None and (not exposed or column == j1):
-                    end = column if exposed else column - 1
-                    add_edge((i, end + 1), (i, start))
-                    start = None
-            # 下边界：下方未覆盖的连续列段（方向自左向右）
-            start = None
-            for column in range(j0, j1 + 1):
-                exposed = not covered(below, column)
-                if exposed and start is None:
-                    start = column
-                if start is not None and (not exposed or column == j1):
-                    end = column if exposed else column - 1
-                    add_edge((i + 1, start), (i + 1, end + 1))
-                    start = None
-            # 左右竖边
-            if j0 == 0 or not mask[i, j0 - 1]:
-                add_edge((i, j0), (i + 1, j0))
-            if j1 + 1 >= cols or not mask[i, j1 + 1]:
-                add_edge((i + 1, j1 + 1), (i, j1 + 1))
-
     return _walk_edge_cycles(successors, predecessors)
 
 
@@ -648,14 +960,18 @@ def _prefer_turn(current: tuple[int, int], candidates: list[tuple[int, int]],
     用带符号转角（-180°~180°，顺时针为负）比较，而不是靠方向枚举猜顺序。
     在"外轮廓与孔洞共用一个格点"的地方，这个规则会让当前环继续贴着走，
     从而把孔洞留到后面单独成环。
+
+    对角的两个实心格共用一个格点时，该点有两条入边与两条出边，入边必须**确定**地取
+    （取坐标最小的那条）——否则环的拆分会随字典插入顺序变化，同一份掩码在不同调用
+    顺序下给出不同的环，刀路就不再可复现。
     """
 
     if len(candidates) == 1:
         return candidates[0]
     incoming = predecessors.get(current, [])
     if not incoming:
-        return candidates[0]
-    previous = incoming[0]
+        return min(candidates)
+    previous = min(incoming)
     in_angle = np.arctan2(current[1] - previous[1], current[0] - previous[0])
 
     def turn(candidate: tuple[int, int]) -> float:
@@ -672,20 +988,16 @@ def _simplify(points: NDArray[np.float64], tolerance: float) -> NDArray[np.float
 
     if points.shape[0] < 3:
         return points
-    keep: list[NDArray[np.float64]] = []
-    count = points.shape[0]
-    for index in range(count):
-        previous = points[(index - 1) % count]
-        current = points[index]
-        following = points[(index + 1) % count]
-        first = current - previous
-        second = following - current
-        cross = abs(float(first[0] * second[1] - first[1] * second[0]))
-        if cross > tolerance * max(float(np.linalg.norm(first)), 1e-9):
-            keep.append(current)
-    if len(keep) < 3:
+    previous = np.roll(points, 1, axis=0)
+    following = np.roll(points, -1, axis=0)
+    first = points - previous
+    second = following - points
+    cross = np.abs(first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0])
+    length = np.maximum(np.hypot(first[:, 0], first[:, 1]), 1e-9)
+    keep = cross > tolerance * length
+    if int(keep.sum()) < 3:
         return points
-    return np.asarray(keep, dtype=np.float64)
+    return np.asarray(points[keep], dtype=np.float64)
 
 
 def _marching_squares(field: NDArray[np.float64], level: float,

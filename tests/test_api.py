@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from toolpath_lab.server.app import ToolpathLabHandler, create_server
+from toolpath_lab.server.multipart import parse_multipart
 
 
 class CliTests(unittest.TestCase):
@@ -78,6 +79,70 @@ class ApiTestCase(unittest.TestCase):
     def plan(self, payload):
         status, body, headers = self.post("/api/plan", payload)
         return status, json.loads(body), headers
+
+
+class MultipartBoundaryTests(unittest.TestCase):
+    """multipart 解析对**浏览器风格**的 boundary 也必须成立。
+
+    Chromium 生成的 boundary 是 ``----WebKitFormBoundaryXXXXXXXX`` —— 它自己就带连字符，
+    于是 ``body.split("--" + boundary)`` 之后，第一段内容正好以 ``--`` 开头。
+    旧实现用 ``chunk.startswith("--")`` 判断结束标记，把唯一的部件当成结束标记丢掉，
+    整个上传返回"没有可用的部件"（400）。
+    """
+
+    QUOTE = '"'
+
+    def _body(self, boundary: str, content: bytes) -> bytes:
+        header = (
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name={self.QUOTE}file{self.QUOTE}"
+            f"; filename={self.QUOTE}model.step{self.QUOTE}\r\n"
+            "Content-Type: application/step\r\n\r\n"
+        ).encode("utf-8")
+        return header + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    def _check(self, boundary: str) -> None:
+        content = b"ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n"
+        parts = parse_multipart(self._body(boundary, content),
+                                f"multipart/form-data; boundary={boundary}")
+        self.assertIn("file", parts)
+        self.assertEqual(parts["file"].data, content)
+        self.assertEqual(parts["file"].filename, "model.step")
+
+    def test_browser_style_boundary_with_leading_dashes(self) -> None:
+        self._check("----WebKitFormBoundaryABC123xyz")
+
+    def test_plain_boundary_still_works(self) -> None:
+        self._check("----toolpathlabtest")
+
+    def test_short_boundary_still_works(self) -> None:
+        self._check("B")
+
+    def test_closing_marker_without_trailing_newline(self) -> None:
+        boundary = "----WebKitFormBoundaryNONEWLINE"
+        content = b"payload"
+        body = self._body(boundary, content).rstrip(b"\r\n")
+        parts = parse_multipart(body, f"multipart/form-data; boundary={boundary}")
+        self.assertEqual(parts["file"].data, content)
+
+    def test_two_fields_are_split_apart(self) -> None:
+        boundary = "----WebKitFormBoundaryTwoFields"
+        body = (
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name={self.QUOTE}payload{self.QUOTE}\r\n"
+            "Content-Type: application/json\r\n\r\n"
+            '{"name":"板件"}\r\n'
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name={self.QUOTE}file{self.QUOTE}"
+            f"; filename={self.QUOTE}model.step{self.QUOTE}\r\n"
+            "Content-Type: application/step\r\n\r\n"
+            "file-bytes\r\n"
+            f"--{boundary}--\r\n"
+        ).encode("utf-8")
+        parts = parse_multipart(body, f"multipart/form-data; boundary={boundary}")
+        self.assertEqual(sorted(parts), ["file", "payload"])
+        self.assertEqual(parts["file"].data, b"file-bytes")
+        self.assertIn("板件", parts["payload"].text)
 
 
 class StaticTests(ApiTestCase):

@@ -1041,6 +1041,18 @@ function renderStats(result) {
     ["切削长度", (stats.cut_length_mm || 0).toFixed(1) + " mm"],
     ["预计工时", seconds(stats.estimated_time_s || 0)],
   ];
+  // 斜面/曲面型腔：把底面几何摊开写清楚，否则用户只看到"刀路在动"，
+  // 不知道刀轴 Z 是跟着底面走的、也不知道最深到哪。
+  const floor = (result.regions && result.regions.length)
+    ? (result.regions[0].floor || null) : null;
+  if (floor && !floor.flat) {
+    const isCurved = floor.planar === false;
+    rows.push([
+      isCurved ? "底面（曲面）" : "底面（斜面）",
+      `坡度 ≤ ${(floor.max_slope_deg ?? 0).toFixed(1)}°`,
+    ]);
+    rows.push(["底面高度", `${(floor.z_min ?? 0).toFixed(2)} ~ ${(floor.z_max ?? 0).toFixed(2)} mm`]);
+  }
   if (result.statistics && result.statistics.volume_deviation !== undefined
       && result.statistics.volume_deviation !== null) {
     rows.push(["体积偏差", (result.statistics.volume_deviation * 100).toFixed(1) + " %"]);
