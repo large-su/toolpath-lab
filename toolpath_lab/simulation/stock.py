@@ -56,18 +56,22 @@ def stock_spec_for(
     tool: Tool,
     *,
     resolution_mm: float = 2.0,
-    top_allowance_mm: float = 8.0,
-    bottom_allowance_mm: float = 10.0,
+    top_allowance_mm: float = 1.0,
+    bottom_allowance_mm: float = 4.0,
 ) -> StockSpec:
-    """根据当前区域、曲面和刀具生成教学仿真的毛坯规格。"""
+    """根据当前区域、曲面和刀具生成教学仿真的毛坯规格。
+
+    毛坯顶部只保留一层薄余量，避免五轴倾斜刀具在曲面起伏上方
+    穿入过厚的透明毛坯；底部余量用于显示切削后的承托层。
+    """
 
     if resolution_mm <= 0:
         raise ValueError("毛坯网格分辨率必须为正")
     boundary = region.boundary()
     bounds = polygon_bounds(boundary)
     lower, upper = surface.height_bounds()
-    top = upper + max(float(top_allowance_mm), tool.radius_mm)
-    bottom = lower - max(float(bottom_allowance_mm), tool.radius_mm)
+    top = upper + max(float(top_allowance_mm), 0.5)
+    bottom = lower - max(float(bottom_allowance_mm), 0.5)
     return StockSpec(
         bounds_mm=(tuple(bounds[0]), tuple(bounds[1])),
         boundary=tuple((float(point[0]), float(point[1])) for point in boundary),

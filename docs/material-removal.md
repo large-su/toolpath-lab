@@ -11,6 +11,7 @@
 ## 实现方法
 
 - `simulation/stock.py` 定义 `StockSpec` 和 `StockState`，用规则 XY 网格记录毛坯顶部高度。
+- 仿真毛坯顶部默认只高出曲面 1 mm、底部保留 4 mm 承托层，减少五轴倾斜时刀身与透明毛坯的视觉穿插；需要更厚毛坯时仍可通过 `stock_spec_for` 的余量参数扩展。
 - `/api/plan` 返回毛坯边界、初始高度、底部高度、网格分辨率和刀具半径等元数据。
 - `web/js/stock.js` 只在开关开启时建立对应高度场，并根据 `Timeline.kind_runs` 跳过快移和连接段。
 - `viewport.js` 将高度场更新为 three.js 网格，显示当前剩余材料；关闭开关后释放网格和状态。
