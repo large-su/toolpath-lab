@@ -16,6 +16,7 @@ from toolpath_lab.core.path import Move, MoveKind, Toolpath
 from toolpath_lab.core.stock import build_stock
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.simulation.cut_sim import (
+    _slice_polyline,
     build_height_field,
     cut_move,
     simulate_toolpath,
@@ -90,6 +91,21 @@ class CutTests(unittest.TestCase):
         self.assertEqual(removed, 0.0)
         self.assertAlmostEqual(float(self.field.height.min()), self.stock.bounds.z_max, places=6)
 
+    def test_vertical_plunge_cuts_to_the_bottom_in_one_call(self) -> None:
+        """竖直下刀（XY 不动、Z 下降）一次调用就切到最低点。
+
+        斜插/竖直段上"取最近点的 Z"是不够的：最近点是起点 Z，一次调用只会削掉
+        顶皮。新公式取"格点在刀盘内的参数区间两端 Z 的最小值"，整段切才成立
+        （帧边界拆段整段扫掠的前提）。
+        """
+
+        removed = cut_move(self.field, self._move([[0.0, 0.0, 41.0], [0.0, 0.0, 30.0]]), 5.0)
+        self.assertGreater(removed, 0.0)
+        center = self.field.height[self.field.height.shape[0] // 2,
+                                    self.field.height.shape[1] // 2]
+        # 30 是目标高度，0.02 是 _cut_segment 的安全容差
+        self.assertAlmostEqual(float(center), 30.0 - 0.02, delta=0.1)
+
     def test_tool_radius_controls_the_groove_width(self) -> None:
         field = build_height_field(self.stock, cell_mm=0.5)
         # 沿 Y 方向切一刀，然后在它中点的 X 列上量"被切掉的格数"= 槽宽
@@ -121,6 +137,29 @@ class CutTests(unittest.TestCase):
         self.assertEqual(mesh.positions.shape[1], 3)
         # 网格的最高点不应超过毛坯顶面
         self.assertLessEqual(float(mesh.positions[:, 2].max()), self.stock.bounds.z_max + 1e-6)
+
+
+    def test_splitting_a_segment_does_not_change_the_cut(self) -> None:
+        """按任意方式拆段切削，结果与整段切一致（帧边界拆段的正确性根基）。
+
+        切削按帧边界拆成整段一次扫掠，靠的是"格点取到线段的最近点插值 Z"与拆分
+        无关：拆开后每格的最近点仍落在某一小段上，Z 相同、取 min 也相同。
+        这里用**斜插**（Z 沿线性下降）验证——它正是投影参数会随拆分变化的情形。
+        生产代码用的 `_slice_polyline` 也一并被覆盖。
+        """
+
+        whole = build_height_field(self.stock, cell_mm=0.5)
+        split = build_height_field(self.stock, cell_mm=0.5)
+        points = np.array([[-30.0, 0.0, 40.0], [30.0, 0.0, 25.0]])
+        cut_move(whole, self._move(points), 5.0)
+        cumulative = np.array([float(np.linalg.norm(points[1] - points[0]))])
+        # 拆成 17 段不等间距（端点用插值），对应帧边界不落在折线顶点上的情况
+        for from_t, to_t in zip(np.linspace(0.0, 1.0, 18)[:-1],
+                                np.linspace(0.0, 1.0, 18)[1:]):
+            sub = _slice_polyline(points, cumulative,
+                                  from_t * cumulative[0], to_t * cumulative[0])
+            cut_move(split, self._move(sub), 5.0)
+        np.testing.assert_allclose(split.height, whole.height, atol=1e-9)
 
 
 class SimulationRunTests(unittest.TestCase):
@@ -184,6 +223,38 @@ class SimulationRunTests(unittest.TestCase):
         self.assertEqual(len(payload["height"]),
                          simulation.grid["rows"] * simulation.grid["cols"])
         self.assertIn("position", payload)
+
+    def test_frames_carry_the_mileage_anchor(self) -> None:
+        """帧要带刀路里程：前端播放靠它把"帧 ↔ 刀路子段"对齐做连续扫掠插值。
+
+        首帧在 0、末帧必须落在刀路终点（否则拖到底显示不出最终状态）、
+        中间严格单调递增（拖动/回放定位的二分查找依赖它）。
+        """
+
+        simulation = simulate_toolpath(self.result.toolpath, self.stock, tool_radius=5.0,
+                                      cell_mm=0.6, max_frames=40)
+        miles = [frame.travelled_mm for frame in simulation.frames]
+        self.assertEqual(miles[0], 0.0)
+        self.assertAlmostEqual(miles[-1], self.result.toolpath.total_length_mm, delta=1e-6)
+        self.assertEqual(miles, sorted(miles))
+        self.assertTrue(all(b - a > 0.0 for a, b in zip(miles, miles[1:])),
+                        "相邻帧的里程必须严格递增")
+        self.assertIn("travelled_mm", simulation.frames[-1].to_payload(with_height=False))
+
+    def test_max_frames_is_a_hard_cap(self) -> None:
+        """``max_frames`` 是**上限**：含终点帧在内不能超。
+
+        采样网格原来按 ``总长 / max_frames`` 铺，末尾再补一帧刀路终点，
+        于是导出恒为 ``max_frames + 1`` —— "上限"语义被突破，payload 也白涨一份。
+        """
+
+        for cap in (2, 3, 8, 40):
+            simulation = simulate_toolpath(self.result.toolpath, self.stock, tool_radius=5.0,
+                                          cell_mm=0.6, max_frames=cap)
+            self.assertLessEqual(len(simulation.frames), cap,
+                                 f"max_frames={cap} 被突破：{len(simulation.frames)}")
+            self.assertAlmostEqual(simulation.frames[-1].travelled_mm,
+                                   self.result.toolpath.total_length_mm, delta=1e-6)
 
     def test_sample_spacing_controls_the_frame_count(self) -> None:
         coarse = simulate_toolpath(self.result.toolpath, self.stock, tool_radius=5.0,

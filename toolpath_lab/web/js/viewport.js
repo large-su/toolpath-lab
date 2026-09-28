@@ -94,8 +94,8 @@ export class Viewport {
       // showStock / showSimulation 由工具栏按钮控制；仿真时毛坯默认让位给 simulationGroup
       showStock: true, showSimulation: true,
     };
-    // 每帧预构建的 mesh 缓存；setSimulationFrame 只切 visible，不重建几何
-    this.simulationMeshes = [];
+    // 当前仿真显示状态（几何只建一次，帧是 height 快照；见 _buildSimulationGeometry）
+    this._sim = null;
     this.bounds = null;
     this.activeView = "fit";
     this._lastTraversed = -1;
@@ -705,100 +705,66 @@ export class Viewport {
     this._updateBounds();
   }
 
-  /** 仿真结果：按帧的当前高度图绘制"被切过的毛坯"。 */
-  setSimulationMesh(payload, height) {
-    this._clear(this.simulationGroup);
-    if (!payload || !height) return;
-    const geometry = this._heightFieldGeometry(payload, height);
-    if (!geometry) return;
-    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-      color: COLORS.stockCut, metalness: 0.35, roughness: 0.7,
-      side: THREE.DoubleSide, flatShading: false,
-    }));
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    this.simulationGroup.add(mesh);
-    this._applyVisibility();
-    this._updateBounds();
-  }
-
   /**
-   * 一次性为所有仿真帧构建三角网格并缓存到 simulationGroup。
+   * 仿真结果的显示载体：**单个 mesh**，几何拓扑只建一次。
    *
-   * 之前的做法是帧切换时调用 setSimulationMesh → 重建整个 BufferGeometry。
-   * 12.7 万顶点的网格上每帧 30~50ms，慢放时每帧都重建 → 画面卡顿。
-   * 改为：首次仿真时把所有帧的 mesh 一次性建好，每帧切 visibility（O(1)）。
-   * 内存代价：N 帧 × ~25 万 int + ~38 万 float ≈ 几十 MB，浏览器可承受。
+   * 旧实现为每一帧预建一个完整 BufferGeometry（180 帧 × 30~50ms ≈ 5~9s 主线程
+   * 阻塞 + 几百 MB 显存），帧切换只切 visible。现在顶点的 x/y 与三角形索引都与
+   * 高度无关（高度只写进 position 的 z 分量），所以：
+   *
+   * - 预计算 = 建一次几何 + 记下"每个顶点的 z 来自哪个格子"；
+   * - 换锚帧 = 从帧快照重写全部 z（几万格的线性写入，1~2ms）；
+   * - 帧间播放 = ``sweepSimulation`` 按刀路段局部压低 z（材料被刀连续扫走），
+   *   动画步长因此与仿真帧数解耦——帧再少也不卡。
+   *
+   * 顶面顶点的法线用高度场的解析梯度（中心差分）；侧壁顶点不共享顶面顶点、
+   * 且墙面垂直，法线恒为朝外的水平方向，一次算好不再动。
    */
-  precomputeSimulationFrames(grid, frames) {
-    this._clear(this.simulationGroup);
-    this.simulationMeshes = [];
-    if (!grid || !frames || frames.length === 0) {
-      this._applyVisibility();
-      return;
-    }
-    const material = new THREE.MeshStandardMaterial({
-      color: COLORS.stockCut, metalness: 0.35, roughness: 0.7,
-      side: THREE.DoubleSide, flatShading: false,
-    });
-    for (let index = 0; index < frames.length; index += 1) {
-      const height = frames[index].height;
-      const geometry = this._heightFieldGeometry(grid, height);
-      if (!geometry) continue;
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.visible = false;
-      this.simulationGroup.add(mesh);
-      this.simulationMeshes.push(mesh);
-    }
-    if (this.simulationMeshes.length > 0) {
-      this.simulationMeshes[0].visible = true;
-    }
-    this._applyVisibility();
-    this._updateBounds();
-  }
-
-  /**
-   * 按帧索引显示对应帧的 mesh（其他帧隐藏）。
-   * 调用前必须先 precomputeSimulationFrames。
-   */
-  setSimulationFrame(index) {
-    if (!this.simulationMeshes || this.simulationMeshes.length === 0) return;
-    const clamped = Math.max(0, Math.min(index | 0, this.simulationMeshes.length - 1));
-    for (let i = 0; i < this.simulationMeshes.length; i += 1) {
-      this.simulationMeshes[i].visible = i === clamped;
-    }
-  }
-
-  clearSimulation() {
-    this._clear(this.simulationGroup);
-    this._applyVisibility();
-    this._updateBounds();
-  }
-
-  /** 把高度图（一维数组 + grid 描述）变成三角网格。 */
-  _heightFieldGeometry(grid, height) {
-    const { rows, cols, x0, y0, cell_mm: cell, bottom_z: bottom, active } = grid;
+  _buildSimulationGeometry(grid, height) {
+    const { rows, cols, x0, y0, cell_mm: cell, bottom_z: bottom, active } = grid || {};
     if (!rows || !cols || !height || height.length < rows * cols) return null;
+    const isActive = (i, j) => !active || active[i * cols + j] !== false;
+    const hAt = (i, j) => height[i * cols + j];
+    const topNormal = (i, j) => {
+      const im = Math.max(i - 1, 0), ip = Math.min(i + 1, rows - 1);
+      const jm = Math.max(j - 1, 0), jp = Math.min(j + 1, cols - 1);
+      const dhx = (hAt(ip, j) - hAt(im, j)) / ((ip - im) * cell);
+      const dhy = (hAt(i, jp) - hAt(i, jm)) / ((jp - jm) * cell);
+      const len = Math.sqrt(dhx * dhx + dhy * dhy + 1);
+      return [-dhx / len, -dhy / len, 1 / len];
+    };
 
     const index = new Int32Array(rows * cols).fill(-1);
+    const cellTop = new Int32Array(rows * cols).fill(-1);
+    const cellVerts = new Array(rows * cols);
     const vertices = [];
-    const isActive = (i, j) => {
-      const cellIndex = i * cols + j;
-      return !active || active[cellIndex] !== false;
+    const normals = [];
+    // 每个顶点的 z 动态来源：-1 = 固定底面；>=0 = 该格高度（2 还要 max 底面，
+    // 用于"切穿的格子"——墙退化成零高度，不会翻到料下面去）。
+    const zCell = [];
+    const zKind = [];
+    const push = (x, y, z, nx, ny, nz, owner, kind) => {
+      vertices.push(x, y, z);
+      normals.push(nx, ny, nz);
+      zCell.push(owner);
+      zKind.push(kind);
+      return vertices.length / 3 - 1;
     };
+
+    // 顶面（格中心一个顶点）
     for (let i = 0; i < rows; i += 1) {
       for (let j = 0; j < cols; j += 1) {
         if (!isActive(i, j)) continue;
         const cellIndex = i * cols + j;
-        index[cellIndex] = vertices.length / 3;
-        vertices.push(x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell, height[cellIndex]);
+        const normal = topNormal(i, j);
+        index[cellIndex] = push(x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell,
+                                hAt(i, j), normal[0], normal[1], normal[2], cellIndex, 1);
+        cellTop[cellIndex] = index[cellIndex];
+        cellVerts[cellIndex] = [index[cellIndex]];
       }
     }
 
     const indices = [];
-    // 顶面
     for (let i = 0; i < rows - 1; i += 1) {
       for (let j = 0; j < cols - 1; j += 1) {
         const a = index[i * cols + j];
@@ -809,9 +775,12 @@ export class Viewport {
         indices.push(a, b, c, a, c, d);
       }
     }
-    // 侧壁：只在"相邻格缺失"或"位于毛坯外边界"处向下拉到毛坯底面，
-    // 这样切出来的料看起来是实心的，而不是一张悬空的纸。
-    const neighbours = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+
+    // 侧壁：与旧实现同一布局（每面墙独立的四个角点），法线朝外的水平方向。
+    // 角点逆时针绕行（左下→右下→右上→左上），因此 side 0..3 依次是 -Y、+X、+Y、-X
+    // 四条边——邻居方向必须跟着转，否则边界格会把墙画到隔壁那条边上（错位 90°）。
+    const neighbours = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    const wallNormals = [[0, -1], [1, 0], [0, 1], [-1, 0]];
     for (let i = 0; i < rows; i += 1) {
       for (let j = 0; j < cols; j += 1) {
         if (!isActive(i, j)) continue;
@@ -819,21 +788,26 @@ export class Viewport {
         if (top < 0) continue;
         const x = x0 + (i + 0.5) * cell;
         const y = y0 + (j + 0.5) * cell;
-        const z = height[i * cols + j];
-        if (z <= bottom + 1e-6) continue;
+        const z = hAt(i, j);
         const half = cell * 0.5;
         const corners = [
           [x - half, y - half], [x + half, y - half], [x + half, y + half], [x - half, y + half],
         ];
+        const cellIndex = i * cols + j;
         for (let side = 0; side < 4; side += 1) {
           const ni = i + neighbours[side][0];
           const nj = j + neighbours[side][1];
           const inside = ni >= 0 && nj >= 0 && ni < rows && nj < cols && isActive(ni, nj);
-          if (inside && height[ni * cols + nj] > bottom + 1e-6) continue;
+          if (inside) continue;
           const [ax, ay] = corners[side];
           const [bx, by] = corners[(side + 1) % 4];
+          const [nx, ny] = wallNormals[side];
           const base = vertices.length / 3;
-          vertices.push(ax, ay, z, bx, by, z, bx, by, bottom, ax, ay, bottom);
+          const topA = push(ax, ay, z, nx, ny, 0, cellIndex, 2);
+          const topB = push(bx, by, z, nx, ny, 0, cellIndex, 2);
+          push(ax, ay, bottom, nx, ny, 0, -1, 0);
+          push(bx, by, bottom, nx, ny, 0, -1, 0);
+          cellVerts[cellIndex].push(topA, topB);
           indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
         }
       }
@@ -841,11 +815,230 @@ export class Viewport {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+    geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
     geometry.setIndex(indices);
-    geometry.computeVertexNormals();
-    return geometry;
+    return {
+      geometry,
+      topCell: cellTop,
+      cellVerts,
+      zCell: Int32Array.from(zCell),
+      zKind: Uint8Array.from(zKind),
+    };
   }
 
+  /** 把显示状态（height 数组）整体写进几何 z 并重算顶面法线。 */
+  _writeSimulationZ() {
+    const sim = this._sim;
+    if (!sim) return;
+    const position = sim.geometry.attributes.position.array;
+    const normal = sim.geometry.attributes.normal.array;
+    const { rows, cols, cell_mm: cell, bottom_z: bottom } = sim.grid;
+    const height = sim.height;
+    for (let v = 0; v < sim.zCell.length; v += 1) {
+      const owner = sim.zCell[v];
+      if (owner < 0) continue;
+      const h = height[owner];
+      position[v * 3 + 2] = sim.zKind[v] === 2 ? Math.max(h, bottom) : h;
+    }
+    for (let i = 0; i < rows; i += 1) {
+      for (let j = 0; j < cols; j += 1) {
+        const v = sim.topCell[i * cols + j];
+        if (v < 0) continue;
+        const im = Math.max(i - 1, 0), ip = Math.min(i + 1, rows - 1);
+        const jm = Math.max(j - 1, 0), jp = Math.min(j + 1, cols - 1);
+        const dhx = (height[ip * cols + j] - height[im * cols + j]) / ((ip - im) * cell);
+        const dhy = (height[i * cols + jp] - height[i * cols + jm]) / ((jp - jm) * cell);
+        const len = Math.sqrt(dhx * dhx + dhy * dhy + 1);
+        normal[v * 3] = -dhx / len;
+        normal[v * 3 + 1] = -dhy / len;
+        normal[v * 3 + 2] = 1 / len;
+      }
+    }
+    sim.geometry.attributes.position.needsUpdate = true;
+    sim.geometry.attributes.normal.needsUpdate = true;
+  }
+
+  /** 只更新被格子集合触碰的顶点 z（±1 邻域的顶面法线）。 */
+  _touchSimulationCells(cells) {
+    const sim = this._sim;
+    if (!sim) return;
+    const { rows, cols, cell_mm: cell, bottom_z: bottom } = sim.grid;
+    const height = sim.height;
+    const position = sim.geometry.attributes.position.array;
+    const normal = sim.geometry.attributes.normal.array;
+    const normalCells = new Set();
+    for (const cellIndex of cells) {
+      const h = height[cellIndex];
+      for (const v of sim.cellVerts[cellIndex]) {
+        position[v * 3 + 2] = sim.zKind[v] === 2 ? Math.max(h, bottom) : h;
+      }
+      const i = Math.floor(cellIndex / cols), j = cellIndex % cols;
+      for (let di = -1; di <= 1; di += 1) {
+        for (let dj = -1; dj <= 1; dj += 1) {
+          const ni = i + di, nj = j + dj;
+          if (ni < 0 || nj < 0 || ni >= rows || nj >= cols) continue;
+          const v = sim.topCell[ni * cols + nj];
+          if (v >= 0) normalCells.add(ni * cols + nj);
+        }
+      }
+    }
+    for (const cellIndex of normalCells) {
+      const i = Math.floor(cellIndex / cols), j = cellIndex % cols;
+      const v = sim.topCell[cellIndex];
+      const im = Math.max(i - 1, 0), ip = Math.min(i + 1, rows - 1);
+      const jm = Math.max(j - 1, 0), jp = Math.min(j + 1, cols - 1);
+      const dhx = (height[ip * cols + j] - height[im * cols + j]) / ((ip - im) * cell);
+      const dhy = (height[i * cols + jp] - height[i * cols + jm]) / ((jp - jm) * cell);
+      const len = Math.sqrt(dhx * dhx + dhy * dhy + 1);
+      normal[v * 3] = -dhx / len;
+      normal[v * 3 + 1] = -dhy / len;
+      normal[v * 3 + 2] = 1 / len;
+    }
+    sim.geometry.attributes.position.needsUpdate = true;
+    sim.geometry.attributes.normal.needsUpdate = true;
+  }
+
+  /**
+   * 帧间连续切削：把刀在 ``[上一位置, 当前位置]`` 扫过的材料压低。
+   *
+   * segments = [[ax, ay, az, bx, by, bz, rapid], …]，公式与后端
+   * ``cut_sim._cut_segment`` 逐字一致（盘内参数区间两端 Z 取最小、容差 0.02），
+   * 因此扫掠到锚帧边界时与下一帧快照严丝合缝，切换无跳变。
+   * 只有被扫到的格子会被写（bbox 内的几十~几千格），单帧成本微秒级。
+   */
+  sweepSimulation(segments, radius) {
+    const sim = this._sim;
+    if (!sim || !segments || !segments.length) return;
+    const { rows, cols, x0, y0, cell_mm: cell, active } = sim.grid;
+    const height = sim.height;
+    const tolerance = 0.02;
+    const radiusSquared = radius * radius;
+    const touched = new Set();
+    for (const [ax, ay, az, bx, by, bz, rapid] of segments) {
+      if (rapid) continue;
+      const dx = bx - ax, dy = by - ay, dz = bz - az;
+      const aSquared = dx * dx + dy * dy;
+      const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - radius - x0) / cell));
+      const i1 = Math.min(rows - 1, Math.ceil((Math.max(ax, bx) + radius - x0) / cell));
+      const j0 = Math.max(0, Math.floor((Math.min(ay, by) - radius - y0) / cell));
+      const j1 = Math.min(cols - 1, Math.ceil((Math.max(ay, by) + radius - y0) / cell));
+      for (let i = i0; i <= i1; i += 1) {
+        const gx = x0 + (i + 0.5) * cell;
+        for (let j = j0; j <= j1; j += 1) {
+          const cellIndex = i * cols + j;
+          if (active && active[cellIndex] === false) continue;
+          const gy = y0 + (j + 0.5) * cell;
+          const px = gx - ax, py = gy - ay;
+          let floorZ;
+          if (aSquared <= 1e-12) {
+            if (px * px + py * py > radiusSquared) continue;
+            floorZ = Math.min(az, bz);
+          } else {
+            const bCoef = -2 * (px * dx + py * dy);
+            const cCoef = px * px + py * py;
+            const discriminant = bCoef * bCoef - 4 * aSquared * (cCoef - radiusSquared);
+            if (discriminant < 0) continue;
+            const root = Math.sqrt(discriminant);
+            const tEnter = (-bCoef - root) / (2 * aSquared);
+            const tExit = (-bCoef + root) / (2 * aSquared);
+            if (tEnter > 1 || tExit < 0) continue;
+            const clamp = (t) => Math.min(Math.max(t, 0), 1);
+            floorZ = Math.min(az + dz * clamp(tEnter), az + dz * clamp(tExit));
+          }
+          floorZ -= tolerance;
+          if (height[cellIndex] > floorZ) {
+            height[cellIndex] = floorZ;
+            touched.add(cellIndex);
+          }
+        }
+      }
+    }
+    if (touched.size) this._touchSimulationCells(touched);
+  }
+
+  /** 仿真结果：显示某一个高度状态（单帧版，冒烟自检与外部脚本用）。 */
+  setSimulationMesh(payload, height) {
+    this._clear(this.simulationGroup);
+    this._sim = null;
+    if (!payload || !height) return;
+    const built = this._buildSimulationGeometry(payload, height);
+    if (!built) return;
+    const mesh = new THREE.Mesh(built.geometry, this._simulationMaterial());
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.simulationGroup.add(mesh);
+    this._sim = Object.assign({
+      grid: payload,
+      height: Float64Array.from(height),
+      mesh,
+    }, built);
+    this._applyVisibility();
+    this._updateBounds();
+  }
+
+  _simulationMaterial() {
+    return new THREE.MeshStandardMaterial({
+      color: COLORS.stockCut, metalness: 0.35, roughness: 0.7,
+      side: THREE.DoubleSide, flatShading: false,
+    });
+  }
+
+  /**
+   * 载入仿真帧：几何只建一次，``frames`` 只是 height 快照表。
+   *
+   * 旧实现逐帧预建 mesh（见方法开头的说明）；现在换帧走 ``setSimulationFrame``
+   * 的全量 z 重写（1~2ms），帧间播放走 ``sweepSimulation`` 局部扫掠。
+   */
+  precomputeSimulationFrames(grid, frames) {
+    this._clear(this.simulationGroup);
+    this._sim = null;
+    if (!grid || !frames || frames.length === 0) {
+      this._applyVisibility();
+      return;
+    }
+    const first = frames[0].height;
+    const built = this._buildSimulationGeometry(grid, first);
+    if (!built) {
+      this._applyVisibility();
+      return;
+    }
+    const mesh = new THREE.Mesh(built.geometry, this._simulationMaterial());
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.simulationGroup.add(mesh);
+    this._sim = Object.assign({
+      grid,
+      frames,
+      frameIndex: 0,
+      height: Float64Array.from(first),
+      mesh,
+    }, built);
+    this._applyVisibility();
+    this._updateBounds();
+  }
+
+  /**
+   * 重置到锚帧 ``index``：从帧快照恢复整张显示状态。
+   * 前一锚帧上"预扫"过的内容在这里被干净覆盖，所以任意拖动都从快照重扫。
+   */
+  setSimulationFrame(index) {
+    const sim = this._sim;
+    if (!sim || !sim.frames || sim.frames.length === 0) return;
+    const clamped = Math.max(0, Math.min(index | 0, sim.frames.length - 1));
+    const source = sim.frames[clamped].height;
+    if (source) sim.height.set(source);
+    sim.frameIndex = clamped;
+    this._writeSimulationZ();
+  }
+
+  clearSimulation() {
+    this._clear(this.simulationGroup);
+    this._sim = null;
+    this._applyVisibility();
+    this._updateBounds();
+  }
+
+  /** 把服务端 mesh payload（positions/indices）变成三角网格。 */
   _meshFromPayload(payload, color, metalness) {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute(

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import traceback
@@ -62,6 +63,8 @@ CONTENT_TYPES: dict[str, str] = {
 
 #: 工程数据目录：默认放在用户数据目录，可用环境变量覆盖（测试与打包用）。
 DEFAULT_DATA_DIR_NAME = "ToolpathLab"
+#: 响应体达到这个字节数才考虑 gzip：小响应压缩省不了几个字节，白耗 CPU。
+GZIP_MIN_BYTES = 64 * 1024
 
 
 def default_data_dir() -> Path:
@@ -669,17 +672,29 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         return payload
 
     def _send(self, response: Response) -> None:
+        body = response.body
+        # 大 JSON（仿真帧、刀路）是回环传输的大头：压缩比 4~8 倍，浏览器的 fetch
+        # 会按 Content-Encoding 自动解压，前端一行都不用改。只在客户端声明支持时
+        # 才压——Python 标准库 urllib 不发 Accept-Encoding，测试与脚本拿到的仍是明文。
+        encoded = (
+            len(body) >= GZIP_MIN_BYTES
+            and "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+        )
+        if encoded:
+            body = gzip.compress(body, compresslevel=1)
         self.send_response(response.status)
         self.send_header("Content-Type", response.content_type)
-        self.send_header("Content-Length", str(len(response.body)))
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if encoded:
+            self.send_header("Content-Encoding", "gzip")
         if response.filename:
             self.send_header(
                 "Content-Disposition", f'attachment; filename="{response.filename}"'
             )
         self.end_headers()
-        if response.body:
-            self.wfile.write(response.body)
+        if body:
+            self.wfile.write(body)
 
 
 def _face_ids(payload: Mapping[str, Any]) -> list[int]:

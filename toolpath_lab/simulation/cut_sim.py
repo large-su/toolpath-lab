@@ -5,15 +5,17 @@
 
 1. 把毛坯离散成规则栅格，初始高度 = 毛坯顶面；
 2. 刀具沿刀路运动时，凡在刀具半径内的格点，其高度被"削"到刀底高度（平底刀端面切除）；
-3. 每个采样时刻导出一份可渲染的三角网格，前端按帧播放即得到切削动画。
+3. 按固定里程网格导出若干份高度快照（帧），前端在锚帧之间沿刀路继续扫掠插值播放。
 
 为什么是 Z-Map 而不是布尔体素：铣削总是从上往下切，同一个 XY 位置只关心"还剩多高"，
 Z-Map 的精度与内存都比体素好一个数量级，而且网格导出几乎免费（一块 regular grid）。
 
 精度与性能
 ----------
-格距默认 0.5 mm（可配），毛坯 100×80 mm 时约 3 万个格点，一次全刀路仿真在普通桌面机上
-是百毫秒级。导出帧数按"每帧至少切除一定体积"或固定步长控制，默认 ≤ 120 帧。
+格距默认 0.5 mm（可配），毛坯 100×80 mm 时约 3 万个格点。切削按帧边界整段扫掠
+（一次调用覆盖一整段刀路，公式是解析解），一次全刀路仿真在普通桌面机上是百毫秒级；
+帧的里程 ``travelled_mm`` 随帧导出，前端用它把"帧 ↔ 刀路子段"对齐。
+导出帧数按固定里程步长控制，默认 ≤ 180 帧。
 """
 
 from __future__ import annotations
@@ -39,8 +41,9 @@ MAX_CELLS = 4_000_000
 #: 默认导出帧数上限。180 ≈ 总长 / 12.5 mm/帧（典型零件），能让慢放也看得清，
 #: 又不至于把 JSON payload 撑到几十 MB。改大要在 server 端按 cell 数限速。
 DEFAULT_MAX_FRAMES = 180
-#: 子步间距 = ``STEPS_CELL_RATIO × cell_mm``（mm）。0.5 让平底刀端面切除在长刀路上
-#: 不会出现"两帧之间跨过几条刀轨"的台阶感；代价是切除阶段耗时按平方增长。
+#: 帧间距下限 = ``STEPS_CELL_RATIO × cell_mm``（mm）。相邻帧至少要差半格，
+#: 否则前端看不出帧间区别、徒增 payload；切削本身按帧边界整段扫掠（没有子步），
+#: 这个下限只作用在导出帧的采样网格上。
 STEPS_CELL_RATIO = 0.5
 #: 帧间最小里程（mm）。小于此值会让相邻帧差别 < cell，前端看不出区别，徒增 payload。
 MIN_SAMPLE_MM = 0.0
@@ -255,8 +258,9 @@ def _cut_segment(field: HeightField, a: NDArray[np.float64], b: NDArray[np.float
                  tool_radius: float, tolerance: float) -> float:
     """切削一条直线段：把落在"刀轴轨迹胶囊体"内的格点高度压到刀底。
 
-    对格点 c，取它到线段的最远参数 t∈[0,1] 处的刀底高度作为切除高度，
-    这样倾斜下刀（斜插）也能正确处理。
+    对每个格点解出"它落在刀盘内的参数区间 t∈[0,1]"，切除高度取区间两端刀底 Z 的
+    最小值——平底刀沿斜线走时，格点在盘内那一段所经过的最低刀底才是它真正的切除
+    高度（竖直下刀取两端点最低值；Z 不变的水平段则退化为常数）。
     """
 
     spacing = field.cell_mm
@@ -278,31 +282,90 @@ def _cut_segment(field: HeightField, a: NDArray[np.float64], b: NDArray[np.float
     grid_x, grid_y = np.meshgrid(xs, ys, indexing="ij")
 
     dx, dy = float(b[0] - a[0]), float(b[1] - a[1])
+    dz = float(b[2]) - float(a[2])
     length_squared = dx * dx + dy * dy
     if length_squared <= 1e-12:
+        # XY 不动（竖直下刀 / 抬刀）：整段要么都在刀盘内要么都不在，
+        # 切削高度取两端点中较低的一个。按"起点 Z"切的话竖直下刀只会削掉顶皮。
         distance = np.hypot(grid_x - float(a[0]), grid_y - float(a[1]))
-        ratio = np.zeros_like(distance)
+        inside = distance <= radius
+        if not inside.any():
+            return 0.0
+        floor_z = min(float(a[2]), float(b[2]))
     else:
-        raw = ((grid_x - float(a[0])) * dx + (grid_y - float(a[1])) * dy) / length_squared
-        ratio = np.clip(raw, 0.0, 1.0)
-        distance = np.hypot(grid_x - (float(a[0]) + ratio * dx), grid_y - (float(a[1]) + ratio * dy))
-    inside = distance <= radius
-    if not inside.any():
-        return 0.0
+        # 解"格点落在刀盘内"的参数区间：|P − (A + t·D)|² ≤ R²（XY 平面），每格一个
+        # 二次不等式。平底刀的切削高度 = 区间两端 Z 的最小值（Z 沿 t 线性）——
+        # 旧写法取"最近点"的 Z，Z 有变化的斜插段上会切得偏浅（少切、留残料），
+        # 以前靠 0.25mm 逐子步调用才把它逼近出来；现在一次解析算完，整段切才成立。
+        px = grid_x - float(a[0])
+        py = grid_y - float(a[1])
+        b_coef = -2.0 * (px * dx + py * dy)
+        c_coef = px * px + py * py
+        discriminant = b_coef * b_coef - 4.0 * length_squared * (c_coef - radius * radius)
+        inside = discriminant >= 0.0
+        if not inside.any():
+            return 0.0
+        root = np.sqrt(np.maximum(discriminant, 0.0))
+        denominator = 2.0 * length_squared
+        t_enter = (-b_coef - root) / denominator
+        t_exit = (-b_coef + root) / denominator
+        # 区间要与 [0,1] 相交：格点在段端点外侧时整根落在 [0,1] 之外，
+        # 此时"最近点"是端点、距离已经大于 R，等价于不相交。
+        inside = inside & (t_enter <= 1.0) & (t_exit >= 0.0)
+        if not inside.any():
+            return 0.0
+        z_enter = float(a[2]) + dz * np.clip(t_enter, 0.0, 1.0)
+        z_exit = float(a[2]) + dz * np.clip(t_exit, 0.0, 1.0)
+        floor_z = np.minimum(z_enter, z_exit)
 
-    floor_z = (float(a[2]) + (float(b[2]) - float(a[2])) * ratio) - tolerance
+    floor_z = floor_z - tolerance
     block = field.height[i0:i1 + 1, j0:j1 + 1]
     active = field.active[i0:i1 + 1, j0:j1 + 1]
     cuttable = inside & active & (block > floor_z)
     if not cuttable.any():
         return 0.0
     before = np.clip(block[cuttable] - field.bottom_z, 0.0, None).sum()
-    block[cuttable] = floor_z[cuttable]
+    block[cuttable] = floor_z[cuttable] if isinstance(floor_z, np.ndarray) else floor_z
     after = np.clip(block[cuttable] - field.bottom_z, 0.0, None).sum()
     return float(before - after) * spacing * spacing
 
 
 # ------------------------------------------------------------------ 仿真
+def _point_on_polyline(points: NDArray[np.float64], cumulative: NDArray[np.float64],
+                       distance: float
+                       ) -> tuple[NDArray[np.float64], int, float]:
+    """折线上里程 ``distance`` 处的插值点，返回 (点, 所在段下标, 段内比例)。"""
+
+    index = int(np.searchsorted(cumulative, distance, side="left"))
+    index = min(index, points.shape[0] - 2)
+    before = float(cumulative[index - 1]) if index > 0 else 0.0
+    segment_length = float(cumulative[index] - before)
+    local = 0.0 if segment_length <= 1e-12 else (distance - before) / segment_length
+    local = float(np.clip(local, 0.0, 1.0))
+    start = points[index]
+    end = points[index + 1]
+    return start + (end - start) * local, index, local
+
+
+def _slice_polyline(points: NDArray[np.float64], cumulative: NDArray[np.float64],
+                    from_mm: float, to_mm: float) -> NDArray[np.float64]:
+    """折线在里程 ``[from_mm, to_mm]`` 上的子折线（两端线性插值，保留途经顶点）。
+
+    切削按帧边界拆段时用：``_cut_segment`` 对任意折线段都是"刀轴胶囊体"的精确
+    扫掠（格点取到线段的最近点插值 Z），所以拆段切与整段切结果逐位一致——
+    拆分只是把 Python 调用次数从"总长 / 0.25mm 个子步"降到"帧数 + 段数"。
+    """
+
+    start, _, _ = _point_on_polyline(points, cumulative, from_mm)
+    end, _, _ = _point_on_polyline(points, cumulative, to_mm)
+    # points[i+1] 的里程是 cumulative[i]：内部顶点 points[1:-1] 对应 cumulative[:-1]
+    mask = (cumulative[:-1] > from_mm + 1e-9) & (cumulative[:-1] < to_mm - 1e-9)
+    interior = points[1:-1][mask]
+    if interior.shape[0] == 0:
+        return np.vstack([start, end])
+    return np.vstack([start, interior, end])
+
+
 @dataclass(slots=True)
 class SimulationFrame:
     """一帧仿真状态。"""
@@ -313,6 +376,9 @@ class SimulationFrame:
     removed_mm3: float
     #: 高度图（只在需要时附上，界面按需取用）
     height: NDArray[np.float64] | None = None
+    #: 帧处的刀路里程（mm）。前端播放时用它把"帧 ↔ 刀路子段"对齐：
+    #: 帧之间不再整段跳变，而是沿刀路做连续扫掠插值（见 web/js 播放器）。
+    travelled_mm: float = 0.0
 
     def to_payload(self, *, with_height: bool = True) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -320,9 +386,12 @@ class SimulationFrame:
             "move_index": self.move_index,
             "position": [round(float(value), 4) for value in self.position],
             "removed_mm3": round(self.removed_mm3, 2),
+            "travelled_mm": round(self.travelled_mm, 4),
         }
         if with_height and self.height is not None:
-            payload["height"] = [round(float(value), 3) for value in self.height.reshape(-1)]
+            # 向量化 round 再 tolist：逐格 round(float(v), 3) 的 Python 循环在
+            # 180 帧 × 几万格上要 2.7s，占了整个 /api/simulate 响应时间的四成。
+            payload["height"] = np.round(self.height, 3).reshape(-1).tolist()
         return payload
 
 
@@ -367,7 +436,8 @@ def simulate_toolpath(toolpath: Toolpath, stock: Stock, *, tool_radius: float,
                       ) -> SimulationResult:
     """按刀路做毛坯切除仿真，返回逐帧状态与最终毛坯。
 
-    ``sample_mm`` 为 0 时按"总长 / max_frames"自动决定采样步长；每帧都记录高度图，
+    ``sample_mm`` 为 0 时自动决定采样步长：网格按"总长 / (max_frames − 1)"铺开、
+    末尾再补一帧刀路终点，导出总数**不超过** ``max_frames``。每帧都记录高度图，
     因此界面可以播放、暂停、拖动到任意一帧。
     """
 
@@ -379,65 +449,77 @@ def simulate_toolpath(toolpath: Toolpath, stock: Stock, *, tool_radius: float,
     if sample_mm <= 0.0:
         frames_target = max(2, int(max_frames))
         sample_mm = max(toolpath.cell_hint() if hasattr(toolpath, "cell_hint") else 0.0, 0.0)
-        # 自动步长：以 cell 为下界，避免两帧落在同一格子上看不出区别
-        sample_mm = max(total_length / frames_target, STEPS_CELL_RATIO * cell_mm)
+        # 自动步长按 (max_frames − 1) 段铺网格：末尾还要补一帧刀路终点，
+        # 这样总数才不会突破 max_frames 这个"上限"；以 cell 为下界，
+        # 避免两帧落在同一格子上看不出区别。
+        sample_mm = max(total_length / (frames_target - 1), STEPS_CELL_RATIO * cell_mm)
     sample_mm = max(max(sample_mm, MIN_SAMPLE_MM), STEPS_CELL_RATIO * cell_mm)
 
     frames: list[SimulationFrame] = []
     removed_total = 0.0
     time_s = 0.0
     travelled = 0.0
-    next_frame_at = 0.0
     position: tuple[float, float, float] = (0.0, 0.0, 0.0)
     if field.height.size:
         position = (float(field.x0), float(field.y0), float(field.height.max()))
 
+    # 帧边界是固定里程网格 {0, sample, 2×sample, …}。切削按相邻边界拆成**整段**
+    # 一次扫掠：_cut_segment 的胶囊体公式取"格点到线段的最近点"插值 Z，与怎么拆段
+    # 无关（拆开后每格的最近点仍落在某一小段上，Z 相同再取 min 也相同）——
+    # 结果与旧版"0.25mm 逐子步切"一致，而 Python 层的循环次数从"总长 / 0.25mm"
+    # 降到"帧数 + 折线段数"，实测同一刀路 3.1s → 0.3s。
+    next_boundary = 0.0
+    last_move_index = 0
     for move_index, move in enumerate(toolpath.moves):
         points = np.asarray(move.points, dtype=np.float64)
         lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
         move_length = float(lengths.sum())
         if move_length <= 1e-12:
             continue
+        last_move_index = move_index
         feed = max(float(move.feed_mm_per_min), 1e-6)
-        # 子步间距 = 0.5 × cell_mm（STEPS_CELL_RATIO）：让切削更细，慢放时也看得清。
-        # 旧版用 cell_mm 在长刀路上会出现"两帧跨多条刀轨"的台阶。
-        steps = max(1, int(ceil(move_length / max(STEPS_CELL_RATIO * cell_mm, 0.025))))
-        segment_count = max(1, lengths.size)
-        for step in range(steps):
-            ratio = (step + 1) / steps
-            target = ratio * move_length
-            # 找到目标里程落在第几段，并在段内插值
-            cumulative = np.cumsum(lengths)
-            segment_index = int(np.searchsorted(cumulative, target, side="left"))
-            segment_index = min(segment_index, segment_count - 1)
-            before = float(cumulative[segment_index - 1]) if segment_index > 0 else 0.0
-            segment_length = float(lengths[segment_index])
-            local = 0.0 if segment_length <= 1e-12 else (target - before) / segment_length
-            local = float(np.clip(local, 0.0, 1.0))
-            start = points[segment_index]
-            end = points[segment_index + 1]
-            current = start + (end - start) * local
-            position = (float(current[0]), float(current[1]), float(current[2]))
+        cumulative = np.cumsum(lengths)
+        move_start = travelled
+        move_end = travelled + move_length
 
-            if move.kind is not MoveKind.RAPID:
-                previous = points[segment_index] if local > 0.0 else points[max(segment_index - 1, 0)]
-                segment = Move(move.kind, np.vstack([previous, current]), move.feed_mm_per_min)
-                removed_total += cut_move(field, segment, tool_radius)
+        # 落在本段运动里程内的帧边界（next_boundary 恒 > 上一段终点，
+        # 唯一等于 move_start 的情况是全局首帧 0，它属于本段）。
+        # move_end 恰在网格上时也不在这里收——留给下面的终点帧去补，避免重复。
+        boundaries: list[float] = []
+        probe = next_boundary
+        while probe <= move_end - 1e-9:
+            boundaries.append(probe)
+            probe += sample_mm
+        next_boundary = probe
 
-            # 子步是按**弧长参数化**切的（target = ratio * move_length），所以每一步
-            # 前进的距离就是 move_length / steps。这里原来写的是 segment_length / steps
-            # （当前折线段的长度），对"一条刀只有一个线段"的栅格刀路恰好相等，
-            # 但一条切削里塞了几百个点的曲面刀路会因此把里程算小两个数量级——
-            # 表现为"整个仿真只出 1 帧"，动画完全不动。
-            increment = move_length / steps
-            travelled += increment
-            time_s += increment / feed * 60.0
-            if travelled + 1e-9 >= next_frame_at:
+        previous = move_start
+        for index, boundary in enumerate([*boundaries, move_end]):
+            if boundary - previous > 1e-12:
+                sub = _slice_polyline(points, cumulative,
+                                      previous - move_start, boundary - move_start)
+                removed_total += cut_move(
+                    field, Move(move.kind, sub, move.feed_mm_per_min), tool_radius)
+            time_s += (boundary - previous) / feed * 60.0
+            previous = boundary
+            point, _, _ = _point_on_polyline(points, cumulative, boundary - move_start)
+            position = (float(point[0]), float(point[1]), float(point[2]))
+            if index < len(boundaries):
+                travelled = boundary
                 frames.append(SimulationFrame(
                     time_s=time_s, move_index=move_index, position=position,
                     removed_mm3=removed_total, height=field.height.copy(),
+                    travelled_mm=travelled,
                 ))
-                next_frame_at = travelled + sample_mm
+        travelled = move_end
+
+    # 终点帧：总里程不落在采样网格上时，最后一帧停在网格点而不是刀路终点，
+    # 拖到底就必须把剩余的最后一小段补上（否则"最终状态"没有对应的帧）。
+    if frames and frames[-1].travelled_mm < travelled - 1e-9:
+        frames.append(SimulationFrame(
+            time_s=time_s, move_index=last_move_index, position=position,
+            removed_mm3=removed_total, height=field.height.copy(),
+            travelled_mm=travelled,
+        ))
 
     if not frames:
         frames.append(SimulationFrame(

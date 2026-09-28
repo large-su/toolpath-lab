@@ -283,7 +283,7 @@ docs/          架构与扩展文档
 | 边界处理 | 刀路相对区域轮廓内缩一个刀具足迹半径 | `toolpath_lab/planning/raster.py` |
 | 每刀采样 | 两个端点（加工面为平面） | `toolpath_lab/planning/raster.py` |
 | CAM 栅格间距 | 0.4 mm（可按工序改） | `toolpath_lab/cam/boundary.py` |
-| 仿真格距 | 0.5 mm / 最多 120 帧 | `toolpath_lab/simulation/cut_sim.py` |
+| 仿真格距 | 0.5 mm / 最多 180 帧 | `toolpath_lab/simulation/cut_sim.py` |
 | STEP 体积上限 | 32 MB | `toolpath_lab/brep/model.py` |
 
 把它们改成可在界面上调整的参数，做法见 [docs/extending.md](docs/extending.md)。
@@ -315,7 +315,7 @@ docs/          架构与扩展文档
 python -m unittest discover -s tests
 ```
 
-462 项测试，覆盖几何裁剪、刀路模式与安全高度、时间参数化、G-code 导出、HTTP 接口与静态资源、
+468 项测试，覆盖几何裁剪、刀路模式与安全高度、时间参数化、G-code 导出、HTTP 接口与静态资源、
 BRep 读取与离散、Z 层剖切、2D 轮廓布尔与偏置、三维曲面刀路、加工区域与刀路正确性、
 毛坯切除仿真、刀具库（类型目录 / 参数归一 / 几何换算 / JSON 持久化 / 与工序打通）、
 工程持久化与 CAM 接口，

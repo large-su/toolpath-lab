@@ -224,6 +224,47 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(context.exception.code, 404)
 
 
+class GzipResponseTests(ApiTestCase):
+    """大 JSON 响应按客户端能力压缩：仿真帧 payload 是回环传输的大头。
+
+    Chromium 的 fetch 带 ``Accept-Encoding`` 并按 ``Content-Encoding`` 自动解压，
+    前端无感；Python 标准库 urllib 不发这个头，拿到的必须是明文——
+    测试与脚本都依赖这一点。
+    """
+
+    def _get_with_gzip(self, path: str):
+        request = urllib.request.Request(
+            self.base + path, headers={"Accept-Encoding": "gzip, deflate, br"}
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.read(), dict(response.headers)
+
+    def test_small_body_stays_plain_even_when_gzip_is_advertised(self) -> None:
+        """没到阈值不压缩：小响应省不了传输时间，只白耗 CPU。"""
+
+        status, body, headers = self._get_with_gzip("/api/health")
+        self.assertEqual(status, 200)
+        self.assertNotIn("Content-Encoding", headers)
+        self.assertTrue(json.loads(body))  # 仍是明文
+
+    def test_big_json_is_compressed_and_round_trips(self) -> None:
+        import gzip as gzip_module
+
+        from toolpath_lab.server import app as app_module
+
+        plain_status, plain_body, _ = self.get("/api/catalog")
+        original = app_module.GZIP_MIN_BYTES
+        app_module.GZIP_MIN_BYTES = 0  # 放行小响应，走压缩分支
+        try:
+            status, body, headers = self._get_with_gzip("/api/catalog")
+        finally:
+            app_module.GZIP_MIN_BYTES = original
+        self.assertEqual(status, plain_status)
+        self.assertEqual(headers.get("Content-Encoding"), "gzip")
+        self.assertLess(len(body), len(plain_body))  # 真的变小了
+        self.assertEqual(gzip_module.decompress(body), plain_body)
+
+
 class PlanTests(ApiTestCase):
     def test_minimal_request_uses_defaults(self) -> None:
         status, payload, _ = self.plan({})

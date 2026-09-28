@@ -357,8 +357,8 @@ function wireButtons() {
   dom.scrub.addEventListener("input", () => {
     scrubbing = true;
     if (mode === "cam") {
-      const total = cam.simulation ? cam.simulation.frames.length - 1 : 0;
-      seekSimulation(Math.round(Number(dom.scrub.value) * total));
+      // 进度条是"时间比例"而不是"帧序号"：帧间由扫掠补全，拖到哪就连续显示到哪
+      seekSimulationTime(Number(dom.scrub.value));
     } else {
       playback.seekProgress(Number(dom.scrub.value));
     }
@@ -1007,6 +1007,198 @@ async function persistController(values) {
 }
 
 // ------------------------------------------------------------------ 仿真
+//
+// 播放模型：**锚帧 + 帧间连续扫掠**。
+//
+// 旧做法按固定 12fps 逐帧切换（帧距可达几十 mm），慢放时刀具与材料一起跳，一卡一卡；
+// 想更细就得加帧，而每帧是一张全栅格高度图——帧数一多，后端计算/序列化、传输、前端
+// 预建网格的耗时全部线性上涨。
+//
+// 现在播放头是连续时间（每 rAF tick 推进），锚帧只是"快照重置点"：帧间多出来的时间
+// 由刀路本身补——刀具沿真实刀路按里程插值移动，材料在锚帧快照上按刀具扫过的刀路段
+// 实时压低（viewport.sweepSimulation，公式与后端切削逐字一致）。于是：
+//   - 动画步长 = 一帧渲染，与仿真帧数无关 → 慢放快放都连续；
+//   - 材料按真实扫掠渐进被切走，比"帧跳变"更贴近真机，质量不降反升；
+//   - 不需要为了流畅而加帧，计算时间反而变短。
+let simPath = null;               // 刀路里程索引（{moves, total}）
+let simClock = 0;                 // 播放头时间（s）
+let simAnchor = { index: -1, swept: 0 };  // 当前锚帧与已扫掠到的里程
+
+/** 把 toolpath payload 变成"里程 → 位置"索引：逐 move 记起点里程与段累计里程。 */
+function buildSimPath(toolpath) {
+  const moves = [];
+  let total = 0;
+  for (const move of (toolpath && toolpath.moves) || []) {
+    const points = move.points || [];
+    if (points.length < 2) continue;
+    const flat = new Float64Array(points.length * 3);
+    const cum = new Float64Array(points.length - 1);
+    let length = 0;
+    for (let k = 0; k < points.length; k += 1) {
+      flat[k * 3] = points[k][0];
+      flat[k * 3 + 1] = points[k][1];
+      flat[k * 3 + 2] = points[k][2];
+      if (k > 0) {
+        length += Math.hypot(flat[k * 3] - flat[(k - 1) * 3],
+          flat[k * 3 + 1] - flat[(k - 1) * 3 + 1],
+          flat[k * 3 + 2] - flat[(k - 1) * 3 + 2]);
+        cum[k - 1] = length;
+      }
+    }
+    moves.push({ kind: move.kind, points: flat, cum, start: total, length });
+    total += length;
+  }
+  return { moves, total };
+}
+
+/** 帧的里程（旧响应没有 travelled_mm 时按帧序号线性兜底）。 */
+function frameMiles(frames, index) {
+  const frame = frames[index];
+  if (frame && typeof frame.travelled_mm === "number") return frame.travelled_mm;
+  const total = simPath ? simPath.total : 0;
+  return frames.length > 1 ? (index / (frames.length - 1)) * total : 0;
+}
+
+/** 时刻 → 里程：在锚帧与下一帧之间线性插值（两端都由帧自带，锚帧边界上精确对齐）。 */
+function simMilesAt(frames, anchor, clock) {
+  const next = Math.min(anchor + 1, frames.length - 1);
+  const t0 = frames[anchor].time_s;
+  const t1 = frames[next].time_s;
+  const s0 = frameMiles(frames, anchor);
+  const s1 = frameMiles(frames, next);
+  if (next === anchor || t1 <= t0) return s0;
+  const ratio = Math.min(Math.max((clock - t0) / (t1 - t0), 0), 1);
+  return s0 + (s1 - s0) * ratio;
+}
+
+/** 里程 → 刀路位置（二分 move → 二分段 → 段内插值）。 */
+function simStateAt(path, miles) {
+  const moves = path.moves;
+  if (!moves.length) return { position: [0, 0, 0], kind: "cut" };
+  const s = Math.min(Math.max(miles, 0), path.total);
+  let low = 0;
+  let high = moves.length - 1;
+  while (low < high) {
+    const mid = (low + high + 1) >> 1;
+    if (moves[mid].start <= s) low = mid;
+    else high = mid - 1;
+  }
+  const move = moves[low];
+  const local = Math.min(Math.max(s - move.start, 0), move.length);
+  let a = 0;
+  let b = move.cum.length - 1;
+  while (a < b) {
+    const mid = (a + b) >> 1;
+    if (move.cum[mid] >= local) b = mid;
+    else a = mid + 1;
+  }
+  const segStart = a > 0 ? move.cum[a - 1] : 0;
+  const segLength = move.cum[a] - segStart;
+  const t = segLength > 1e-9 ? (local - segStart) / segLength : 0;
+  const p = move.points;
+  const i0 = a * 3;
+  const i1 = (a + 1) * 3;
+  return {
+    position: [p[i0] + (p[i1] - p[i0]) * t,
+      p[i0 + 1] + (p[i1 + 1] - p[i0 + 1]) * t,
+      p[i0 + 2] + (p[i1 + 2] - p[i0 + 2]) * t],
+    kind: move.kind,
+  };
+}
+
+/** 里程区间 [from, to] → 刀路段列表 [[ax,ay,az,bx,by,bz,rapid], …]（跨 move 拼接）。 */
+function simSegmentsBetween(path, from, to) {
+  const segments = [];
+  if (!(to > from) || !path.moves.length) return segments;
+  const moves = path.moves;
+  let start = 0;
+  let high = moves.length - 1;
+  while (start < high) {
+    const mid = (start + high + 1) >> 1;
+    if (moves[mid].start <= from + 1e-9) start = mid;
+    else high = mid - 1;
+  }
+  const pointAt = (move, distance, segment) => {
+    const s0 = segment > 0 ? move.cum[segment - 1] : 0;
+    const segLength = move.cum[segment] - s0;
+    const t = segLength > 1e-9 ? (distance - s0) / segLength : 0;
+    const p = move.points;
+    const i0 = segment * 3;
+    const i1 = (segment + 1) * 3;
+    return [p[i0] + (p[i1] - p[i0]) * t,
+      p[i0 + 1] + (p[i1 + 1] - p[i0 + 1]) * t,
+      p[i0 + 2] + (p[i1 + 2] - p[i0 + 2]) * t];
+  };
+  for (let m = start; m < moves.length; m += 1) {
+    const move = moves[m];
+    if (move.start > to) break;
+    const lo = Math.max(from, move.start);
+    const hi = Math.min(to, move.start + move.length);
+    if (hi <= lo + 1e-9) continue;
+    const rapid = move.kind === "rapid" ? 1 : 0;
+    const fromLocal = lo - move.start;
+    const toLocal = hi - move.start;
+    let segment = 0;
+    while (segment < move.cum.length - 1 && move.cum[segment] < fromLocal - 1e-9) segment += 1;
+    let previous = fromLocal;
+    for (let k = segment; k < move.cum.length; k += 1) {
+      const segEnd = move.cum[k];
+      if (toLocal <= segEnd + 1e-9) {
+        segments.push([...pointAt(move, previous, k), ...pointAt(move, toLocal, k), rapid]);
+        previous = toLocal;
+        break;
+      }
+      if (segEnd > previous + 1e-9) {
+        segments.push([...pointAt(move, previous, k), ...pointAt(move, segEnd, k), rapid]);
+      }
+      previous = segEnd;
+    }
+  }
+  return segments;
+}
+
+/**
+ * 把播放头时间 ``clock`` 渲染出来：定位锚帧 → 必要时重置/扫掠 → 更新刀具与进度条。
+ * 播放、拖动、单步全部走这里，因此任何时刻的画面都由同一个函数决定。
+ */
+function renderSimulation(clock) {
+  const sim = cam.simulation;
+  if (!sim || !simPath) return;
+  const frames = sim.frames || [];
+  if (!frames.length) return;
+  const duration = sim._duration || 0;
+  const clamped = Math.min(Math.max(clock, 0), duration);
+
+  // 锚帧 = 最后一个 time <= 播放头的帧（时间精确定位，切帧时刻不会前后抖）
+  let low = 0;
+  let high = frames.length - 1;
+  while (low < high) {
+    const mid = (low + high + 1) >> 1;
+    if (frames[mid].time_s <= clamped + 1e-9) low = mid;
+    else high = mid - 1;
+  }
+  const anchor = low;
+  const miles = simMilesAt(frames, anchor, clamped);
+
+  if (anchor !== simAnchor.index || miles < simAnchor.swept - 1e-6) {
+    // 换锚帧 / 往回拖：从帧快照整体重置（前一锚帧上"预扫"的内容在这里被覆盖）
+    viewport.setSimulationFrame(anchor);
+    simAnchor = { index: anchor, swept: frameMiles(frames, anchor) };
+  }
+  if (miles > simAnchor.swept + 1e-9) {
+    const segments = simSegmentsBetween(simPath, simAnchor.swept, miles);
+    if (segments.length) {
+      viewport.sweepSimulation(segments, sim.tool ? sim.tool.radius_mm : 5);
+    }
+    simAnchor.swept = miles;
+  }
+
+  viewport.setPlayhead(simStateAt(simPath, miles).position, 0);
+  cam.simulationFrame = anchor;
+  if (!scrubbing) dom.scrub.value = String(duration > 0 ? clamped / duration : 0);
+  dom.time.textContent = `${clamped.toFixed(2)} / ${duration.toFixed(2)} s`;
+}
+
 async function runSimulation() {
   if (!cam.model) {
     showBanner("请先导入模型并生成工序");
@@ -1022,20 +1214,26 @@ async function runSimulation() {
     // 响应几十 MB，仿真要几分钟）。默认 max_frames 调大让动画更细。
     const payload = { operation_id: cam.activeOperationId || undefined, max_frames: 180 };
     const result = await simulate(payload);
+    const frames = result.frames || [];
+    result._duration = frames.length ? frames[frames.length - 1].time_s : 0;
     cam.simulation = result;
     cam.simulationFrame = 0;
     cam.playing = false;
     playback.load(null);
-    // 一次性为所有帧构建 mesh 缓存；后续帧切换只是切 visible 不重建几何，
-    // 慢放时不再卡。setSimulationFrame(0) 把首帧显示出来。
-    viewport.precomputeSimulationFrames(result.grid, result.frames);
-    applySimulationFrame(0);
+    simPath = buildSimPath(result.toolpath);
+    simClock = 0;
+    simAnchor = { index: -1, swept: 0 };
+    // 几何拓扑只建一次（与帧无关），帧只是 height 快照——不再是每帧预建一个网格
+    viewport.precomputeSimulationFrames(result.grid, frames);
+    if (result.toolpath) drawToolpath(result.toolpath, { keepTool: true });
     renderSimulationStats(result);
     if (result.summary && result.summary.warnings && result.summary.warnings.length) {
       showBanner(result.summary.warnings.join("；"));
     } else {
       showBanner(`仿真完成：切除 ${result.summary.removed_volume_mm3.toFixed(0)} mm³`, "info");
     }
+    renderSimulation(0);
+    dom.play.textContent = "❚❚";
     cam.playing = true;
   } catch (error) {
     showBanner("仿真失败：" + error.message);
@@ -1044,31 +1242,24 @@ async function runSimulation() {
   }
 }
 
-function applySimulationFrame(index) {
-  if (!cam.simulation) return;
-  const frames = cam.simulation.frames || [];
+/** 单步/停止：跳到锚帧 ``index``（显示帧快照本身，不做帧间扫掠）。 */
+function seekSimulation(index) {
+  const frames = cam.simulation ? cam.simulation.frames || [] : [];
   if (!frames.length) return;
+  cam.playing = false;
   const clamped = Math.max(0, Math.min(index, frames.length - 1));
-  cam.simulationFrame = clamped;
-  const frame = frames[clamped];
-  // 关键：只切 visible，不再每帧重建 BufferGeometry
-  viewport.setSimulationFrame(clamped);
-  // 仿真时毛坯仍可见（由 showStock 决定），但 simulationGroup 永远显示"切除效果"。
-  // 显示规则在 viewport._applyVisibility 里：仿真时毛坯默认让位给 simulationGroup
-  // —— 想要"边切边看到原貌"则把 btn-stock 切到"显示"。
-  if (cam.simulation.toolpath) {
-    drawToolpath(cam.simulation.toolpath, { keepTool: true });
-  }
-  viewport.setPlayhead(frame.position, 0);
-  dom.scrub.value = String(frames.length > 1 ? clamped / (frames.length - 1) : 0);
-  dom.time.textContent = `${frame.time_s.toFixed(2)} / ${frames[frames.length - 1].time_s.toFixed(2)} s`;
-  dom.play.textContent = cam.playing ? "❚❚" : "▶";
-  renderSimulationStats(cam.simulation);
+  simClock = frames[clamped].time_s;
+  renderSimulation(simClock);
+  dom.play.textContent = "▶";
 }
 
-function seekSimulation(index) {
+/** 拖动进度条：按时间比例定位（锚帧之间的空档照样被连续扫掠补出来）。 */
+function seekSimulationTime(progress) {
+  const duration = cam.simulation ? cam.simulation._duration || 0 : 0;
   cam.playing = false;
-  applySimulationFrame(index);
+  simClock = Math.min(Math.max(progress, 0), 1) * duration;
+  renderSimulation(simClock);
+  dom.play.textContent = "▶";
 }
 
 function toggleSimulation() {
@@ -1076,27 +1267,25 @@ function toggleSimulation() {
     runSimulation();
     return;
   }
+  const duration = cam.simulation._duration || 0;
   cam.playing = !cam.playing;
-  if (cam.playing && cam.simulationFrame >= cam.simulation.frames.length - 1) {
-    cam.simulationFrame = 0;
+  if (cam.playing && simClock >= duration - 1e-9) {
+    simClock = 0;
+    renderSimulation(0);
   }
   dom.play.textContent = cam.playing ? "❚❚" : "▶";
 }
 
-let simulationClock = 0;
-
 function advanceSimulation(dt) {
   if (!cam.playing || !cam.simulation) return;
-  simulationClock += dt * (Number(dom.speed.value) || 1);
-  const interval = 1 / 12; // 12 fps：帧数不多时也够顺滑，且不会让 GPU 空转
-  if (simulationClock < interval) return;
-  simulationClock = 0;
-  if (cam.simulationFrame >= cam.simulation.frames.length - 1) {
+  const duration = cam.simulation._duration || 0;
+  simClock += dt * (Number(dom.speed.value) || 1);
+  if (simClock >= duration) {
+    simClock = duration;
     cam.playing = false;
     dom.play.textContent = "▶";
-    return;
   }
-  applySimulationFrame(cam.simulationFrame + 1);
+  renderSimulation(simClock);
 }
 
 async function exportNc() {

@@ -129,19 +129,24 @@
   在弧长上重采样并限制总采样数（默认 4000），同时保留每段边界，所以播放不会跨段插值。
 - `cut_sim.py`：**毛坯切除仿真**。Z-Map（每个 XY 位置记录剩余高度）是 2.5 轴铣削最自然的结构：
   平底刀端面切除时，把"刀轴扫过的胶囊体"内的格点高度压到刀底高度，一条直线段一次向量化算完。
-  逐帧导出高度图，前端按帧重建网格即得到切削动画。
+  帧是**固定里程网格上的高度快照**（带 `travelled_mm` 里程锚点，总数不超过 `max_frames`）；
+  前端以锚帧为重置点、帧间沿刀路按里程扫掠插值，即得到与帧数解耦的连续切削动画。
 
 ### export / storage / server / web / electron
 
 - `export/gcode.py`：G21 / G90 / G17 + G0 / G1 带 F 的最常见 ISO 子集；
 - `export/cam_program.py`：CAM 程序的头部与工序注释（程序号、G54–G59、主轴、冷却、工序块）；
 - `storage/repository.py`：工程持久化。JSON（工程 + 工序树）+ npz（网格），原子写入；
+- `storage/tool_library.py`：刀具库持久化。**一个 JSON 文件就是整个刀库**，同样是原子写入；
+  刀库是全局的（不挂在工程下），空库时播下一组常用刀具作为起点；
 - `server`：标准库 `ThreadingHTTPServer`。`schema.py` 是基座请求校验入口，`multipart.py` 是标准库
-  multipart 解析，`workspace.py` 保存"当前打开的工程"，`service.py` 组装响应，`catalog.py` 生成能力目录，
+  multipart 解析，`workspace.py` 保存"当前打开的工程"与刀具库、解析工序引用的刀具，
+  `service.py` 组装响应，`catalog.py` 生成能力目录，
   `app.py` 只做路由与错误码映射（400 参数 / 413 体积超限 / 422 几何或文件不可用 / 404 / 405）；
   静态文件只从 `web/` 提供并做了路径穿越防护；
 - `web`：`panel.js` 依据目录生成控件，`controls.js` 是共用的参数控件，`cam-panel.js` 是 CAM 面板，
-  `tree.js` 是工序树，`modal.js` 是模态框/提示条/进度条，`viewport.js` 负责 three.js 场景、相机与面拾取，
+  `tool-library.js` 是刀具库对话框（左列表 + 右表单 + 三维预览），`tree.js` 是工序树，
+  `modal.js` 是模态框/提示条/进度条，`viewport.js` 负责 three.js 场景、相机与面拾取，
   `playback.js` 是纯逻辑的时间插值器，`main.js` 负责串联两种模式；
 
   CAM 面板的参数**按加工类型分流**：目录里每个加工类型可以带自己的一份 `parameters` / `defaults`
