@@ -57,6 +57,13 @@ export function buildControl(spec, value, onChange) {
     select.addEventListener("change", () => onChange(select.value));
     return { node: select, setValue: (next) => { select.value = String(next); } };
   }
+  if (spec.kind === "string") {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value === null || value === undefined ? "" : String(value);
+    input.addEventListener("change", () => onChange(input.value));
+    return { node: input, setValue: (next) => { input.value = String(next ?? ""); } };
+  }
   return buildNumberControl(spec, Number(value), onChange);
 }
 

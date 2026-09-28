@@ -8,12 +8,15 @@
 import {
   addOperation,
   closeProject,
+  createTool,
   deleteOperation,
   deleteTemplate,
+  deleteTool,
   downloadGcode,
   downloadNc,
   downloadText,
   duplicateOperation,
+  duplicateTool,
   fetchCatalog,
   fetchFeatures,
   fetchModel,
@@ -21,22 +24,26 @@ import {
   fetchParameters,
   fetchProjects,
   fetchStock,
+  fetchTools,
   generateAllOperations,
   generateOperation,
   importStep,
   moveOperation,
   openProject,
   requestPlan,
+  restoreDefaultTools,
   saveParameters,
   saveStock,
   saveTemplate,
   simulate,
   updateOperation,
+  updateTool,
 } from "./api.js";
 import { CamPanel } from "./cam-panel.js";
 import { Banner, Modal, Progress, openImportDialog } from "./modal.js";
 import { ParameterPanel } from "./panel.js";
 import { Playback } from "./playback.js";
+import { openToolLibrary } from "./tool-library.js";
 import { OperationTreePanel } from "./tree.js";
 import { VIEW_BUTTONS, Viewport } from "./viewport.js";
 
@@ -61,6 +68,7 @@ const dom = {
   exportButton: document.getElementById("btn-export"),
   importButton: document.getElementById("btn-import"),
   stockButton: document.getElementById("btn-stock"),
+  toolsButton: document.getElementById("btn-tools"),
   simulateButton: document.getElementById("btn-simulate"),
   projectButton: document.getElementById("btn-project"),
   play: document.getElementById("btn-play"),
@@ -104,6 +112,8 @@ const cam = {
   stock: null,
   operations: [],
   templates: [],
+  tools: [],            // 刀具库（全局，与工程无关）
+  toolCatalog: null,    // 刀具类型目录（来自 /api/catalog 或 /api/tools）
   activeOperationId: null,
   simulation: null,     // 最近一次仿真结果
   simulationFrame: 0,
@@ -187,6 +197,8 @@ async function boot() {
       showBanner(`已应用模板 ${template.name}`, "info");
     },
     onParameterCommit: (kind, values) => persistController(values),
+    onToolChange: (toolId) => selectToolForOperation(toolId),
+    onToolLibrary: () => openToolLibraryDialog(),
   });
 
   tree = new OperationTreePanel({
@@ -197,8 +209,13 @@ async function boot() {
   });
 
   wireButtons();
-  window.toolpathLab = { viewport, panel, camPanel, tree, playback, regenerate, cam, modal };
+  window.toolpathLab = {
+    viewport, panel, camPanel, tree, playback, regenerate, cam, modal,
+    refreshTools, openToolLibraryDialog, selectToolForOperation, refreshOperations,
+  };
 
+  // 刀具库是全局的：启动就拉一次，之后面板一直可用
+  await refreshTools({ quiet: true });
   await regenerate();
   await loadProjectState();
   requestAnimationFrame(animate);
@@ -358,6 +375,12 @@ function wireButtons() {
   dom.opCopy.addEventListener("click", () => copyOperation());
   dom.opDelete.addEventListener("click", () => removeOperation());
   dom.opExport.addEventListener("click", () => exportTree());
+  if (dom.toolsButton) {
+    dom.toolsButton.addEventListener("click", () => {
+      setMode("cam");
+      openToolLibraryDialog();
+    });
+  }
 }
 
 // ------------------------------------------------------------------ 模式
@@ -373,6 +396,7 @@ function setMode(next) {
   dom.treePanel.hidden = !isCam;
   dom.pickToolbar.hidden = !isCam;
   dom.stockButton.hidden = !isCam;
+  if (dom.toolsButton) dom.toolsButton.hidden = !isCam;
   if (isCam) syncStockButton();
   dom.simulateButton.hidden = !isCam;
   dom.projectButton.hidden = !isCam;
@@ -405,6 +429,152 @@ function setMode(next) {
     viewport.resetView();
   }
   renderStatsForMode();
+}
+
+// ------------------------------------------------------------------ 刀具库
+/**
+ * 拉取刀具库并刷新面板。
+ *
+ * 刀库是**全局**的，与当前工程无关，所以启动、改工程、开关对话框都会走这里；
+ * 失败不是致命的（面板会给出"刀库打不开"的提示），因此只提示不抛。
+ */
+async function refreshTools({ quiet = false } = {}) {
+  try {
+    const payload = await fetchTools();
+    cam.tools = payload.tools || [];
+    cam.toolCatalog = payload.catalog || cam.toolCatalog;
+    camPanel.setTools(cam.tools);
+    if (!quiet && !cam.tools.length) {
+      showBanner("刀具库是空的：打开「刀具库」新建一把刀，或恢复出厂刀具", "info");
+    }
+    return cam.tools;
+  } catch (error) {
+    showBanner("刀具库打不开：" + error.message);
+    return [];
+  }
+}
+
+/**
+ * 给当前工序选刀。
+ *
+ * 选刀是**明确动作**，所以立刻落盘并重算刀路：用户期望"换刀 → 刀路跟着变"，
+ * 而不是还要再点一次「生成刀路」。（面板其余参数仍然要等生成才落盘。）
+ */
+async function selectToolForOperation(toolId) {
+  const operation = cam.operations.find((item) => item.id === cam.activeOperationId);
+  if (!operation) {
+    showBanner("请先在工序树里选择一道工序，再选刀具", "info");
+    return;
+  }
+  const tool = cam.tools.find((item) => item.id === toolId) || null;
+  await handleOperationChange(operation.id, {
+    parameters: { ...camPanel.parameters(), tool_id: toolId },
+  });
+  if (tool) {
+    showBanner(`当前工序使用「${tool.name}」：D${formatNumber(tool.values.diameter_mm)} mm`, "info");
+  } else {
+    showBanner("已取消刀具库引用：刀路按面板里手填的刀具尺寸计算", "info");
+  }
+}
+
+/**
+ * 打开刀具库对话框（`pick` 为 true 时是"给工序选刀"模式）。
+ *
+ * 对话框里的保存/删除都直接打接口，成功后重新拉列表；如果改动影响到了当前工序
+ * 引用的刀具，就重算一次刀路——否则界面上显示的是旧刀路，用户会以为改刀没生效。
+ */
+function openToolLibraryDialog({ pick = false } = {}) {
+  if (!cam.toolCatalog && catalog) cam.toolCatalog = catalog.tool_library || null;
+  const previewBackup = viewport.tool;
+  const dialog = openToolLibrary({
+    modal,
+    pickMode: pick,
+    tools: cam.tools,
+    catalog: cam.toolCatalog || { types: [] },
+    selectedId: camPanel.toolId() || undefined,
+    onMessage: (message) => showBanner(message),
+    onPreview: (payload) => viewport.setTool(payload || null),
+    onSelect: pick ? async (tool) => {
+      await selectToolForOperation(tool.id);
+      // 选完关掉对话框，把视口里的刀还原成"当前工序的刀"
+      viewport.setTool(previewBackup || (cam.lastResult ? cam.lastResult.tool : null));
+    } : null,
+    onSave: async (draft) => {
+      const saved = draft.id
+        ? (await updateTool(draft.id, {
+            name: draft.name, kind: draft.kind, values: draft.values, note: draft.note,
+          })).tool
+        : (await createTool({
+            name: draft.name, kind: draft.kind, values: draft.values, note: draft.note,
+          })).tool;
+      await refreshTools({ quiet: true });
+      dialog.setTools(cam.tools, saved.id);
+      showBanner(`已保存刀具「${saved.name}」`, "info");
+      await regenerateToolUsers(saved.id);
+      return saved;
+    },
+    onDelete: async (toolId) => {
+      const record = cam.tools.find((item) => item.id === toolId);
+      const used = cam.operations.filter(
+        (item) => String((item.parameters || {}).tool_id || "") === toolId
+      );
+      const warning = used.length
+        ? `\n\n有 ${used.length} 道工序正在用它（${used.map((item) => item.name).join("、")}），`
+          + "删除后这些工序需要重新选刀。"
+        : "";
+      if (!window.confirm(`删除刀具「${record ? record.name : toolId}」？${warning}`)) return;
+      await deleteTool(toolId);
+      await refreshTools({ quiet: true });
+      dialog.setTools(cam.tools);
+      showBanner(`已删除刀具「${record ? record.name : toolId}」`, "info");
+    },
+    onDuplicate: async (toolId) => {
+      const clone = (await duplicateTool(toolId)).tool;
+      await refreshTools({ quiet: true });
+      dialog.setTools(cam.tools, clone.id);
+      showBanner(`已复制为「${clone.name}」`, "info");
+    },
+    onRestoreDefaults: async () => {
+      const payload = await restoreDefaultTools();
+      cam.tools = payload.tools || [];
+      camPanel.setTools(cam.tools);
+      dialog.setTools(cam.tools);
+      showBanner("已恢复出厂刀具（同 id 的刀具不会被覆盖）", "info");
+    },
+    onClose: () => {
+      // 对话框关闭后视口里不应留着一把"没在任何工序里"的刀
+      viewport.setTool(previewBackup || (cam.lastResult ? cam.lastResult.tool : null));
+    },
+  });
+  return dialog;
+}
+
+/**
+ * 刀具改了之后，把引用它的工序刀路重新算一遍。
+ *
+ * 只重算当前选中的那道：其余工序保持"待生成"状态，用户点「全部生成」时自然会用新刀具
+ * （后端每次生成都按刀具库回写几何），避免改一把刀就触发整条工序链的重算。
+ */
+async function regenerateToolUsers(toolId) {
+  const active = cam.operations.find((item) => item.id === cam.activeOperationId);
+  if (!active) return;
+  if (String((active.parameters || {}).tool_id || "") !== toolId) return;
+  try {
+    await refreshOperations();
+    const operation = cam.operations.find((item) => item.id === cam.activeOperationId);
+    if (operation) {
+      camPanel.setOperation(operation);
+      await drawOperationToolpath(operation);
+    }
+  } catch (error) {
+    showBanner("重新生成刀路失败：" + error.message);
+  }
+}
+
+function formatNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return Number.isInteger(number) ? String(number) : String(Math.round(number * 1000) / 1000);
 }
 
 // ------------------------------------------------------------------ 实验台
@@ -487,6 +657,9 @@ async function refreshModel({ frame = false } = {}) {
   cam.simulation = null;
   cam.simulationFrame = 0;
   cam.selectedFaces = [];
+  cam.activeOperationId = null;
+  // 面板上的刀具引用也要清掉：新工程的第一道工序不该沿用上一个零件选过的刀
+  camPanel.resetOperation();
   viewport.clearToolpath();
   viewport.clearSimulation();
   viewport.setSelectedFaces([]);

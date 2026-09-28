@@ -5,7 +5,7 @@
 不需要改一行 JavaScript。
 
 除了原有基座的区域/刀路目录，这里追加 CAM 部分（毛坯、加工类型、加工参数、
-后处理参数）与运维信息（数据目录、体积上限）。
+后处理参数、刀具类型目录）与运维信息（数据目录、体积上限）。
 """
 
 from __future__ import annotations
@@ -58,8 +58,24 @@ def default_stock_parameters(stock_id: str = DEFAULT_STOCK_ID) -> dict[str, Any]
     return STOCK_TYPES.get(stock_id).parameters.defaults()
 
 
+def tool_library_catalog() -> dict[str, Any]:
+    """刀具库的类型目录。
+
+    不需要刀库文件也能算出来（纯声明），所以目录接口不依赖用户数据目录是否可写——
+    即使刀库因为权限问题开不了，界面依然知道能新建哪些刀具。
+    """
+
+    from toolpath_lab.core.tool import tool_library_catalog as _catalog
+
+    return _catalog()
+
+
 def catalog_payload() -> dict[str, Any]:
-    """能力、参数声明与默认值。"""
+    """能力、参数声明与默认值。
+
+    刀具库的**刀具列表**不在这里：它属于用户数据，随开关而变，
+    由 ``GET /api/tools`` 单独提供；这里只放"刀具类型有哪些、各自要填什么"的声明。
+    """
 
     cam = planning_catalog()
     return {
@@ -68,6 +84,8 @@ def catalog_payload() -> dict[str, Any]:
             "parameters": tool_parameters().to_dicts(),
             "defaults": default_tool_parameters(),
         },
+        # 刀具库的类型目录（参数声明 + 每种类型的默认值），界面据它生成新建/编辑表单。
+        "tool_library": tool_library_catalog(),
         "regions": {
             "shapes": region_catalog(),
             "default_id": DEFAULT_REGION_ID,

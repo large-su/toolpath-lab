@@ -16,7 +16,7 @@ HTTP 层、脚本、测试都用这一个入口，因此"界面上能做的"和"
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -65,7 +65,18 @@ class CAMOperationRequest:
         return self.kind in SURFACE_KINDS
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, Any] | None, part: PartModel) -> "CAMOperationRequest":
+    def from_payload(cls, payload: Mapping[str, Any] | None, part: PartModel,
+                     tool_resolver: Callable[[str], Tool | None] | None = None,
+                     ) -> "CAMOperationRequest":
+        """由请求体构造工序请求。
+
+        ``tool_resolver`` 是"刀具 id → 刀具几何"的查询函数（由工作空间注入刀具库）。
+        给了它，请求里的 ``tool_id`` 就会被解析成真正的刀具几何，并**覆盖**
+        参数字典里的 ``tool_kind`` / ``tool_diameter_mm`` / ``tool_length_mm`` /
+        ``tool_flute_mm``；没给（纯算法调用、离线脚本）就完全按旧行为走。
+        指定的刀具不存在时一律报错，绝不悄悄退回默认刀 —— 那会让人以为刀路是对的。
+        """
+
         if payload is None or not isinstance(payload, Mapping):
             raise ParameterError("CAM 请求必须是 JSON 对象")
         kind = str(payload.get("kind") or OperationKind.POCKET_MILL.value)
@@ -75,9 +86,18 @@ class CAMOperationRequest:
             )
         face_ids = _face_ids_from_payload(payload, kind)
         if kind in SURFACE_KINDS:
-            return cls._surface(kind, payload, part, face_ids)
+            return cls._surface(kind, payload, part, face_ids, tool_resolver)
 
-        values = cam_parameters_module.cam_parameters().coerce(coerce_group(payload, "parameters"))
+        raw = dict(coerce_group(payload, "parameters"))
+        tool_id = str(raw.get("tool_id") or "").strip()
+        tool = _tool_from_library(tool_id, tool_resolver) if tool_id else None
+        if tool is not None:
+            raw.update(cam_parameters_module.tool_geometry_parameters(tool))
+        values = cam_parameters_module.cam_parameters().coerce(raw)
+        if tool is not None:
+            values["tool_id"] = tool_id
+        if tool is None:
+            tool = cam_parameters_module.tool_from_cam_parameters(values)
         top_z = payload.get("top_z")
         requested = payload.get("cell_mm")
         if requested:
@@ -92,25 +112,42 @@ class CAMOperationRequest:
             part=part,
             face_ids=face_ids,
             parameters=values,
-            tool=cam_parameters_module.tool_from_cam_parameters(values),
+            tool=tool,
             top_z=None if top_z is None else float(top_z),
             cell_mm=cell_mm,
         )
 
     @classmethod
     def _surface(cls, kind: str, payload: Mapping[str, Any], part: PartModel,
-                 face_ids: tuple[int, ...]) -> "CAMOperationRequest":
+                 face_ids: tuple[int, ...],
+                 tool_resolver: Callable[[str], Tool | None] | None = None,
+                 ) -> "CAMOperationRequest":
         """曲面工序：参数走 ``surfacing`` 的声明，加工面可以一个都不选。"""
 
-        values = coerce_surface_parameters(coerce_group(payload, "parameters"))
+        raw = dict(coerce_group(payload, "parameters"))
+        tool_id = str(raw.get("tool_id") or "").strip()
+        tool = _tool_from_library(tool_id, tool_resolver) if tool_id else None
+        if tool is not None:
+            # 刀库里的刀具类型（钻头/丝锥等）映射到曲面能用的三种刀型，避免把
+            # 一个不在选项里的类型塞给 surfacing。
+            raw.update(cam_parameters_module.tool_geometry_parameters(tool))
+        values = coerce_surface_parameters(raw)
         # 类型已经决定了策略，这里**覆盖**掉请求里的值：客户端传什么都不影响，
         # 免得"选了等高铣却带着平行行切的策略"这种自相矛盾的请求悄悄跑出怪刀路。
         values["strategy"] = SURFACE_STRATEGIES[kind]
-        tool = Tool(
-            kind=ToolKind(str(values.get("tool_kind") or ToolKind.FLAT.value)),
-            diameter_mm=float(values["tool_diameter_mm"]),
-            length_mm=float(values["tool_length_mm"]),
-        )
+        # 刀具键由解析出来的刀具决定（面参数声明里没有这些键，不清理会一直挂在参数里）。
+        values.pop("tool_id", None)
+        values.pop("tool_flute_mm", None)
+        if tool is None:
+            tool = Tool(
+                kind=ToolKind(str(values.get("tool_kind") or ToolKind.FLAT.value)),
+                diameter_mm=float(values["tool_diameter_mm"]),
+                length_mm=float(values["tool_length_mm"]),
+            )
+        else:
+            values["tool_kind"] = tool.kind.value
+            values["tool_diameter_mm"] = tool.diameter_mm
+            values["tool_length_mm"] = tool.length_mm
         return cls(kind=kind, part=part, face_ids=face_ids, parameters=values, tool=tool)
 
     def header_lines(self) -> list[str]:
@@ -122,6 +159,21 @@ class CAMOperationRequest:
             f"tool: {self.tool.kind.value} D{self.tool.diameter_mm:g} mm L{self.tool.length_mm:g} mm",
             "parameters: " + ", ".join(f"{key}={value}" for key, value in self.parameters.items()),
         ]
+
+
+def _tool_from_library(tool_id: str, resolver: Callable[[str], Tool | None] | None) -> Tool | None:
+    """按 id 取刀具库里的刀；没有解析器（纯算法调用）时返回 None。
+
+    有解析器却查不到这把刀 = 请求引用了不存在的刀具，必须报错：
+    静默回退到默认刀会算出一条"看起来正常但用错刀"的刀路。
+    """
+
+    if resolver is None:
+        return None
+    tool = resolver(tool_id)
+    if tool is None:
+        raise ParameterError(f"刀具库里没有这把刀：{tool_id!r}（可能已被删除，请重新选择刀具）")
+    return tool
 
 
 def _face_ids_from_payload(payload: Mapping[str, Any], kind: str) -> tuple[int, ...]:

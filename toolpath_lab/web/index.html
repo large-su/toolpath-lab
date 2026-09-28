@@ -6,6 +6,32 @@
     <title>ToolpathLab</title>
     <link rel="icon" type="image/png" href="./icon.png" />
     <link rel="stylesheet" href="./style.css" />
+    <!--
+      启动期错误兜底：模块加载或 boot() 抛异常时，页面会停在"面板没装配好"的状态，
+      只从界面看只知道"空的"。把错误与堆栈留在 window.__bootError 上，
+      无头自检（electron/smoke.mjs）就能把真正的原因报出来。
+    -->
+    <script>
+      window.__bootError = null;
+      window.addEventListener("error", (event) => {
+        if (window.__bootError) return;
+        window.__bootError = {
+          message: String(event.message || ""),
+          stack: event.error && event.error.stack ? String(event.error.stack) : "",
+          source: String(event.filename || ""),
+          line: event.lineno || 0,
+        };
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        if (window.__bootError) return;
+        const reason = event.reason;
+        window.__bootError = {
+          message: "unhandled rejection: " + String((reason && reason.message) || reason),
+          stack: reason && reason.stack ? String(reason.stack) : "",
+          source: "", line: 0,
+        };
+      });
+    </script>
     <script type="importmap">
       {
         "imports": {
@@ -28,6 +54,7 @@
       <div class="topbar-actions">
         <button id="btn-import" class="button" type="button">导入模型</button>
         <button id="btn-stock" class="button" type="button" hidden>创建毛坯</button>
+        <button id="btn-tools" class="button" type="button" hidden>刀具库</button>
         <button id="btn-generate" class="button primary" type="button">生成刀路</button>
         <button id="btn-simulate" class="button" type="button" hidden>切削仿真</button>
         <button id="btn-export" class="button" type="button">导出 NC</button>

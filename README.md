@@ -27,6 +27,11 @@ ToolpathLab 有两块能力，共用同一个三维视口与后端：
   自动修复与归一化后离散成三角网格并按面渲染；支持面拾取（点一下就能选中加工面）。
   损坏文件、格式错误、超大文件分别返回 400 / 413 / 422。
 - **毛坯**：矩形块或圆柱，按零件包容盒在 X/Y/Z 方向外扩；实时预览、可切换、可重置。
+- **刀具库**：对标 UG/NX 的刀具管理。可新建刀具、选刀具类型（平底刀 / 球头刀 / 圆鼻刀 /
+  锥度铣刀 / 钻头 / 丝锥 / 铰刀 / 镗刀）、填各类刀具参数、自定义刀具名称与备注；
+  支持复制、删除、恢复出厂刀具。刀库是**全局**的（`tools.json`），与工程无关。
+  工序直接引用库里的刀，刀路计算、仿真与 NC 头部注释读的都是同一把刀；
+  在库里改了直径，重新生成刀路立刻生效，界面上也不再让人手改那几个尺寸。
 - **工序树**：序号 / 名称 / 加工类型 / 参数 / 状态，支持排序、改名、复制、启用禁用、整体导出；
   每生成一步程序就自动同步节点。
 - **自动编程**：平面铣（分层往复 / 单向 + 精修轮廓）、型腔铣（环切 / 平行扫描，自动避让岛屿，
@@ -47,6 +52,7 @@ ToolpathLab 有两块能力，共用同一个三维视口与后端：
 ### 实验台（刀路基座）
 
 - **刀具**：平底刀，可设置直径与长度。刀具在加工面上的足迹半径决定刀路相对区域轮廓的偏置量。
+  实验台这条链路只认平底刀；要比这更丰富的刀具几何，用 CAM 的**刀具库**。
 - **区域**：方形（边长）与圆形（直径），以原点为中心，加工面为 XY 平面。
 - **刀路**：栅格刀路的两种模式
   - **往复 Zigzag**：奇数刀反向，相邻两刀在端头直接连过去；
@@ -84,10 +90,16 @@ ToolpathLab 有两块能力，共用同一个三维视口与后端：
 1. 顶栏 **导入模型** → 选一个 `.step` / `.stp`（仓库里有示例 `examples/sample_plate.step`）；
 2. 打开左上角 **拾取面**，在三维视图里点击要加工的面（加工面必须朝上，Shift 可多选）；
 3. 在左侧 **毛坯** 一栏选类型、调偏移，点 **生成毛坯**；
-4. 在 **工序** 一栏选加工类型、调加工参数，点顶栏 **生成刀路**（或工序树里的 **新增工序**）；
-5. 需要多道工序时在工序树里继续新增，可排序、改名、禁用；
-6. 点顶栏 **切削仿真** 看毛坯被逐层切除的动画（空格播放 / 暂停，进度条可拖动，可变速）；
-7. 点 **导出 NC** 出程序（单道工序或全部启用工序）。
+4. 在左侧 **刀具** 一栏点 **刀具库**，新建一把刀（选类型、填参数、起名字），
+   在工序的 **刀具** 下拉框里选中它；
+5. 在 **工序** 一栏选加工类型、调加工参数，点顶栏 **生成刀路**（或工序树里的 **新增工序**）；
+6. 需要多道工序时在工序树里继续新增，可排序、改名、禁用；
+7. 点顶栏 **切削仿真** 看毛坯被逐层切除的动画（空格播放 / 暂停，进度条可拖动，可变速）；
+8. 点 **导出 NC** 出程序（单道工序或全部启用工序）。
+
+> 刀具库放在顶栏与左侧面板两处入口；对话框里左栏是刀具列表、右栏是参数表单，
+> 选中刀具时三维视图里会同步显示它的形状。曲面工序（平行行切 / 等高铣）暂时仍用
+> 面板上的刀具类型与直径，还没有接刀具库。
 
 ## 环境要求
 
@@ -188,6 +200,9 @@ print(simulation.summary())
 | `DELETE /api/operations/<id>` | 删除工序 |
 | `POST /api/operations/generate` | 按顺序生成全部启用工序 |
 | `POST/DELETE /api/templates[/<id>]` | 参数模板 |
+| `GET/POST /api/tools` | 刀具库：列表 + 刀具类型目录 / 新建刀具 |
+| `GET/POST/DELETE /api/tools/<id>` | 读取（含被哪些工序引用）/ 修改 / 删除一把刀 |
+| `POST /api/tools/<id>/duplicate`、`POST /api/tools/restore` | 复制一把刀 / 补回出厂刀具 |
 | `POST /api/simulate` | 毛坯切除仿真（可按工序、按请求规划、或整条工序链） |
 | `POST /api/export/nc` | 导出 NC 程序（单道工序或全部启用工序） |
 | `GET /api/projects`、`POST /api/projects/open`、`DELETE /api/projects/<id>` | 工程列表 / 打开 / 删除 |
@@ -202,6 +217,17 @@ curl -X POST http://127.0.0.1:8770/api/operations \
   -H "Content-Type: application/json" \
   -d '{"kind":"pocket_mill","faces":[197],
        "parameters":{"tool_diameter_mm":10,"stepover_ratio":0.5,"cut_depth_mm":2}}'
+
+curl -X POST http://127.0.0.1:8770/api/tools \
+  -H "Content-Type: application/json" \
+  -d '{"name":"D10R1 圆鼻刀","kind":"bull_nose_mill",
+       "values":{"diameter_mm":10,"corner_radius_mm":1,"flute_length_mm":25,"length_mm":60}}'
+
+# 工序引用刀具库里的刀：刀路、仿真与 NC 都按这把刀的几何算
+curl -X POST http://127.0.0.1:8770/api/operations \
+  -H "Content-Type: application/json" \
+  -d '{"kind":"pocket_mill","faces":[197],
+       "parameters":{"tool_id":"tool-flat-d10","stepover_ratio":0.5,"cut_depth_mm":2}}'
 
 curl -X POST http://127.0.0.1:8770/api/simulate \
   -H "Content-Type: application/json" -d '{"cell_mm":0.6}' -o simulation.json
@@ -228,7 +254,7 @@ toolpath_lab/
   planning/    策略层：Planner 基类与注册表、平面多边形几何、栅格刀路
   simulation/  时间层与仿真：按进给速度做时间轴、毛坯切除（Z-Map）
   export/      G-code / CAM 程序导出
-  storage/     工程持久化（JSON + npz 文件仓库）
+  storage/     持久化：工程仓库（JSON + npz）与刀具库（tools.json）
   server/      标准库 HTTP 服务：接口路由、请求校验、能力目录、multipart、静态文件
   web/         前端：原生 ES 模块 + three.js（随仓库提供，无打包步骤）
 electron/      桌面壳：拉起 Python 后端并承载窗口（含 smoke.mjs 无头自检）
@@ -274,6 +300,9 @@ docs/          架构与扩展文档
   与工序树的类型标签会自动出现。**三维曲面类**的加工类型要在 `SURFACE_KINDS` 里登记，
   这样才不需要拾取面、并会去 `surfacing/` 取几何。
 - **新增毛坯类型**：继承 `Stock`、声明参数、注册到 `STOCK_TYPES`。
+- **新增刀具类型**（例如螺纹铣刀）：在 `core/tool.py` 的 `TOOL_TYPES` 加一项、给它的参数补
+  `visible_if`、在 `TOOL_KIND_BY_TYPE` 里说明它在刀路里按哪种几何算——界面上的类型下拉框与
+  参数表单会自动出现，详见 [docs/extending.md](docs/extending.md) 第 8 节。
 - **新增模型格式**：在 `toolpath_lab/brep/` 旁边写一个 reader，返回 `BrepModel` 再走
   `to_tessellated_model()`，或者直接返回同一个 `TessellatedModel`，
   下游（毛坯、特征、刀路、仿真）完全不用改。
@@ -286,9 +315,10 @@ docs/          架构与扩展文档
 python -m unittest discover -s tests
 ```
 
-335 项测试，覆盖几何裁剪、刀路模式与安全高度、时间参数化、G-code 导出、HTTP 接口与静态资源、
+462 项测试，覆盖几何裁剪、刀路模式与安全高度、时间参数化、G-code 导出、HTTP 接口与静态资源、
 BRep 读取与离散、Z 层剖切、2D 轮廓布尔与偏置、三维曲面刀路、加工区域与刀路正确性、
-毛坯切除仿真、工程持久化与 CAM 接口，
+毛坯切除仿真、刀具库（类型目录 / 参数归一 / 几何换算 / JSON 持久化 / 与工序打通）、
+工程持久化与 CAM 接口，
 以及**持久连接复用**（同一条 TCP 连接上连续发请求，浏览器就是这么用的）。
 
 前端自检（会真的拉起一个窗口加载界面，检查控制台错误与关键 DOM）：

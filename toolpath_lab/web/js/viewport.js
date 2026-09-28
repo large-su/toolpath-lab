@@ -299,8 +299,12 @@ export class Viewport {
   }
 
   setTool(tool) {
-    this.tool = tool;
     this._clear(this.toolGroup);
+    this.tool = tool || null;
+    this.toolMesh = null;
+    // 传 null 就是"撤掉刀具显示"（刀具库关闭预览、清空刀路时都走这里），
+    // 早期版本直接读 tool.radius_mm，所以调用方必须自己判空——现在不用了。
+    if (!tool) return;
     const radius = Math.max(tool.radius_mm, 0.2);
     const length = tool.length_mm;
     const flute = Math.min(length * 0.65, radius * 6);

@@ -5,13 +5,21 @@
 ============  ==========================================================
 组            参数
 ============  ==========================================================
-刀具          tool_diameter_mm、tool_length_mm、tool_flute_mm
+刀具          tool_id（刀具库选中的刀具）、tool_kind、tool_diameter_mm、
+              tool_length_mm、tool_flute_mm
 切削          spindle_rpm、feed_mm_per_min、plunge_feed_mm_per_min、
               stepover_ratio、cut_depth_mm、stock_allowance_mm、
               finish_allowance_mm、stepdown_mm（仅型腔铣）
 安全          safe_height_mm、clearance_mm、rapid_feed_mm_per_min、
               spindle_direction、coolant
 ============  ==========================================================
+
+**刀具的来源只有一处**：刀具库（:mod:`toolpath_lab.storage.tool_library`）。
+选了库里的刀，它的几何就写进 ``tool_kind`` / ``tool_diameter_mm`` /
+``tool_length_mm`` / ``tool_flute_mm`` 这几个键（见
+:func:`toolpath_lab.core.tool.tool_geometry_values`），于是刀路、仿真与 NC
+三条路读到的都是同一把刀，不需要各自再去查库。没有选刀（``tool_id`` 为空）
+时这几个键就是手填的数值，行为与引入刀具库之前完全一致。
 
 "固定设置"（``CAM_FIXED``）是界面只展示不编辑的量，与原有基座的做法一致。
 """
@@ -58,6 +66,8 @@ def tool_parameters() -> ParameterSet:
 
     return ParameterSet(
         (
+            spec("tool_id", "刀具库刀具", K.STRING, "", group="刀具",
+                 help="刀具库里选中的刀具 id；为空表示不引用刀具库，按下面的数值手工设定"),
             spec("tool_diameter_mm", "刀具直径 D", K.FLOAT, 10.0, minimum=0.5,
                  maximum=200.0, step=0.5, unit="mm", group="刀具"),
             spec("tool_length_mm", "刀具长度 L", K.FLOAT, 40.0, minimum=2.0,
@@ -151,13 +161,55 @@ def controller_parameters() -> ParameterSet:
 
 
 def tool_from_cam_parameters(values: Mapping[str, Any]) -> Tool:
-    """由 CAM 参数构造一把平底刀（首期只支持平底刀）。"""
+    """由 CAM 参数构造一把刀。
+
+    刀具类型取 ``tool_kind``（刀具库选刀时由刀具类型映射而来），缺省是平底刀——
+    2.5 轴的栅格距离场就是按平底刀建模的，这里保持原有行为不变。
+    """
 
     diameter = float(values.get("tool_diameter_mm", 10.0))
     length = float(values.get("tool_length_mm", 40.0))
     if diameter <= 0 or length <= 0:
         raise ParameterError("刀具直径与长度必须为正")
-    return Tool(kind=ToolKind.FLAT, diameter_mm=diameter, length_mm=length)
+    try:
+        kind = ToolKind(str(values.get("tool_kind") or ToolKind.FLAT.value))
+    except ValueError:
+        kind = ToolKind.FLAT
+    return Tool(
+        kind=kind,
+        diameter_mm=diameter,
+        length_mm=length,
+        flute_length_mm=_optional_positive(values.get("tool_flute_mm")),
+    )
+
+
+def tool_geometry_parameters(tool: Tool) -> dict[str, Any]:
+    """刀具几何 → 工序参数里的刀具键（与 :func:`tool_geometry_values` 对称）。
+
+    每次生成工序前用它把刀具的实际几何**覆盖**进参数字典：刀具库里改了直径，
+    刀路读到的就是新直径，不会留下"参数里写着 10、实际按 6 算"的错位。
+    """
+
+    values: dict[str, Any] = {
+        "tool_kind": tool.kind.value,
+        "tool_diameter_mm": tool.diameter_mm,
+        "tool_length_mm": tool.length_mm,
+    }
+    flute = tool.flute_length_mm
+    if flute is None or flute <= 0:
+        flute = min(tool.length_mm, max(1.0, tool.length_mm * 0.6))
+    values["tool_flute_mm"] = float(flute)
+    return values
+
+
+def _optional_positive(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 __all__ = [
@@ -169,5 +221,6 @@ __all__ = [
     "cutting_parameters",
     "safety_parameters",
     "tool_from_cam_parameters",
+    "tool_geometry_parameters",
     "tool_parameters",
 ]

@@ -243,6 +243,18 @@ async function driveCamFlow(window, base) {
   if (!created || !created.moves) {
     return { ok: false, steps, reason: "新增工序没有生成刀路：" + JSON.stringify(created) };
   }
+  // 上面这道工序是**直接打接口**建的（自检的其余部分也这么干），前端并不知道它存在。
+  // 真实界面走的是 createOperation()：落盘后 refreshOperations() 把工序树与 cam.operations
+  // 一起刷新。这里补上同一步，否则后面的"选刀改工序"在空列表里找不到工序，
+  // 前面几步又都只读接口返回值，测试会在"自洽"的假象里通过。
+  steps.operationsSynced = await window.webContents.executeJavaScript(`(async () => {
+    await window.toolpathLab.refreshOperations();
+    return { operations: window.toolpathLab.cam.operations.length,
+             treeRows: document.querySelectorAll("#tree-body .tree-row").length };
+  })()`);
+  if (!steps.operationsSynced.operations) {
+    return { ok: false, steps, reason: "工序建好了却没有进前端工序树：" + JSON.stringify(steps.operationsSynced) };
+  }
 
   // 7. 把刀路画进视口（等价于工序树里选中该工序）
   const generateResponse = await request(
@@ -303,6 +315,118 @@ async function driveCamFlow(window, base) {
   steps.nc = nc;
   if (!nc || nc.status !== 200 || nc.lines < 10) {
     return { ok: false, steps, reason: "NC 导出失败：" + JSON.stringify(nc) };
+  }
+
+  // 9b. 刀具库：在界面里打开刀具库对话框 → 新建一把非标刀 → 给当前工序选刀 →
+  //     刀路按这把刀重算（这是"刀具库与刀路打通"的前端证据，光有 API 测试证明不了
+  //     对话框、下拉框、面板联动这条路是通的）。
+  const toolLibrary = await window.webContents.executeJavaScript(`(async () => {
+    const app = window.toolpathLab;
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const deadline = Date.now() + 30000;
+
+    // 打开刀具库（走顶栏按钮，和用户的操作路径一致）
+    document.querySelector("#btn-tools").click();
+    await wait(200);
+    const dialog = document.querySelector("#modal .tool-layout");
+    if (!dialog) return { step: "open", reason: "刀具库对话框没有打开" };
+    // 对话框要真的排成两栏（左列表 + 右表单）：CSS 选择器写错时宽度会退回到 520px，
+    // 表单里的数值框就会挤成一列，光看"元素存在"是发现不了的。
+    const layout = getComputedStyle(dialog);
+    const layoutInfo = { columns: layout.gridTemplateColumns, width: dialog.clientWidth };
+    if (layout.display !== "grid" || dialog.clientWidth < 600
+        || String(layout.gridTemplateColumns).split(" ").length < 2) {
+      return { step: "layout", reason: "刀具库对话框没有排成两栏", layoutInfo };
+    }
+    const before = app.cam.tools.length;
+
+    // 新建刀具：名称 + 类型 + 直径（控件的 kind 由后端参数声明驱动）
+    const rows = Array.from(document.querySelectorAll("#modal .modal-body .row"));
+    const field = (key) => rows
+      .map((row) => row.dataset.key === key ? row.querySelector("input, select") : null)
+      .find(Boolean) || null;
+    const create = Array.from(document.querySelectorAll("#modal .modal-foot button"))
+      .find((b) => b.textContent.includes("新建刀具"));
+    if (!create) return { step: "create", reason: "对话框里没有「新建刀具」按钮" };
+    create.click();
+    await wait(120);
+
+    const nameInput = document.querySelector("#modal .modal-body .row input[type=text]");
+    if (!nameInput) return { step: "form", reason: "新建表单里没有名称输入框" };
+    nameInput.value = "自检用 D5.5 平底刀";
+    nameInput.dispatchEvent(new Event("change", { bubbles: true }));
+    const diameter = field("diameter_mm");
+    const length = field("length_mm");
+    if (!diameter || !length) return { step: "form", reason: "表单里没有直径/总长参数" };
+    diameter.value = "5.5";
+    diameter.dispatchEvent(new Event("change", { bubbles: true }));
+    length.value = "45";
+    length.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const save = Array.from(document.querySelectorAll("#modal .modal-foot button"))
+      .find((b) => b.textContent.trim() === "保存");
+    save.click();
+    while (Date.now() < deadline) {
+      if (app.cam.tools.length > before
+          && app.cam.tools.some((t) => t.name === "自检用 D5.5 平底刀")) break;
+      await wait(150);
+    }
+    const created = app.cam.tools.find((t) => t.name === "自检用 D5.5 平底刀") || null;
+    if (!created) {
+      return { step: "save", reason: "新建的刀具没有出现在刀具库里",
+               camTools: app.cam.tools.map((t) => t.name) };
+    }
+
+    // 关掉对话框，回参数面板改用这把刀（面板"刀具"那一段的下拉框）
+    document.querySelector("#modal-close").click();
+    await wait(150);
+    // 按行的 data-key 精确定位：面板里有好几个下拉框（加工类型、毛坯、刀具），
+    // 用"选项里有没有这个 value"去猜会命中加工类型那个（改错类型会真的改坏工序）。
+    const toolRow = document.querySelector("#cam-panel .row[data-key='__tool__']");
+    const select = toolRow ? toolRow.querySelector("select") : null;
+    if (!select) return { step: "select", reason: "参数面板里没有刀具下拉框", created: created.id };
+    if (!Array.from(select.options).some((o) => o.value === created.id)) {
+      return { step: "select", reason: "刀具下拉框里没有刚建的这把刀", created: created.id,
+               options: Array.from(select.options).map((o) => o.value) };
+    }
+    select.value = created.id;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    // 选刀会立刻落盘并重算刀路：等工序参数里出现这个引用与 5.5 的直径
+    const operationId = app.cam.activeOperationId;
+    let operation = null;
+    while (Date.now() < deadline) {
+      operation = app.cam.operations.find((item) => item.id === operationId) || null;
+      if (operation && operation.parameters.tool_id === created.id
+          && Number(operation.parameters.tool_diameter_mm) === 5.5) break;
+      await wait(150);
+    }
+    // 刀具直径/长度已经由刀具库接管，手填的那几行必须隐藏（否则用户会以为改了有用）
+    const hiddenKeys = Array.from(document.querySelectorAll("#cam-panel .row[hidden]"))
+      .map((row) => row.dataset.key);
+    return {
+      before, created: { id: created.id, kind: created.kind, values: created.values },
+      toolId: operation ? operation.parameters.tool_id : null,
+      diameter: operation ? operation.parameters.tool_diameter_mm : null,
+      hiddenKeys,
+      camTools: app.cam.tools.length,
+      panelToolId: app.camPanel.state.values.tool_id,
+      layout: layoutInfo,
+    };
+  })()`);
+  steps.toolLibrary = toolLibrary;
+  if (!toolLibrary || toolLibrary.toolId !== (toolLibrary.created && toolLibrary.created.id)
+      || Number(toolLibrary.diameter) !== 5.5) {
+    return { ok: false, steps, reason: "刀具库与工序没有打通：" + JSON.stringify(toolLibrary) };
+  }
+  // 引用了库里的刀之后，手填的刀具直径 / 长度必须从面板上消失
+  if (!["tool_diameter_mm", "tool_length_mm"].every((k) => toolLibrary.hiddenKeys.includes(k))) {
+    return { ok: false, steps, reason: "选了库里的刀，面板上却还能手改刀具尺寸："
+      + JSON.stringify(toolLibrary.hiddenKeys) };
+  }
+  steps.toolLibrary = toolLibrary;
+  if (!toolLibrary || toolLibrary.toolId !== (toolLibrary.created && toolLibrary.created.id)
+      || Number(toolLibrary.diameter) !== 5.5) {
+    return { ok: false, steps, reason: "刀具库与工序没有打通：" + JSON.stringify(toolLibrary) };
   }
 
   // 9d. 斜面 / 曲面型腔：用真实接口在**倾斜底面**上建一道型腔铣。
@@ -623,7 +747,12 @@ async function main() {
         camGroupsVisible: app.viewport.partGroup.visible || app.viewport.stockGroup.visible,
       };
     })()`, 30000);
-    if (!state) throw new Error("前端没有完成装配（面板或统计未出现）");
+    if (!state) {
+      // 面板没装配好时，页面里兜底记下来的启动错误才是真正的原因
+      const bootError = await window.webContents.executeJavaScript(`window.__bootError || null`);
+      throw new Error("前端没有完成装配（面板或统计未出现）"
+        + (bootError ? "：" + JSON.stringify(bootError) : "（页面没有记录到启动错误）"));
+    }
     if (state.mode === "bench" && state.camGroupsVisible) {
       throw new Error("实验台模式下 CAM 的零件/毛坯居然是可见的（两套内容没有互斥）");
     }
@@ -655,6 +784,13 @@ async function main() {
   }
 
   let exitCode = 0;
+  if (consoleErrors.length || pageErrors.length || failedRequests.length) {
+    console.error("页面错误：");
+    if (consoleErrors.length) console.error("consoleErrors:", JSON.stringify(consoleErrors, null, 2));
+    if (pageErrors.length) console.error("pageErrors:", JSON.stringify(pageErrors, null, 2));
+    if (failedRequests.length) console.error("failedRequests:", JSON.stringify(failedRequests, null, 2));
+    exitCode = 1;
+  }
   if (!workflow.ok) {
     console.error("CAM 工作流失败：", workflow.reason);
     console.error(JSON.stringify(workflow.steps, null, 2));

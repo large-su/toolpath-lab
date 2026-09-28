@@ -200,7 +200,44 @@ class DrillPlanner:
 如果格式本身不是 BRep（比如 STL 这类纯网格），直接构造 `TessellatedModel` 也可以。
 `FaceRecord.loops` 是型腔铣的区域来源，务必把边界环填上。
 
-## 8. 约定与检查清单
+## 8. 新增一种刀具类型
+
+刀具类型是**声明驱动**的：加一种刀只需要在 `core/tool.py` 里改三处，界面上的下拉框、
+新建/编辑表单、校验范围与默认值都会自动跟上。
+
+```python
+# 1) 类型目录：顺序就是界面下拉框的顺序
+class ToolType(str, Enum):
+    ...
+    THREAD_MILL = "thread_mill"          # 螺纹铣刀
+
+TOOL_TYPES = (
+    ...
+    Choice(ToolType.THREAD_MILL.value, "螺纹铣刀 Thread mill"),
+)
+
+# 2) 它在刀路里按哪种几何算（三轴刀路只认 flat / ball / bull 三种）
+TOOL_KIND_BY_TYPE = {
+    ...
+    ToolType.THREAD_MILL.value: ToolKind.FLAT,
+}
+
+# 3) 它自己的参数（visible_if 决定"选中这个类型时才显示"）
+spec("thread_pitch_mm", "螺距 P", K.FLOAT, 1.5, minimum=0.05, maximum=20.0,
+     step=0.05, unit="mm", group="几何",
+     visible_if={"kind": ToolType.THREAD_MILL.value})
+```
+
+再加一个 `*_KEY` 常量、在 `normalize_tool_values()` 里决定"这个类型用不到时要归零的键"，
+就完事了。检查清单：
+
+- `python -m unittest tests.test_tool_library` 通过（它有一条"每个类型归一再归一必须稳定"的用例，
+  专门挡"存进去的值不合自己规格"这类坑）；
+- 每种类型都至少要能通过 `tool_type_parameters_for(kind)` 拿到一份非空声明；
+- 如果新类型不能按平底圆柱近似，先在 `surfacing` / `cam` 里把对应的刀具几何实现出来，
+  再改 `TOOL_KIND_BY_TYPE`——**不要让声明领先于实现**。
+
+## 9. 约定与检查清单
 
 - 单位：毫米、秒、度；角度只在 API 边界出现，核心内部用弧度；
 - 坐标：右手系、Z 轴向上、XY 是加工平面；数组一律 float64；

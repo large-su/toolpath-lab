@@ -9,7 +9,8 @@
     ``/api/health``、``/api/catalog``、``/api/plan``、``/api/export/gcode``
 **CAM（新增）**
     ``/api/projects*`` 工程、``/api/import/step`` 导入、``/api/stock`` 毛坯、
-    ``/api/operations*`` 工序树、``/api/simulate`` 切削仿真、``/api/export/nc`` 出程序
+    ``/api/tools*`` 刀具库、``/api/operations*`` 工序树、``/api/simulate`` 切削仿真、
+    ``/api/export/nc`` 出程序
 **静态**
     前端资源（``/`` 到 ``/vendor/*``）
 """
@@ -245,6 +246,25 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             self.workspace.set_parameters(cam=cam, controller=controller)
             return json_response({"ok": True, **self.workspace.parameters_payload()})
 
+        # -- 刀具库 --------------------------------------------------------
+        if path == "/api/tools" and method == "GET":
+            return json_response({"ok": True, **self.workspace.tool_payload()})
+        if path == "/api/tools" and method == "POST":
+            payload = self._read_json() or {}
+            values = payload.get("values")
+            tool = self.workspace.create_tool(
+                str(payload.get("name") or ""),
+                str(payload.get("kind") or "flat_end_mill"),
+                values if isinstance(values, Mapping) else {},
+                note=str(payload.get("note") or ""),
+            )
+            return json_response({"ok": True, "tool": tool})
+        if path == "/api/tools/restore" and method == "POST":
+            self.workspace.require_tools().restore_defaults()
+            return json_response({"ok": True, **self.workspace.tool_payload()})
+        if path.startswith("/api/tools/"):
+            return self._route_tool(method, path)
+
         # -- 工序树 --------------------------------------------------------
         if path == "/api/operations" and method == "GET":
             project = self.workspace.require_project()
@@ -287,6 +307,46 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         if path == "/api/export/nc" and method == "POST":
             return self._export_nc()
 
+        return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
+
+    def _route_tool(self, method: str, path: str) -> Response:
+        """``/api/tools/<id>`` 与 ``/api/tools/<id>/duplicate``。"""
+
+        segments = [item for item in path[len("/api/tools/"):].split("/") if item]
+        if not segments:
+            return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
+        tool_id = unquote(segments[0])
+        action = segments[1] if len(segments) > 1 else ""
+        if method == "GET" and action == "":
+            record = self.workspace.require_tools().get(tool_id)
+            return json_response({
+                "ok": True,
+                "tool": record.to_payload(),
+                "used_by": self.workspace.operations_using_tool(tool_id),
+            })
+        if method == "POST" and action == "duplicate":
+            payload = self._read_json() or {}
+            tool = self.workspace.duplicate_tool(tool_id, name=str(payload.get("name") or ""))
+            return json_response({"ok": True, "tool": tool})
+        if method == "POST" and action == "":
+            payload = self._read_json() or {}
+            changes: dict[str, Any] = {}
+            if "name" in payload:
+                changes["name"] = str(payload["name"])
+            if "kind" in payload:
+                changes["kind"] = str(payload["kind"])
+            if "note" in payload:
+                changes["note"] = str(payload["note"])
+            if "values" in payload and isinstance(payload["values"], Mapping):
+                changes["values"] = payload["values"]
+            tool = self.workspace.update_tool(tool_id, **changes)
+            return json_response({
+                "ok": True, "tool": tool,
+                "used_by": self.workspace.operations_using_tool(tool_id),
+            })
+        if method == "DELETE" and action == "":
+            result = self.workspace.delete_tool(tool_id)
+            return json_response({"ok": True, **result})
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
 
     def _route_operation(self, method: str, path: str) -> Response:
@@ -378,7 +438,9 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             # 直接给加工类型与面：先规划再仿真（界面上"改参数立刻看仿真"走这条路）
             from toolpath_lab.cam.service import CAMOperationRequest, execute_operation
 
-            request = CAMOperationRequest.from_payload(payload, project.part)
+            request = CAMOperationRequest.from_payload(
+                payload, project.part, tool_resolver=self.workspace.resolve_tool
+            )
             # 只补上工作空间才知道的东西（毛坯、BRep）：等高铣在仿真路径上同样要剖切 BRep。
             request = replace(request, stock=project.stock(), brep=self.workspace.brep)
             result = execute_operation(request)

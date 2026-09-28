@@ -2,7 +2,7 @@
 //
 // 分成两组：
 //   * 基座（实验台）—— /api/catalog、/api/plan、/api/export/gcode
-//   * CAM 加工     —— 工程、导入、毛坯、工序树、仿真、出程序
+//   * CAM 加工     —— 工程、导入、毛坯、刀具库、工序树、仿真、出程序
 // 每个函数只负责"发请求 + 把错误消息抠出来"，业务状态都放在 main.js / cam-panel.js 里。
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -131,6 +131,35 @@ export async function saveTemplate(name, kind, parameters) {
 
 export async function deleteTemplate(id) {
   return requestJson(`/api/templates/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+// --------------------------------------------------------------- 刀具库
+export async function fetchTools() {
+  return requestJson("/api/tools");
+}
+
+export async function fetchTool(id) {
+  return requestJson(`/api/tools/${encodeURIComponent(id)}`);
+}
+
+export async function createTool({ name, kind, values, note }) {
+  return requestJson("/api/tools", jsonBody({ name, kind, values, note }));
+}
+
+export async function updateTool(id, changes) {
+  return requestJson(`/api/tools/${encodeURIComponent(id)}`, jsonBody(changes));
+}
+
+export async function deleteTool(id) {
+  return requestJson(`/api/tools/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function duplicateTool(id, name) {
+  return requestJson(`/api/tools/${encodeURIComponent(id)}/duplicate`, jsonBody({ name }));
+}
+
+export async function restoreDefaultTools() {
+  return requestJson("/api/tools/restore", jsonBody({}));
 }
 
 export async function simulate(payload) {
