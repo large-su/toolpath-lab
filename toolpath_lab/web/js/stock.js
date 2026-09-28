@@ -94,6 +94,35 @@ export class StockSimulation {
     return points;
   }
 
+  boundaryPositions() {
+    const points = [];
+    const boundary = this.spec.boundary || [];
+    for (const point of boundary) {
+      points.push(point[0], point[1], this.boundaryHeight(point[0], point[1]));
+      points.push(point[0], point[1], this.spec.bottom_z_mm);
+    }
+    return points;
+  }
+
+  boundaryHeight(x, y) {
+    let bestDistance = Infinity;
+    let bestHeight = this.spec.initial_top_z_mm;
+    for (let row = 0; row < this.ny; row += 1) {
+      for (let col = 0; col < this.nx; col += 1) {
+        const index = row * this.nx + col;
+        if (!this.active[index]) continue;
+        const dx = this.xs[col] - x;
+        const dy = this.ys[row] - y;
+        const distance = dx * dx + dy * dy;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestHeight = this.heights[index];
+        }
+      }
+    }
+    return bestHeight;
+  }
+
   indices() {
     const indices = [];
     for (let row = 0; row + 1 < this.ny; row += 1) {
@@ -102,8 +131,23 @@ export class StockSimulation {
         const b = a + 1;
         const c = a + this.nx;
         const d = c + 1;
+        if (!this.active[a] || !this.active[b] || !this.active[c] || !this.active[d]) continue;
         indices.push(a, b, c, b, d, c);
       }
+    }
+    return indices;
+  }
+
+  boundaryIndices() {
+    const indices = [];
+    const count = (this.spec.boundary || []).length;
+    for (let index = 0; index < count; index += 1) {
+      const next = (index + 1) % count;
+      const top = index * 2;
+      const bottom = top + 1;
+      const nextTop = next * 2;
+      const nextBottom = nextTop + 1;
+      indices.push(top, nextTop, bottom, nextTop, nextBottom, bottom);
     }
     return indices;
   }

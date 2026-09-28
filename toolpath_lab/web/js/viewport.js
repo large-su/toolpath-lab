@@ -159,6 +159,7 @@ export class Viewport {
     this.traceLine = null;
     this.rapidLine = null;
     this.stockMesh = null;
+    this.stockWallMesh = null;
     this.stockSimulation = null;
     this.stockPayload = null;
 
@@ -195,6 +196,7 @@ export class Viewport {
     this._clear(this.poseGroup);
     this._clear(this.stockGroup);
     this.stockMesh = null;
+    this.stockWallMesh = null;
     this.stockSimulation = null;
     this.stockPayload = payload;
 
@@ -397,9 +399,25 @@ export class Viewport {
         transparent: true, opacity: 0.9,
       })
     );
+    const wallGeometry = new THREE.BufferGeometry();
+    wallGeometry.setAttribute(
+      "position", new THREE.Float32BufferAttribute(this.stockSimulation.boundaryPositions(), 3)
+    );
+    wallGeometry.setIndex(this.stockSimulation.boundaryIndices());
+    wallGeometry.computeVertexNormals();
+    this.stockWallMesh = new THREE.Mesh(
+      wallGeometry,
+      new THREE.MeshStandardMaterial({
+        color: COLORS.stock, metalness: 0.35, roughness: 0.58,
+        transparent: true, opacity: 0.9, side: THREE.DoubleSide,
+      })
+    );
     this.stockMesh.castShadow = true;
     this.stockMesh.receiveShadow = true;
+    this.stockWallMesh.castShadow = true;
+    this.stockWallMesh.receiveShadow = true;
     this.stockGroup.add(this.stockMesh);
+    this.stockGroup.add(this.stockWallMesh);
     this.stockSimulation.setIndex(0);
     this._updateStockMesh();
   }
@@ -407,6 +425,7 @@ export class Viewport {
   _disableStock() {
     this._clear(this.stockGroup);
     this.stockMesh = null;
+    this.stockWallMesh = null;
     this.stockSimulation = null;
     this.stockGroup.visible = false;
   }
@@ -417,6 +436,12 @@ export class Viewport {
     attribute.array.set(this.stockSimulation.positions());
     attribute.needsUpdate = true;
     this.stockMesh.geometry.computeVertexNormals();
+    if (this.stockWallMesh) {
+      const wallAttribute = this.stockWallMesh.geometry.getAttribute("position");
+      wallAttribute.array.set(this.stockSimulation.boundaryPositions());
+      wallAttribute.needsUpdate = true;
+      this.stockWallMesh.geometry.computeVertexNormals();
+    }
   }
 
   setAppearance(options) {
