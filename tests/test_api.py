@@ -55,7 +55,7 @@ class StaticTests(ApiTestCase):
         self.assertIn(b"ToolpathLab", body)
 
     def test_modules_and_vendor_files_are_served(self) -> None:
-        for path in ("/js/main.js", "/js/viewport.js", "/style.css",
+        for path in ("/js/main.js", "/js/viewport.js", "/js/model.js", "/style.css",
                      "/vendor/three.module.js", "/vendor/RoomEnvironment.js"):
             with self.subTest(path=path):
                 status, body, _ = self.get(path)
@@ -165,6 +165,27 @@ class PlanTests(ApiTestCase):
         for move in payload["toolpath"]["moves"]:
             self.assertIn(move["kind"], {"cut", "link", "rapid"})
             self.assertGreaterEqual(len(move["points"]), 2)
+
+    def test_imported_polygon_region_is_plannable(self) -> None:
+        status, payload, _ = self.plan({
+            "region": {"shape": "polygon", "parameters": {
+                "boundary": [[-30, -20], [30, -20], [30, 20], [-30, 20]],
+            }},
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["region"]["id"], "polygon")
+        self.assertEqual(payload["request"]["region"]["shape"], "polygon")
+        self.assertEqual(len(payload["region"]["boundary"]), 4)
+        self.assertGreater(payload["toolpath"]["statistics"]["pass_count"], 0)
+
+    def test_imported_polygon_region_rejects_degenerate_boundary(self) -> None:
+        status, payload, _ = self.plan({
+            "region": {"shape": "polygon", "parameters": {
+                "boundary": [[0, 0], [1, 1], [2, 2]],
+            }},
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("面积", payload["error"])
 
     def test_ellipse_and_bull_tool_are_plannable(self) -> None:
         status, payload, _ = self.plan(

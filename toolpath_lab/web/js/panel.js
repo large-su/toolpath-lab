@@ -49,6 +49,10 @@ export class ParameterPanel {
     this.catalog = options.catalog;
     this.onChange = options.onChange || (() => {});
     this.onDisplayChange = options.onDisplayChange || (() => {});
+    this.onModelFile = options.onModelFile || (() => {});
+    this.onModelChange = options.onModelChange || (() => {});
+    this.importedModel = null;
+    this.importSelection = "hull";
     this.state = {
       tool: clone(this.catalog.tool.defaults),
       region: {
@@ -73,12 +77,26 @@ export class ParameterPanel {
   }
 
   payload() {
+    const region = this.importedModel
+      ? {
+        shape: "polygon",
+        parameters: { boundary: clone(this.importedModel.boundaries[this.importSelection]) },
+      }
+      : { shape: this.state.region.id, parameters: clone(this.state.region.values) };
     return {
       tool: clone(this.state.tool),
-      region: { shape: this.state.region.id, parameters: clone(this.state.region.values) },
+      region,
       surface: { type: this.state.surface.id, parameters: clone(this.state.surface.values) },
       planner: { id: this.state.planner.id, parameters: clone(this.state.planner.values) },
     };
+  }
+
+  setImportedModel(model) {
+    this.importedModel = model || null;
+    if (!model) this.importSelection = "hull";
+    this.render();
+    this.onModelChange(this.importedModel);
+    this.onChange();
   }
 
   displayOptions() {
@@ -90,6 +108,7 @@ export class ParameterPanel {
     this.rows = [];
     this.root.replaceChildren(
       this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
+      this._modelSection(),
       this._regionSection(),
       this._surfaceSection(),
       this._plannerSection(),
@@ -98,6 +117,56 @@ export class ParameterPanel {
       this._noteSection()
     );
     this.refreshVisibility();
+  }
+
+  _modelSection() {
+    const section = this._section("模型导入");
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".obj,.stl,.step,.stp";
+    input.title = "选择 OBJ 或 STL 三角网格模型";
+    input.addEventListener("change", () => {
+      const file = input.files && input.files[0];
+      if (file) this.onModelFile(file);
+      input.value = "";
+    });
+    const row = document.createElement("div");
+    row.className = "model-import-row";
+    row.appendChild(input);
+    section.appendChild(row);
+
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = this.importedModel
+      ? `${this.importedModel.name} · ${this.importedModel.format} · ${this.importedModel.triangle_count} 个三角面`
+      : "支持 OBJ / STL；导入后按 XY 投影生成加工区域。";
+    section.appendChild(note);
+
+    if (this.importedModel) {
+      const selectorSpec = {
+        key: "__model_selection__",
+        label: "区域选择",
+        kind: "choice",
+        choices: [
+          { value: "hull", label: "XY 投影轮廓（凸包）" },
+          { value: "bounds", label: "XY 包围矩形" },
+        ],
+        help: "选择模型投影到 XY 平面后用于刀路规划的区域边界",
+      };
+      const selector = this._buildControl(selectorSpec, this.importSelection, (value) => {
+        this.importSelection = value;
+        this.onChange();
+      });
+      section.appendChild(this._wrapRow(selectorSpec, selector, null, {}));
+
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "button model-clear";
+      clear.textContent = "清除模型，恢复参数区域";
+      clear.addEventListener("click", () => this.setImportedModel(null));
+      section.appendChild(clear);
+    }
+    return section;
   }
 
   _section(title) {
@@ -124,6 +193,13 @@ export class ParameterPanel {
 
   _regionSection() {
     const section = this._section("区域");
+    if (this.importedModel) {
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = "当前使用导入模型的投影区域；清除模型后可恢复方形、圆形或椭圆区域。";
+      section.appendChild(note);
+      return section;
+    }
     const shapes = this.catalog.regions.shapes;
     const current = this._item(shapes, this.state.region.id);
     const selectorSpec = {

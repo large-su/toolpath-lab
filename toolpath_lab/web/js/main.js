@@ -3,6 +3,7 @@
 import { downloadGcode, fetchCatalog, requestPlan } from "./api.js";
 import { ParameterPanel } from "./panel.js";
 import { Playback } from "./playback.js";
+import { loadModelFile } from "./model.js";
 import { VIEW_BUTTONS, Viewport } from "./viewport.js";
 
 const REGENERATE_DEBOUNCE_MS = 200;
@@ -81,6 +82,8 @@ async function boot() {
     catalog: catalog,
     onChange: scheduleRegenerate,
     onDisplayChange: (options) => viewport.setDisplayOptions(options),
+    onModelFile: importModel,
+    onModelChange: (model) => viewport.setImportedModel(model),
   });
   viewport.setDisplayOptions(panel.displayOptions());
   wireButtons();
@@ -88,6 +91,17 @@ async function boot() {
   window.toolpathLab = { viewport, panel, playback, regenerate };
   await regenerate();
   requestAnimationFrame(animate);
+}
+
+async function importModel(file) {
+  try {
+    showBanner("正在读取模型：" + file.name, "info");
+    const model = await loadModelFile(file);
+    panel.setImportedModel(model);
+    showBanner(`已导入 ${model.name}，请点击“生成刀路”确认区域`, "info");
+  } catch (error) {
+    showBanner("模型导入失败：" + error.message);
+  }
 }
 
 function buildViewToolbar() {

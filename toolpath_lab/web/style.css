@@ -294,6 +294,26 @@ input[type="checkbox"] {
   font-weight: 500;
 }
 
+.model-import-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.model-import-row input[type="file"] {
+  width: 100%;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.model-clear {
+  width: 100%;
+  margin-top: 8px;
+  padding: 5px 8px;
+  font-size: 10.5px;
+}
+
 /* ------------------------------------------------------------ 视图工具条 */
 .view-toolbar {
   position: absolute;

@@ -142,6 +142,7 @@ export class Viewport {
 
     this.gridGroup = new THREE.Group();
     this.workpieceGroup = new THREE.Group();
+    this.importedGroup = new THREE.Group();
     this.contourGroup = new THREE.Group();
     this.pathGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
@@ -150,6 +151,7 @@ export class Viewport {
     this.toolGroup = new THREE.Group();
     this.scene.add(
       this.gridGroup, this.workpieceGroup,
+      this.importedGroup,
       this.contourGroup, this.pathGroup, this.traceGroup, this.poseGroup,
       this.stockGroup, this.toolGroup
     );
@@ -162,6 +164,7 @@ export class Viewport {
     this.stockWallMesh = null;
     this.stockSimulation = null;
     this.stockPayload = null;
+    this.importedModel = null;
 
     this.resize();
     if (typeof ResizeObserver !== "undefined") {
@@ -185,6 +188,32 @@ export class Viewport {
   render() {
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
+  }
+
+  setImportedModel(model) {
+    this.importedModel = model || null;
+    this._clear(this.importedGroup);
+    if (!model || !model.mesh || !model.mesh.vertices || !model.mesh.indices) {
+      this.importedGroup.visible = false;
+      return;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      "position", new THREE.Float32BufferAttribute(model.mesh.vertices.flat(), 3)
+    );
+    geometry.setIndex(model.mesh.indices);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: 0x3f9fb2, metalness: 0.28, roughness: 0.52,
+        transparent: true, opacity: 0.72, side: THREE.DoubleSide,
+      })
+    );
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.importedGroup.add(mesh);
+    this.importedGroup.visible = this.display.showWorkpiece;
   }
 
   // ---------------------------------------------------------------- 结果
@@ -261,6 +290,8 @@ export class Viewport {
     if (this.display.showStock) this._enableStock();
 
     this.bounds = new THREE.Box3().setFromObject(this.workpieceGroup);
+    const modelBounds = new THREE.Box3().setFromObject(this.importedGroup);
+    if (!modelBounds.isEmpty()) this.bounds.union(modelBounds);
     const pathBounds = new THREE.Box3().setFromObject(this.pathGroup);
     if (!pathBounds.isEmpty()) this.bounds.union(pathBounds);
     // 让刀具的上半截也落在取景范围内（长度直接来自响应，不依赖调用顺序）。
@@ -370,7 +401,9 @@ export class Viewport {
     this.display = Object.assign({}, this.display, options || {});
     if (this.display.showStock) this._enableStock();
     else this._disableStock();
-    this.workpieceGroup.visible = this.display.showWorkpiece && !this.display.showStock;
+    this.workpieceGroup.visible = this.display.showWorkpiece && !this.display.showStock
+      && !this.importedModel;
+    this.importedGroup.visible = this.display.showWorkpiece && Boolean(this.importedModel);
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.poseGroup.visible = this.display.showPath;

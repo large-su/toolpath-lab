@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.payload import coerce_group, split_capability
-from toolpath_lab.core.region import RegionShape, build_region
+from toolpath_lab.core.region import RegionShape, build_polygon_region, build_region
 from toolpath_lab.core.surface import SurfaceShape, build_surface
 from toolpath_lab.core.tool import Tool, tool_parameters
 from toolpath_lab.planning.registry import PLANNERS
@@ -50,7 +50,14 @@ class PlanRequest:
             default_id=DEFAULT_REGION_ID,
             label="region",
         )
-        region = build_region(region_id, region_parameters)
+        if region_id == "polygon":
+            raw_boundary = region_parameters.get("boundary")
+            if not isinstance(raw_boundary, (list, tuple)):
+                raise ParameterError("导入模型区域必须提供 boundary 边界点")
+            region = build_polygon_region(raw_boundary)
+            region_parameters = region.to_params()
+        else:
+            region = build_region(region_id, region_parameters)
 
         surface_id, surface_parameters = split_capability(
             coerce_group(payload, "surface"),

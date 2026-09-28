@@ -110,6 +110,50 @@ class SquareRegion(RegionShape):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PolygonRegion(RegionShape):
+    """由导入模型的 XY 投影轮廓构成的加工区域。
+
+    该类型不注册到常规参数目录中，而是由模型导入流程按请求动态创建。
+    这样原有的方形、圆形和椭圆控件仍保持简洁，同时导入模型可以携带任意
+    简单多边形边界进入同一套扫描线规划器。
+    """
+
+    points: tuple[tuple[float, float], ...] = ()
+
+    id: ClassVar[str] = "polygon"
+    label: ClassVar[str] = "导入模型投影区域"
+    description: ClassVar[str] = "由导入模型的 XY 投影轮廓生成的加工区域"
+
+    def __post_init__(self) -> None:
+        raw = np.asarray(self.points, dtype=np.float64)
+        if raw.ndim != 2 or raw.shape[1] != 2 or raw.shape[0] < 3:
+            raise ParameterError("导入模型区域至少需要 3 个二维边界点")
+        if not np.isfinite(raw).all():
+            raise ParameterError("导入模型区域不能包含非有限坐标")
+        cleaned: list[tuple[float, float]] = []
+        for point in raw:
+            value = (float(point[0]), float(point[1]))
+            if not cleaned or value != cleaned[-1]:
+                cleaned.append(value)
+        if len(cleaned) > 1 and cleaned[0] == cleaned[-1]:
+            cleaned.pop()
+        if len(cleaned) < 3:
+            raise ParameterError("导入模型区域的有效边界点不足")
+        polygon = np.asarray(cleaned, dtype=np.float64)
+        if abs(polygon_area(polygon)) <= 1e-9:
+            raise ParameterError("导入模型区域面积必须大于 0")
+        if polygon_area(polygon) < 0:
+            cleaned.reverse()
+        object.__setattr__(self, "points", tuple(cleaned))
+
+    def boundary(self) -> NDArray[np.float64]:
+        return np.asarray(self.points, dtype=np.float64).copy()
+
+    def to_params(self) -> dict[str, Any]:
+        return {"boundary": [list(point) for point in self.points]}
+
+
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class CircleRegion(RegionShape):
@@ -184,6 +228,12 @@ def build_region(shape_id: str, raw_parameters: Mapping[str, Any] | None = None)
 
     cls = REGION_SHAPES.get(shape_id)
     return cls(**cls.parameters.coerce(raw_parameters))
+
+
+def build_polygon_region(raw_boundary: Any) -> PolygonRegion:
+    """从模型导入请求中的二维边界创建动态区域。"""
+
+    return PolygonRegion(tuple(tuple(point) for point in raw_boundary))
 
 
 def region_catalog() -> list[dict[str, Any]]:
