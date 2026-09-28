@@ -346,7 +346,7 @@ export class ParameterPanel {
     }
     const hint = document.createElement("div");
     hint.className = "note";
-    hint.textContent = "高度场教学仿真：播放刀路时逐步降低毛坯顶部高度。";
+    hint.textContent = "高度场教学仿真：播放刀路时逐步降低毛坯顶部高度；导入模型会在仿真时自动隐藏，避免与毛坯重叠。";
     section.append(hint);
     return section;
   }

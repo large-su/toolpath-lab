@@ -403,7 +403,11 @@ export class Viewport {
     else this._disableStock();
     this.workpieceGroup.visible = this.display.showWorkpiece && !this.display.showStock
       && !this.importedModel;
-    this.importedGroup.visible = this.display.showWorkpiece && Boolean(this.importedModel);
+    // 导入模型是规划区域的参考几何，不是材料切除仿真的毛坯。
+    // 两者同时显示会把不同高度的透明网格叠在一起，看起来像切削外还残留一层。
+    // 勾选仿真时只显示高度场毛坯；关闭仿真后再恢复导入模型参考显示。
+    this.importedGroup.visible = this.display.showWorkpiece
+      && Boolean(this.importedModel) && !this.display.showStock;
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.poseGroup.visible = this.display.showPath;
