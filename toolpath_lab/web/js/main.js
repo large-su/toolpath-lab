@@ -190,7 +190,11 @@ async function boot() {
     onChange: () => { /* 参数变化不自动落盘，等用户生成 */ },
     onStockChange: (payload) => previewStock(payload),
     onStockCommit: (payload) => commitStock(payload),
-    onDisplayChange: (options) => viewport.setCamDisplay(options),
+    onDisplayChange: (options) => {
+      viewport.setCamDisplay(options);
+      // 工具栏「毛坯」按钮与面板勾选是同一份状态，文案跟着走
+      syncStockButton();
+    },
     onTemplateSave: (name, body) => handleTemplateSave(name, body),
     onTemplateApply: (template) => {
       camPanel.syncValues(template.parameters || {});
@@ -328,17 +332,13 @@ function wireButtons() {
   });
   dom.importButton.addEventListener("click", () => openImport());
   dom.stockButton.addEventListener("click", () => {
-    // CAM 模式下：切换毛坯显隐（规划时方便切换；仿真时若显示毛坯，
-    // 会与 simulationGroup 并存——按习惯"自动显示切除效果"是 simulationGroup，
-    // 毛坯由用户自行选择）。
+    // CAM 模式下切换毛坯显隐。与面板「显示·毛坯」勾选共用同一份状态
+    // （camPanel.syncDisplay → onDisplayChange → 视口 + 按钮文案），因此
+    // 仿真结果在场时同样有效：显隐只由这个状态决定，不被仿真硬性顶掉——
+    // 切削仿真之后到再次点「切削仿真」之前，随时可以显示/隐藏。
     setMode("cam");
     const current = viewport.display ? viewport.display.showStock : true;
-    const next = !current;
-    viewport.setDisplayOptions({ showStock: next });
-    dom.stockButton.textContent = next ? "隐藏毛坯" : "显示毛坯";
-    dom.stockButton.title = next
-      ? "点击隐藏毛坯网格（毛坯仍参与加工面/刀路计算）"
-      : "点击显示毛坯网格";
+    camPanel.syncDisplay("showStock", !current);
   });
   dom.simulateButton.addEventListener("click", () => runSimulation());
   dom.projectButton.addEventListener("click", () => openProjectDialog());
@@ -823,8 +823,31 @@ async function drawOperationToolpath(operation) {
   }
 }
 
+/**
+ * 作废上一次的切削仿真：刀路变了（重新生成 / 换工序 / 新增工序）就调用。
+ *
+ * 仿真结果是按**旧刀路**算的——还留在视口里会与新刀路叠在一起、影响观察；
+ * 播放头、进度条、统计面板也全是旧数据。这里连数据带视口一起清干净：
+ * 统计随 renderStats 回到刀路本身，再点「切削仿真」就是对新刀路的全新计算。
+ * 原始毛坯**不受影响**：它由工具栏按钮与面板勾选显隐，与仿真余料是两回事。
+ */
+function invalidateSimulation() {
+  cam.simulation = null;
+  cam.simulationFrame = 0;
+  cam.playing = false;
+  simPath = null;
+  simClock = 0;
+  simAnchor = { index: -1, swept: 0 };
+  viewport.clearSimulation();
+  dom.play.textContent = "▶";
+  dom.scrub.value = "0";
+  dom.time.textContent = "0.00 / 0.00 s";
+}
+
 /** 把一道 CAM 工序的结果画进视口（只在 CAM 模式下调用）。 */
 function applyCamResult(result) {
+  // 画新刀路 = 上一次仿真作废（旧余料叠着新刀路会干扰观察）
+  invalidateSimulation();
   cam.lastResult = result;
   viewport.setTool(result.tool);
   viewport.setPathOnly(result.toolpath);
@@ -1225,6 +1248,10 @@ async function runSimulation() {
     simAnchor = { index: -1, swept: 0 };
     // 几何拓扑只建一次（与帧无关），帧只是 height 快照——不再是每帧预建一个网格
     viewport.precomputeSimulationFrames(result.grid, frames);
+    // 毛坯默认让位给仿真结果（毛坯不透明度 0.85，两块料互相遮挡）：走统一
+    // 显示状态隐藏，按钮与面板勾选同步更新——之后到再次点「切削仿真」之前，
+    // 用户随时可以再显示/隐藏（旧实现在视口里硬性隐藏，按钮点了没反应）。
+    camPanel.syncDisplay("showStock", false);
     if (result.toolpath) drawToolpath(result.toolpath, { keepTool: true });
     renderSimulationStats(result);
     if (result.summary && result.summary.warnings && result.summary.warnings.length) {

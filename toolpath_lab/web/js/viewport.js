@@ -91,7 +91,8 @@ export class Viewport {
     this.appearance = { shadows: true, white: false, grid: true };
     this.display = {
       showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true,
-      // showStock / showSimulation 由工具栏按钮控制；仿真时毛坯默认让位给 simulationGroup
+      // showStock / showSimulation 由工具栏按钮与面板勾选控制；点「切削仿真」时
+      // main.js 会把 showStock 置 false 让位给仿真结果，之后用户随时可切回
       showStock: true, showSimulation: true,
     };
     // 当前仿真显示状态（几何只建一次，帧是 height 快照；见 _buildSimulationGeometry）
@@ -390,10 +391,13 @@ export class Viewport {
     this.toolGroup.visible = display.showTool !== false;
     if (this.rapidLine) this.rapidLine.visible = display.showRapid !== false;
     this.partGroup.visible = isCam && display.showPart !== false;
-    // 仿真一旦出网格就代替原始毛坯，避免两块料重叠
     const simulating = this.simulationGroup.children.length > 0;
     this.simulationGroup.visible = isCam && simulating && display.showSimulation !== false;
-    this.stockGroup.visible = isCam && !simulating && display.showStock !== false;
+    // 毛坯显隐只听 display.showStock，有仿真网格时**不**硬性顶掉：否则
+    // "切削仿真 → 改参数 → 重新生成刀路"的路上按钮点了没反应（失灵）。
+    // 仿真时毛坯"让位"改由 main.js 启动仿真时把 showStock 置 false 实现，
+    // 走同一状态通道，用户随时可以再显示/隐藏。
+    this.stockGroup.visible = isCam && display.showStock !== false;
   }
 
   setAppearance(options) {

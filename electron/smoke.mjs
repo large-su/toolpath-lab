@@ -304,6 +304,61 @@ async function driveCamFlow(window, base) {
     return { ok: false, steps, reason: "仿真结果没有画进视口：" + JSON.stringify(simulated) };
   }
 
+  // 8b. 仿真网格在场时，工具栏"毛坯"按钮仍要能显隐——显隐只听显示状态，
+  //     不被仿真硬性顶掉（否则"仿真后改参数重新生成刀路"的路上按钮失灵）。
+  //     真点两次按钮，断言可见性与文案都跟着翻转。
+  const stockToggle = await window.webContents.executeJavaScript(`(() => {
+    const app = window.toolpathLab;
+    const button = document.getElementById("btn-stock");
+    const simChildren = app.viewport.simulationGroup.children.length;
+    button.click(); // 隐藏
+    const hidden = app.viewport.stockGroup.visible === false && button.textContent === "显示毛坯";
+    button.click(); // 再显示
+    const shown = app.viewport.stockGroup.visible === true && button.textContent === "隐藏毛坯";
+    return { simChildren, hidden, shown };
+  })()`);
+  steps.stockToggle = stockToggle;
+  if (!stockToggle || stockToggle.simChildren < 1 || !stockToggle.hidden || !stockToggle.shown) {
+    return { ok: false, steps, reason: "仿真后毛坯显隐失灵：" + JSON.stringify(stockToggle) };
+  }
+
+  // 8c. 重新生成刀路后，上一次的切削仿真必须自动作废（旧余料叠着新刀路
+  //     影响观察）；原始毛坯的显隐通道不受影响。走真实按钮点击路径。
+  const invalidated = await window.webContents.executeJavaScript(`(async () => {
+    const app = window.toolpathLab;
+    const hadSim = app.viewport.simulationGroup.children.length;
+    document.getElementById("btn-generate").click();
+    const t0 = Date.now();
+    let banner = "";
+    const bannerText = () => {
+      const el = document.querySelector("#banner, .banner, [class*='banner']");
+      return el ? el.textContent : "";
+    };
+    while (Date.now() - t0 < 60000) {
+      await new Promise((r) => setTimeout(r, 500));
+      banner = bannerText();
+      if (banner.includes("刀路已生成") || banner.includes("生成失败")) break;
+    }
+    return {
+      hadSim,
+      banner,
+      simChildren: app.viewport.simulationGroup.children.length,
+      simulationData: !!app.cam.simulation,
+      pathChildren: app.viewport.pathGroup.children.length,
+      playText: document.getElementById("btn-play").textContent,
+      scrub: document.getElementById("scrub").value,
+      stockButton: document.getElementById("btn-stock").textContent,
+    };
+  })()`);
+  steps.invalidate = invalidated;
+  if (
+    !invalidated || invalidated.hadSim < 1 || invalidated.banner.indexOf("刀路已生成") < 0 ||
+    invalidated.simChildren !== 0 || invalidated.simulationData ||
+    invalidated.pathChildren < 1 || invalidated.playText !== "▶" || invalidated.scrub !== "0"
+  ) {
+    return { ok: false, steps, reason: "生成刀路后旧仿真未作废：" + JSON.stringify(invalidated) };
+  }
+
   // 9. 导出 NC
   const ncResponse = await request(new URL("api/export/nc", base).href, {
     method: "POST", headers: { "Content-Type": "application/json" },

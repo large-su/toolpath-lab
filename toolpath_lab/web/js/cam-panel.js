@@ -71,6 +71,8 @@ export class CamPanel {
       operation: null,
     };
     this.rows = [];
+    //: 显示段各勾选框的引用（syncDisplay 程序化改状态时同步勾选）
+    this._displayInputs = {};
     this.render();
   }
 
@@ -201,6 +203,20 @@ export class CamPanel {
 
   displayOptions() {
     return Object.assign({}, this.state.display);
+  }
+
+  /**
+   * 程序化改一个显示开关（如点「切削仿真」时毛坯让位给仿真结果）。
+   *
+   * 与勾选框走完全相同的一条路：改状态 → 同步勾选框 → onDisplayChange 通知视口。
+   * 面板勾选、工具栏按钮、三维视口因此始终一致——各处直接写各自的副本，
+   * 正是"按钮文案与实际显示对不上"的根源。
+   */
+  syncDisplay(key, value) {
+    this.state.display[key] = value;
+    const input = this._displayInputs[key];
+    if (input) input.checked = value;
+    this.onDisplayChange(this.displayOptions());
   }
 
   /** 后端回写校验后的参数（例如 coerce 后的默认值）。 */
@@ -524,6 +540,7 @@ export class CamPanel {
         this.state.display[option.key] = input.checked;
         this.onDisplayChange(this.displayOptions());
       });
+      this._displayInputs[option.key] = input;
       row.appendChild(input);
       if (option.color) {
         const dot = document.createElement("i");
