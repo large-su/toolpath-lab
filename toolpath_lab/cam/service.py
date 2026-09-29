@@ -26,7 +26,7 @@ from toolpath_lab.cam.boundary import (DEFAULT_CELL_MM, MachiningRegion, adaptiv
                                        build_region, offset_outline_polygons,
                                        region_from_face)
 from toolpath_lab.cam.common import (MillingContext, MoveBuilder, depth_levels,
-                                     in_level_transfer, stepped_levels)
+                                     in_level_transfer, level_key, stepped_levels)
 from toolpath_lab.cam.face_mill import plan_face_mill, plan_face_mill_multi
 from toolpath_lab.cam.pocket_mill import plan_pocket_mill, plan_pocket_mill_multi
 from toolpath_lab.core.errors import ParameterError, PlanningError
@@ -704,7 +704,10 @@ def _plan_contour_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
     for job in jobs:
         top = float(job.region.top_z)
         floor_target = float(job.region.floor_z) + job.context.finish_allowance
-        job.levels = [z for z in layers if floor_target - 1e-9 <= z <= top - 1e-9]
+        # 下界用归一后的键比较：floor_target 带 ±1e-7 的网格面拟合噪声，而 layers
+        # 已按 1 nm 归一（40.00000015 → 40.0），裸比较会把末层滤掉导致漏切。
+        floor_key = level_key(floor_target)
+        job.levels = [z for z in layers if floor_key - 1e-9 <= z <= top - 1e-9]
         if not job.levels:
             # 与单面一致：没有可切深度时也补一刀贴底轮廓（光一刀）。
             job.levels = [float(job.region.floor_z)]
@@ -721,7 +724,9 @@ def _plan_contour_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
     builder = MoveBuilder(dispatch)
 
     def emit(job: _ContourJob, level_index: int, target_z: float) -> None:
-        # 有几何障碍时环按层重算（缩环/断环），层内转移也拿同一张掩码约束
+        # 有几何障碍时环按层重算（缩环/断环），层内转移也拿同一张掩码约束。
+        # 轮廓铣每层只沿轮廓走一条偏置环（不填充区域），嵌套面的环贴各自轮廓、
+        # 不会在同层切到同一块 XY，所以不需要型腔/平面铣那样的同层去重。
         allowed = job.region.obstacle_mask(target_z, job.context.tool)
         polygons = job.polygons if allowed is None else \
             offset_outline_polygons(job.region, job.offset, mask=allowed)

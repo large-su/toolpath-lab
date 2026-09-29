@@ -24,6 +24,16 @@ MAX_RAMP_RADIUS_MM = 0.35
 #: 兼容垫片：旧参数 ``stepover_mm`` 若仍传入，按这个比例反推 ratio。
 #: 0.5 表示“绝对 5 mm 相当于 D10 的 50%”。不在 parameters 里的 mm 值会被忽略。
 _STEPOVER_MM_FALLBACK_RATIO = 0.5
+#: 层高键的归一精度（小数位）：层网格与同层去重登记簿共用它，吸收网格步进的
+#: 浮点误差（1e-14）与网格面平面拟合噪声（实测 ±1e-7），避免同一物理高度出现
+#: 幽灵层/登记对不上。层高只需 μm 级精度，1 nm 归一不损失加工语义。
+LEVEL_KEY_DECIMALS = 6
+
+
+def level_key(level_z: float) -> float:
+    """层高按键：按 :data:`LEVEL_KEY_DECIMALS` 位小数归一，同一物理高度恒等。"""
+
+    return round(float(level_z), LEVEL_KEY_DECIMALS)
 
 
 def _resolve_stepover(parameters: Mapping[str, Any],
@@ -170,10 +180,90 @@ def stepped_levels(top_z: float, floor_targets: Sequence[float], cut_depth: floa
     while z > lowest + 1e-9:
         grid.append(z)
         z -= step
-    # 按 9 位小数去重：网格步进的浮点误差会让"恰好落在加工底上的网格层"与
-    # floor_target 差出 1e-14，不去重就会多出一层幽灵薄层。
-    merged = {round(value, 9) for value in grid + floors}
+    # 按 6 位小数去重（1 nm）：网格步进的浮点误差是 1e-14 量级，而网格零件的
+    # 面平面拟合还会把 floor_z 噪声到 ±1e-7（实测 40.00000015 对 40.0）。9 位
+    # 小数吸收不了后者，同一物理高度会同时留下两个幽灵层，各自切一遍——
+    # 这正是"同一层刀轨重叠"的一种来源。层高本身只需 μm 级精度，1 nm 归一
+    # 不损失任何加工语义，也与 :class:`LevelCoverage` 的层键保持同一精度。
+    merged = {round(value, LEVEL_KEY_DECIMALS) for value in grid + floors}
     return sorted(merged, reverse=True)
+
+
+class LevelCoverage:
+    """多面调度的"同层已切"登记簿：同一层高上，先切的区域把切过的单元登记下来。
+
+    为什么需要：各加工面的栅格建在**各自轮廓的包围盒**上（原点、间距都可能不同），
+    掩码没法直接比对；而"顶面内环并入可切区域"之后，顶面与它下方的型腔底在
+    42 / 40 这些共享层上会切到同一块 XY——同一层刀轨重叠，材料被切两遍。
+    这里统一换算成世界坐标：查询区域拿自己的格心，去已切区域的栅格上取值，
+    被覆盖的格子从可切掩码里去掉（整层被覆盖就整层跳过）。谁先调度谁先覆盖，
+    层优先/深度优先共用同一份登记，遍历顺序只影响"谁让谁"。
+
+    两个面在某层不相交时 :meth:`exclude` 返回全 False 的掩码，对刀路毫无影响；
+    某层从没被登记过时返回 ``None``，调用方原样走老路径（零开销）。
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[float, list[tuple[Any, NDArray[np.bool_]]]] = {}
+
+    @staticmethod
+    def cut_mask(region: Any, level_z: float, tool: Any,
+                 offset_mm: float) -> NDArray[np.bool_] | None:
+        """该区域在这一层**实际会切到**的单元：层可切掩码 ∩ 刀心可行区域。
+
+        环切/平行扫描的条带互相盖住（步距 ≤ 刀具直径）、中心清理与轮廓精修也都在
+        这张掩码里，所以它可以保守地当作"这一层已经加工过的面积"。刀心可行区之外
+        的贴壁窄带（靠精修那一刀）故意不登记——宁可重复一小条，也不能漏切材料。
+        返回 ``None`` 表示这一层什么也切不到，无需登记。
+        """
+
+        mask = region.level_mask(level_z, tool) & region.offset_mask(offset_mm)
+        return mask if bool(mask.any()) else None
+
+    def record(self, region: Any, level_z: float,
+               mask: NDArray[np.bool_] | None) -> None:
+        """登记某个区域在某层切过的掩码（``None`` = 该层没切到东西，不登记）。"""
+
+        if mask is None:
+            return
+        self._entries.setdefault(level_key(level_z), []).append((region, mask))
+
+    def exclude(self, region: Any, level_z: float) -> NDArray[np.bool_] | None:
+        """该区域在某层应**跳过**的单元：已被同层先切区域覆盖的部分。
+
+        返回 ``None`` 表示这一层还没有任何登记（老路径，零开销）。
+        """
+
+        entries = self._entries.get(level_key(level_z))
+        if not entries:
+            return None
+        covered = np.zeros(region.shape, dtype=bool)
+        xs = region.bounds[0] + (np.arange(region.shape[0]) + 0.5) * region.cell_mm
+        ys = region.bounds[1] + (np.arange(region.shape[1]) + 0.5) * region.cell_mm
+        for source, mask in entries:
+            covered |= _sample_grid(source, mask, xs, ys)
+        return covered
+
+
+def _sample_grid(region: Any, mask: NDArray[np.bool_],
+                 xs: NDArray[np.float64], ys: NDArray[np.float64]
+                 ) -> NDArray[np.bool_]:
+    """把 ``region`` 栅格上的掩码按世界坐标取到查询格心（越界处为 False）。
+
+    查询格心落在源格 ``[x0+i·s, x0+(i+1)·s)`` 内即取该源格的值；两套栅格原点/
+    间距不同也没关系。索引误差最多半格（≤ cell/2），远小于刀具半径带来的覆盖
+    余量，不影响"已切区域"的判定。
+    """
+
+    x0, y0 = float(region.bounds[0]), float(region.bounds[1])
+    spacing = float(region.cell_mm)
+    rows = np.floor((xs - x0) / spacing).astype(np.intp)
+    cols = np.floor((ys - y0) / spacing).astype(np.intp)
+    rows_ok = (rows >= 0) & (rows < mask.shape[0])
+    cols_ok = (cols >= 0) & (cols < mask.shape[1])
+    sampled = mask[np.ix_(np.clip(rows, 0, mask.shape[0] - 1),
+                           np.clip(cols, 0, mask.shape[1] - 1))]
+    return sampled & (rows_ok[:, None] & cols_ok[None, :])
 
 
 def in_level_transfer(region: Any, tool_radius: float,
@@ -329,6 +419,7 @@ __all__ = [
     "MoveBuilder",
     "depth_levels",
     "in_level_transfer",
+    "level_key",
     "level_passes_per_depth",
     "positions_from_xy",
     "stepped_levels",

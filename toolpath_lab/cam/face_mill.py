@@ -20,8 +20,9 @@ from typing import Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-from toolpath_lab.cam.common import (MillingContext, MoveBuilder, depth_levels,
-                                     in_level_transfer, stepped_levels)
+from toolpath_lab.cam.common import (LevelCoverage, MillingContext, MoveBuilder,
+                                     depth_levels, in_level_transfer, level_key,
+                                     stepped_levels)
 from toolpath_lab.cam.boundary import MachiningRegion, offset_outline_polygons
 from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.path import Toolpath
@@ -63,8 +64,14 @@ def _prepare_face(context: MillingContext, notes_prefix: str) -> _FaceJob:
 
 
 def _cut_face_level(builder: MoveBuilder, job: _FaceJob, level_index: int,
-                    target_z: float, previous_z: float, first_cut: bool) -> bool:
-    """切这个区域的某一层（往复扫描 + 每层轮廓精修），返回新的 ``first_cut``。"""
+                    target_z: float, previous_z: float, first_cut: bool, *,
+                    exclude_mask: NDArray[np.bool_] | None = None) -> bool:
+    """切这个区域的某一层（往复扫描 + 每层轮廓精修），返回新的 ``first_cut``。
+
+    ``exclude_mask`` 是同层调度里**已被先加工区域切过**的格子（见
+    :class:`~toolpath_lab.cam.common.LevelCoverage`）：扫描线、精修轮廓与层内
+    转移都只看剩下的部分，整层被覆盖就整层静默跳过——同一层只切一遍。
+    """
 
     region = job.region
     context = job.context
@@ -79,6 +86,11 @@ def _cut_face_level(builder: MoveBuilder, job: _FaceJob, level_index: int,
             f"{context.stock_allowance:g} mm 已超过加工区域，该层被跳过"
         )
         return first_cut
+    if exclude_mask is not None:
+        mask = mask & ~exclude_mask
+        if not mask.any():
+            # 整层已被同层先加工的区域覆盖：去重跳过，属预期行为，不报警。
+            return first_cut
     # 逐层几何障碍：刀从上方降到 target_z 时，足迹内高出本层的几何（凸台/悬臂）
     # 挡住的列被裁掉；层高越过凸台顶后整层恢复连通（孔上方无障碍时一路并通）。
     allowed = region.obstacle_mask(target_z, context.tool)
@@ -89,13 +101,18 @@ def _cut_face_level(builder: MoveBuilder, job: _FaceJob, level_index: int,
             )
             return first_cut
         mask &= allowed
+    # 精修轮廓与层内转移用的掩码 = 几何障碍 ∩ 去重后仍要加工的部分
+    level_mask = allowed
+    if exclude_mask is not None:
+        base = region.inside if allowed is None else allowed
+        level_mask = base & ~exclude_mask
 
     intervals = _scan_intervals(region, mask, job.angle, job.stepover, context)
     if not intervals:
         return first_cut
     _emit_layer(builder, context, intervals, target_z, region, job.mode,
                 first_cut=first_cut, level_index=level_index, label_prefix=job.prefix,
-                level_mask=allowed)
+                level_mask=level_mask)
     first_cut = False
 
     # BUG-004 修：先前判据 offset ≤ 0.5·R+1e-9 恒假（offset = R+allowance ≥ R），
@@ -104,7 +121,7 @@ def _cut_face_level(builder: MoveBuilder, job: _FaceJob, level_index: int,
     if bool(context.parameters.get("finish_pass", True)) \
             and region.offset_area_mm2(context.tool_radius) > 0.0:
         _emit_finish_contour(builder, context, region, context.tool_radius, target_z,
-                             label_prefix=job.prefix, level_mask=allowed)
+                             label_prefix=job.prefix, level_mask=level_mask)
     return first_cut
 
 
@@ -146,6 +163,10 @@ def plan_face_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
     层高用绝对网格（:func:`~toolpath_lab.cam.common.stepped_levels`）在区域间对齐：
     层优先=每层把各面在该高度的加工做完再下降；深度优先=一个面铣完再换下一个。
     两种顺序只差遍历顺序，层高与每层刀路完全一致；单个面时两者等价。
+
+    同一高度上区域互相重叠时（顶面内环并入可切区域后，顶面与它下方的型腔底
+    在共享层就是两块重叠区域），**谁先调度谁先覆盖**，后切的区域让出重叠部分，
+    同一层只切一遍（见 :class:`~toolpath_lab.cam.common.LevelCoverage`）。
     """
 
     jobs = [_prepare_face(context, prefix) for context, prefix in items]
@@ -154,7 +175,10 @@ def plan_face_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
                             float(jobs[0].context.cut_depth))
     for job in jobs:
         top = float(job.region.top_z)
-        job.levels = [z for z in layers if job.floor_target - 1e-9 <= z <= top - 1e-9]
+        # 下界用归一后的键比较：floor_target 带 ±1e-7 的网格面拟合噪声，而 layers
+        # 已按 1 nm 归一（40.00000015 → 40.0），裸比较会把末层滤掉导致漏切。
+        floor_key = level_key(job.floor_target)
+        job.levels = [z for z in layers if floor_key - 1e-9 <= z <= top - 1e-9]
         if not job.levels:
             raise PlanningError(
                 f"{job.prefix}平面铣没有可切除的深度：区域顶面 {top:g} mm，"
@@ -177,11 +201,28 @@ def plan_face_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
         return float(job.region.top_z) if level_index == 0 \
             else float(job.levels[level_index - 1])
 
+    # 同层去重：先切的区域登记"这层切过哪里"，后切的区域让出重叠部分
+    # （顶面内环并入可切区域后，顶面与它下方的型腔底在共享层会切同一块 XY）。
+    coverage = LevelCoverage()
+    dedup_count = 0
+
+    def cut_level(job: _FaceJob, level_index: int, target_z: float) -> None:
+        nonlocal first_cut, dedup_count
+        exclude = coverage.exclude(job.region, target_z)
+        natural = LevelCoverage.cut_mask(job.region, target_z, job.context.tool,
+                                         job.offset)
+        if exclude is not None and natural is not None \
+                and bool((natural & exclude).any()):
+            dedup_count += 1
+        first_cut = _cut_face_level(builder, job, level_index, target_z,
+                                    previous_z_of(job, level_index), first_cut,
+                                    exclude_mask=exclude)
+        coverage.record(job.region, target_z, natural)
+
     if str(order) == "depth_first":
         for job in jobs:
             for level_index, target_z in enumerate(job.levels):
-                first_cut = _cut_face_level(builder, job, level_index, target_z,
-                                            previous_z_of(job, level_index), first_cut)
+                cut_level(job, level_index, target_z)
     else:
         # 未知取值一律按层优先（参数校验在上游，这里是防御性回退，与 cut_mode 同风格）。
         index_of = [{z: index for index, z in enumerate(job.levels)} for job in jobs]
@@ -191,8 +232,7 @@ def plan_face_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
                 level_index = mapping.get(target_z)
                 if level_index is None:
                     continue
-                first_cut = _cut_face_level(builder, job, level_index, target_z,
-                                            previous_z_of(job, level_index), first_cut)
+                cut_level(job, level_index, target_z)
 
     notes: list[str] = []
     for job in jobs:
@@ -203,6 +243,11 @@ def plan_face_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
             f"{job.prefix}刀心区域按刀具半径 {context.tool_radius:g} mm + 侧面余量 "
             f"{context.stock_allowance:g} mm 向内偏置；底面余量 {context.finish_allowance:g} mm",
         ])
+    if dedup_count:
+        notes.append(
+            f"同层去重：{dedup_count} 个（加工面×层）与同层先加工的区域重叠，"
+            "重叠部分已切过，不再重复切削"
+        )
     if str(order) == "depth_first":
         notes.append(
             f"切削顺序：深度优先——单个区域从上到下切完再换下一个（共 {len(jobs)} 个加工面）"

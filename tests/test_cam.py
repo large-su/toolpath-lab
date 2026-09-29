@@ -16,7 +16,8 @@ import numpy as np
 from tests.fixtures import (plate_with_boss, plate_with_cylinder, plate_with_pocket,
                             plate_with_two_pockets, simple_box)
 from toolpath_lab.cam.boundary import build_region, offset_outline_polygons, region_from_face
-from toolpath_lab.cam.common import MillingContext, depth_levels
+from toolpath_lab.cam.common import (LevelCoverage, MillingContext, depth_levels,
+                                     level_key, stepped_levels)
 from toolpath_lab.cam.face_mill import plan_face_mill
 from toolpath_lab.cam.parameters import cam_parameters, tool_from_cam_parameters
 from toolpath_lab.cam.pocket_mill import plan_pocket_mill
@@ -131,6 +132,22 @@ class DepthLevelTests(unittest.TestCase):
     def test_zero_depth_has_no_levels(self) -> None:
         self.assertEqual(depth_levels(top_z=40.0, floor_z=40.0, cut_depth=2.0), [])
         self.assertEqual(depth_levels(top_z=40.0, floor_z=45.0, cut_depth=2.0), [])
+
+    def test_stepped_levels_absorbs_mesh_noise_without_ghost_layers(self) -> None:
+        """层键按 1 nm 归一：网格面拟合噪声与浮点步进误差都不产生同高度幽灵层。
+
+        网格零件的平面拟合实测会把 floor_z 噪声到 40.00000015（对 40.0 差 1.5e-7），
+        旧的 9 位小数去重吸收不了，同一物理高度留下两条层——两条刀轨重切同一层。
+        """
+
+        levels = stepped_levels(44.0, [40.00000015, 25.00000015], 2.0)
+        self.assertEqual(levels[0], 42.0)
+        self.assertIn(40.0, levels)
+        self.assertEqual(levels[-1], 25.0)
+        for previous, current in zip(levels, levels[1:]):
+            self.assertGreater(previous - current, 1e-6)
+        self.assertEqual(level_key(40.00000015), 40.0)
+        self.assertEqual(level_key(42.0), 42.0)
 
 
 class OperationTreeTests(unittest.TestCase):
@@ -317,9 +334,14 @@ class MultiFaceCuttingOrderTests(unittest.TestCase):
     """多加工面的区域调度：层优先合并同高度，深度优先按面切完再换（UG/NX 同名概念）。
 
     夹具：带型腔的板，顶面 z=40、型腔底 z=25。加工起始高度显式给 44（等效"毛坯顶面
-    高于零件"），每层切深 2 →所有面共用的层高网格为 [42, 40, 38, …, 26, 25]：
-    顶面区域切 [42, 40]，腔底区域切 [42 … 25]。层优先时两面在 42 / 40 两个高度
-    合并加工，正是"同一高度能合并就合并"的诉求。
+    高于零件"），每层切深 2 →所有面共用的层高网格为 [42, 40, 38, …, 26, 25]（层键按
+    1 nm 归一，网格面拟合噪声 40.00000015 不产生幽灵薄层）：顶面区域切 [42, 40]，
+    腔底区域登记到 [42 … 25]。
+
+    顶面内环并入可切区域（459abab 的几何障碍判断）之后，顶面在 42 / 40 两个共享层
+    会横穿型腔开口，与腔底刀轨切同一块 XY——同一层重叠。现在靠同层去重
+    （:class:`toolpath_lab.cam.common.LevelCoverage`）：先选的顶面一次切完共享层，
+    腔底让出，第一刀落到 38（顶面加工底之下）。
     """
 
     def setUp(self) -> None:
@@ -369,26 +391,31 @@ class MultiFaceCuttingOrderTests(unittest.TestCase):
                     round(float(points[0][2]), 4))] += 1
         return counts
 
-    def test_level_first_merges_both_faces_at_the_same_height(self) -> None:
+    def test_level_first_yields_shared_levels_to_the_first_face(self) -> None:
+        """层优先 + 同层去重：共享层 42/40 只由先选的顶面切，腔底第一刀落在 38。"""
+
         result = self._run("pocket_mill", self.faces, cutting_order="level_first")
         self.assertEqual(len(result.regions), 2)
         seq = self._cuts(result)
         top_id, floor_id = self.top["face_id"], self.floor["face_id"]
-        first_top = next(i for i, item in enumerate(seq) if item[0] == top_id)
-        first_floor = next(i for i, item in enumerate(seq) if item[0] == floor_id)
-        # 同高度合并：两面的第一刀都在 42 层，层内先后仍按选面顺序
-        self.assertLess(first_top, first_floor)
-        self.assertAlmostEqual(seq[first_top][1], 42.0, places=3)
-        self.assertAlmostEqual(seq[first_floor][1], 42.0, places=3)
-        # 层优先下降：42 层两面都做完之后才降到 40（顶面第二层夹在腔底各段之间）
-        second_top = next(i for i in range(first_floor + 1, len(seq))
-                          if seq[i][0] == top_id)
-        self.assertAlmostEqual(seq[second_top][1], 40.0, places=3)
-        # 腔底在顶面结束后继续下潜到底
+        top_zs = [z for face, z, _ in seq if face == top_id]
+        floor_zs = [z for face, z, _ in seq if face == floor_id]
+        # 顶面切自己的 [42, 40] 两层（含横穿型腔开口的共享层）
+        self.assertEqual([round(z, 3) for z in top_zs], sorted(
+            [round(z, 3) for z in top_zs], reverse=True))
+        self.assertAlmostEqual(min(top_zs), 40.0, places=3)
+        # 腔底在共享层整层让出：第一刀从 38 开始，绝不与顶面同层重叠
+        self.assertAlmostEqual(max(floor_zs), 38.0, places=3)
+        self.assertEqual([round(z, 3) for z in floor_zs], sorted(
+            [round(z, 3) for z in floor_zs], reverse=True))
+        # 层优先：顶面全部层在腔底之前做完（顶面让出后共享层只剩它一家）
         last_top = max(i for i, item in enumerate(seq) if item[0] == top_id)
-        last_floor = max(i for i, item in enumerate(seq) if item[0] == floor_id)
-        self.assertGreater(last_floor, last_top)
+        first_floor = min(i for i, item in enumerate(seq) if item[0] == floor_id)
+        self.assertLess(last_top, first_floor)
+        # 腔底一路下潜到底
+        self.assertAlmostEqual(min(floor_zs), 25.0, places=3)
         self.assertTrue(any("层优先" in note for note in result.toolpath.notes))
+        self.assertTrue(any("同层去重" in note for note in result.toolpath.notes))
 
     def test_depth_first_finishes_one_face_before_the_next(self) -> None:
         result = self._run("pocket_mill", self.faces, cutting_order="depth_first")
@@ -403,6 +430,8 @@ class MultiFaceCuttingOrderTests(unittest.TestCase):
         floor_zs = [z for face, z, _ in seq if face == floor_id]
         self.assertEqual(top_zs, sorted(top_zs, reverse=True))
         self.assertEqual(floor_zs, sorted(floor_zs, reverse=True))
+        # 顶面切完 42/40 后，腔底同样让出共享层（第一刀 38，与层优先一致）
+        self.assertAlmostEqual(max(floor_zs), 38.0, places=3)
         self.assertTrue(any("深度优先" in note for note in result.toolpath.notes))
 
     def test_cutting_order_does_not_change_the_cut_geometry(self) -> None:
@@ -411,9 +440,16 @@ class MultiFaceCuttingOrderTests(unittest.TestCase):
         level = self._run("pocket_mill", self.faces, cutting_order="level_first")
         depth = self._run("pocket_mill", self.faces, cutting_order="depth_first")
         self.assertEqual(self._cut_signatures(level), self._cut_signatures(depth))
-        # 顺序确实不同（否则上一条断言毫无意义）
-        self.assertNotEqual([item[0] for item in self._cuts(level)],
-                            [item[0] for item in self._cuts(depth)])
+        # 层高与每层刀路一致（集合语义）：两种顺序切出的 (面, 层) 组合完全相同
+        self.assertEqual(
+            sorted((face, round(z, 3)) for face, z, _ in self._cuts(level)),
+            sorted((face, round(z, 3)) for face, z, _ in self._cuts(depth)),
+        )
+        # 共享层只由顶面一家切（两种顺序都是），腔底从 38 起——重叠已消除
+        for result in (level, depth):
+            floor_zs = [z for face, z, _ in self._cuts(result)
+                        if face == self.floor["face_id"]]
+            self.assertAlmostEqual(max(floor_zs), 38.0, places=3)
 
     def test_single_face_is_identical_for_both_orders(self) -> None:
         """只选一个面时层优先 ≡ 深度优先：参数不能改变单面刀路。"""
@@ -428,6 +464,38 @@ class MultiFaceCuttingOrderTests(unittest.TestCase):
     def test_unknown_cutting_order_is_rejected(self) -> None:
         with self.assertRaises(ParameterError):
             self._run("pocket_mill", self.faces, cutting_order="sideways")
+
+    def test_shared_level_yield_does_not_leave_uncut_material(self) -> None:
+        """守恒：腔底在共享层让出的面积 ⊆ 顶面同层已切面积（跳过不等于漏切）。
+
+        直接驱动同层去重登记簿：顶面在 42 层登记后，腔底查询到的排除掩码必须把
+        它自己这一层会切的单元全部盖住——否则"整层跳过"就会留下未切材料。
+        """
+
+        top_region = region_from_face(self.part, self.top["face_id"],
+                                      cell_mm=0.5, ceiling_z=44.0)
+        floor_region = region_from_face(self.part, self.floor["face_id"],
+                                        cell_mm=0.5, ceiling_z=44.0)
+        tool = tool_from_cam_parameters(cam_parameters().coerce(dict(BASE_PARAMETERS)))
+        offset = tool.radius_mm + float(BASE_PARAMETERS["stock_allowance_mm"])
+        coverage = LevelCoverage()
+        top_mask = LevelCoverage.cut_mask(top_region, 42.0, tool, offset)
+        self.assertIsNotNone(top_mask)
+        coverage.record(top_region, 42.0, top_mask)
+        floor_mask = LevelCoverage.cut_mask(floor_region, 42.0, tool, offset)
+        exclude = coverage.exclude(floor_region, 42.0)
+        self.assertIsNotNone(floor_mask)
+        self.assertIsNotNone(exclude)
+        # 腔底会切的每个单元都已被顶面覆盖 → 整层跳过不漏切
+        self.assertFalse(bool((floor_mask & ~exclude).any()))
+        # 40 层同样成立（顶面的加工底所在层）
+        coverage.record(top_region, 40.0, LevelCoverage.cut_mask(top_region, 40.0,
+                                                                 tool, offset))
+        exclude_40 = coverage.exclude(floor_region, 40.0)
+        self.assertIsNotNone(exclude_40)
+        self.assertFalse(bool((floor_mask & ~exclude_40).any()))
+        # 38 层顶面不参与：无登记 → 返回 None，腔底走老路径原样加工
+        self.assertIsNone(coverage.exclude(floor_region, 38.0))
 
     def test_face_mill_honours_cutting_order(self) -> None:
         faces = [self.floor["face_id"], self.top["face_id"]]

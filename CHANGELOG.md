@@ -4,6 +4,26 @@
 
 ## [0.2.0] - 未发布
 
+### 修复：多面加工同一层刀轨重叠 / 同层重复切削
+
+几何障碍判断落地（面内环并入可切区域）之后，顶面刀路会横穿型腔开口：多面加工时
+顶面与它下方的型腔底在共享层（如 z=42/40）把同一块 XY 各切一遍；网格面的平面拟合
+（`floor_z` 实测 40.00000015 对 40.0）还会在同一物理高度留下两条"幽灵层"，再切一遍。
+
+- `cam/common.py` 新增 `LevelCoverage`（同层已切登记簿）与 `level_key`：
+  先调度的加工面把该层切过的单元登记下来，后调度的面按世界坐标格心采样得到排除掩码，
+  整层被覆盖就静默跳过、部分覆盖就按掩码裁剪——谁先调度谁先覆盖，层优先/深度优先共用
+  同一份登记。层键与 `stepped_levels` 统一按 1 nm 归一，吸收网格步进浮点误差与面拟合噪声。
+  刀心可行区之外的贴壁窄带故意不登记（宁可重复一小条，也不漏切材料）。
+- `plan_pocket_mill_multi` / `plan_face_mill_multi` 接入去重并给出
+  "同层去重：N 个（加工面×层）…"提示；轮廓铣每层只走一条偏置环、贴各自轮廓，
+  不接入（`service.py` 注释说明原因）。
+- `stepped_levels` 去重精度由 9 位小数改为 6 位（1 nm），各 planner 的 `floor_target`
+  层过滤改用归一后的键比较，避免末层被噪声滤掉导致漏切。
+- 测试：`MultiFaceCuttingOrderTests` 改写为断言"共享层只由先选面切、腔底第一刀落在
+  38、两种顺序 (面,层) 组合一致"，新增 `test_shared_level_yield_does_not_leave_uncut_material`
+  （守恒：让出的面积 ⊆ 同层已切面积）与 `test_stepped_levels_absorbs_mesh_noise_without_ghost_layers`。
+
 ### 修复：型腔铣扫描线区间合并过碎
 
 `scanline_intervals` 先前按 (row, col) 8 邻接拆区间：带宽覆盖两列单元时，每个列交接处

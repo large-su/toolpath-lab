@@ -34,8 +34,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from toolpath_lab.cam.boundary import MachiningRegion, offset_outline_polygons
-from toolpath_lab.cam.common import (MillingContext, MoveBuilder, depth_levels,
-                                     in_level_transfer, stepped_levels)
+from toolpath_lab.cam.common import (LevelCoverage, MillingContext, MoveBuilder,
+                                     depth_levels, in_level_transfer, level_key,
+                                     stepped_levels)
 from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.path import Toolpath
 
@@ -105,11 +106,15 @@ def _prepare_pocket(context: MillingContext, notes_prefix: str) -> _PocketJob:
 
 
 def _cut_pocket_level(builder: MoveBuilder, job: _PocketJob, level_index: int,
-                      target_z: float, previous_z: float, first_cut: bool) -> bool:
+                      target_z: float, previous_z: float, first_cut: bool, *,
+                      exclude_mask: NDArray[np.bool_] | None = None) -> bool:
     """切这个区域的某一层（环切 / 平行扫描 + 每层壁精修）。
 
     单面与多区域调度共用这一份实现；返回值是新的 ``first_cut``
     （第一个切削段落地后变 False，后续段才能按距离判断抬刀还是直连）。
+    ``exclude_mask`` 是同层调度里**已被先加工区域切过**的格子（见
+    :class:`~toolpath_lab.cam.common.LevelCoverage`）：从本层可切掩码里去掉，
+    整层被覆盖就整层静默跳过——同一层只切一遍。
     """
 
     region = job.region
@@ -120,6 +125,11 @@ def _cut_pocket_level(builder: MoveBuilder, job: _PocketJob, level_index: int,
     # 这一层"还能切"的区域：斜面/曲面时层高落到某处底面之下，那一块必须裁掉，
     # 否则刀会平着切过去把高处的底面切掉。水平底面时它与 inside 等价。
     level_region = region.level_mask(target_z, context.tool)
+    if exclude_mask is not None:
+        level_region = level_region & ~exclude_mask
+        if not level_region.any():
+            # 整层已被同层先加工的区域覆盖：去重跳过，属预期行为，不报警。
+            return first_cut
     if job.mode == "contour":
         rings, last_offset = _contour_rings(region, job.base_offset, job.stepover,
                                             mask=level_region)
@@ -251,6 +261,10 @@ def plan_pocket_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
     两种顺序只是遍历顺序不同：层高与每层刀路完全一致（区域顺序仍按选面顺序）。
     斜/曲面底面的"底面跟随"跟随区域：深度优先时该区域切完立即收尾，层优先时
     等全部层下完再逐区域收尾。
+
+    同一高度上区域互相重叠时（顶面内环并入可切区域后，顶面与它下方的型腔底
+    在共享层就是两块重叠区域），**谁先调度谁先覆盖**，后切的区域让出重叠部分，
+    同一层只切一遍（见 :class:`~toolpath_lab.cam.common.LevelCoverage`）。
     """
 
     jobs = [_prepare_pocket(context, prefix) for context, prefix in items]
@@ -260,7 +274,10 @@ def plan_pocket_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
     layers = stepped_levels(global_top, [job.floor_target for job in jobs], step)
     for job in jobs:
         top = float(job.region.top_z)
-        job.levels = [z for z in layers if job.floor_target - 1e-9 <= z <= top - 1e-9]
+        # 下界用归一后的键比较：floor_target 带 ±1e-7 的网格面拟合噪声，而 layers
+        # 已按 1 nm 归一（40.00000015 → 40.0），裸比较会把末层滤掉导致漏切。
+        floor_key = level_key(job.floor_target)
+        job.levels = [z for z in layers if floor_key - 1e-9 <= z <= top - 1e-9]
         if not job.levels:
             raise PlanningError(
                 f"{job.prefix}型腔铣没有可切除的深度：区域顶面 {top:g} mm，"
@@ -285,11 +302,28 @@ def plan_pocket_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
         return float(job.region.top_z) if level_index == 0 \
             else float(job.levels[level_index - 1])
 
+    # 同层去重：先切的区域登记"这层切过哪里"，后切的区域把重叠部分让出去
+    # （顶面内环并入可切区域后，顶面与它下方的型腔底在共享层会切同一块 XY）。
+    coverage = LevelCoverage()
+    dedup_count = 0
+
+    def cut_level(job: _PocketJob, level_index: int, target_z: float) -> None:
+        nonlocal first_cut, dedup_count
+        exclude = coverage.exclude(job.region, target_z)
+        natural = LevelCoverage.cut_mask(job.region, target_z, job.context.tool,
+                                         job.base_offset)
+        if exclude is not None and natural is not None \
+                and bool((natural & exclude).any()):
+            dedup_count += 1
+        first_cut = _cut_pocket_level(builder, job, level_index, target_z,
+                                      previous_z_of(job, level_index), first_cut,
+                                      exclude_mask=exclude)
+        coverage.record(job.region, target_z, natural)
+
     if str(order) == "depth_first":
         for job in jobs:
             for level_index, target_z in enumerate(job.levels):
-                first_cut = _cut_pocket_level(builder, job, level_index, target_z,
-                                              previous_z_of(job, level_index), first_cut)
+                cut_level(job, level_index, target_z)
             first_cut = _follow_floor(builder, job, first_cut)
     else:
         # 未知取值一律按层优先（参数校验在上游，这里是防御性回退，与 cut_mode 同风格）。
@@ -300,8 +334,7 @@ def plan_pocket_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
                 level_index = mapping.get(target_z)
                 if level_index is None:
                     continue
-                first_cut = _cut_pocket_level(builder, job, level_index, target_z,
-                                              previous_z_of(job, level_index), first_cut)
+                cut_level(job, level_index, target_z)
         for job in jobs:
             first_cut = _follow_floor(builder, job, first_cut)
 
@@ -309,6 +342,11 @@ def plan_pocket_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
     for job in jobs:
         notes.extend(_notes(job.context, job.region, job.mode, job.stepover, job.ring_count,
                             len(job.levels), job.prefix, job.floor_target, job.skipped_layers))
+    if dedup_count:
+        notes.append(
+            f"同层去重：{dedup_count} 个（加工面×层）与同层先加工的区域重叠，"
+            "重叠部分已切过，不再重复切削"
+        )
     if str(order) == "depth_first":
         notes.append(
             f"切削顺序：深度优先——单个区域从上到下切完再换下一个（共 {len(jobs)} 个加工面）"
