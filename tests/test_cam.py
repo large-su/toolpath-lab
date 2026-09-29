@@ -14,10 +14,12 @@ from math import pi
 import numpy as np
 
 from tests.fixtures import (plate_with_cylinder, plate_with_pocket,
-                            plate_with_two_pockets)
+                            plate_with_two_pockets, simple_box)
 from toolpath_lab.cam.boundary import build_region, offset_outline_polygons, region_from_face
 from toolpath_lab.cam.common import MillingContext, depth_levels
+from toolpath_lab.cam.face_mill import plan_face_mill
 from toolpath_lab.cam.parameters import cam_parameters, tool_from_cam_parameters
+from toolpath_lab.cam.pocket_mill import plan_pocket_mill
 from toolpath_lab.cam.service import CAMOperationRequest, execute_operation, planning_catalog
 from toolpath_lab.core.errors import ParameterError, PlanningError
 from toolpath_lab.core.operation import Operation, OperationTree, ParameterTemplate
@@ -565,6 +567,150 @@ class MultiPocketCuttingOrderTests(unittest.TestCase):
         expected = [(face, z) for z in self.levels
                     for face in (self.pockets[1], self.pockets[0])]
         self.assertEqual(self._schedule(result), expected)
+
+
+class LevelTransferTests(unittest.TestCase):
+    """层内一次下刀切完整层：能平移就连，出界/跨区域才回退抬刀。
+
+    断言的都是"抬刀发生了没有"这类可判定的量：入口下刀之后，整层乃至整条
+    刀路不允许再出现抬到安全面的段（RAPID 带 Z 升降即视为抬刀）。
+    """
+
+    def _entry_index(self, tp) -> int:
+        for index, move in enumerate(tp.moves):
+            if move.kind is MoveKind.CUT and "下刀" in move.label:
+                return index
+        raise AssertionError("刀路里没有下刀段")
+
+    def _assert_single_entry_stays_in_level(self, tp, first_level_z: float) -> None:
+        entry = self._entry_index(tp)
+        plunges = [m for m in tp.moves
+                   if m.kind is MoveKind.CUT and "下刀" in m.label]
+        self.assertEqual(len(plunges), 1, "入口之后又出现了下刀")
+        for move in tp.moves[entry + 1:]:
+            z_max = float(np.asarray(move.points, float)[:, 2].max())
+            self.assertLessEqual(z_max, first_level_z + 1e-6,
+                                 f"{move.kind.name}/{move.label} 抬到了层高以上")
+
+    def test_pocket_completes_every_level_after_one_entry(self) -> None:
+        """单型腔：整条刀路只在入口下刀一次，层间用斜降连接。"""
+
+        part = make_part(plate_with_pocket())
+        floor_id = [f["face_id"] for f in part.features
+                    if f["horizontal"] and abs(f["plane"][3] - 25.0) < 1e-6][0]
+        region = region_from_face(part, floor_id, cell_mm=0.5, ceiling_z=45.0,
+                                  require_horizontal=False)
+        tp = plan_pocket_mill(context_for(region, cut_mode="contour"))
+        levels = depth_levels(region.top_z, region.floor_z, 2.0)
+        self.assertGreater(len(levels), 3)
+        self._assert_single_entry_stays_in_level(tp, levels[0])
+        # 层间必须有斜降（Z 跨层的连接段），而不是抬刀
+        descents = [m for m in tp.moves
+                    if m.kind is MoveKind.LINK
+                    and np.ptp(np.asarray(m.points, float)[:, 2]) > 1e-9]
+        self.assertGreaterEqual(len(descents), len(levels) - 1)
+        # 每层的环与壁精修依然齐全（几何没有因连贯化而丢失）
+        rings = [m for m in tp.moves
+                 if m.kind is MoveKind.CUT and "条刀轨" in m.label]
+        finishes = [m for m in tp.moves
+                    if m.kind is MoveKind.CUT and "精修腔壁" in m.label]
+        self.assertGreaterEqual(len(rings), len(levels))
+        self.assertEqual(len(finishes), len(levels))
+
+    def test_face_zigzag_finishes_level_with_one_entry(self) -> None:
+        """面铣往复：相邻刀线在层内平移，换行与层间都不再抬刀。"""
+
+        part = make_part(simple_box(100.0, 80.0, 20.0))
+        top = [f for f in part.features
+               if f["horizontal"] and abs(f["plane"][3] - 20.0) < 1e-6][0]
+        region = region_from_face(part, top["face_id"], cell_mm=0.5,
+                                  ceiling_z=22.0, require_horizontal=True)
+        tp = plan_face_mill(context_for(region, cut_depth_mm=1.5,
+                                        cut_mode="zigzag", finish_pass=False))
+        levels = depth_levels(region.top_z, region.floor_z, 1.5)
+        self.assertGreater(len(levels), 1)
+        self._assert_single_entry_stays_in_level(tp, levels[0])
+        rows = [m for m in tp.moves
+                if m.kind is MoveKind.CUT and "第" in m.label and "层" in m.label]
+        self.assertGreaterEqual(len(rows), 10)
+
+    def test_one_way_face_mill_keeps_per_pass_retract(self) -> None:
+        """单向走刀的语义不变：每一刀仍抬刀、同向落刀。"""
+
+        part = make_part(simple_box(100.0, 80.0, 20.0))
+        top = [f for f in part.features
+               if f["horizontal"] and abs(f["plane"][3] - 20.0) < 1e-6][0]
+        region = region_from_face(part, top["face_id"], cell_mm=0.5,
+                                  ceiling_z=22.0, require_horizontal=True)
+        tp = plan_face_mill(context_for(region, cut_depth_mm=1.5,
+                                        cut_mode="one_way", finish_pass=False))
+        lifts = [m for m in tp.moves
+                 if m.kind is MoveKind.RAPID and m.label == "层内转移"]
+        self.assertGreaterEqual(len(lifts), 3)
+
+    def test_contour_mill_chains_levels_without_retract(self) -> None:
+        """轮廓铣：各层同 XY 直降衔接，全程只在入口下刀一次。"""
+
+        part = make_part(simple_box(100.0, 80.0, 20.0))
+        top = [f for f in part.features
+               if f["horizontal"] and abs(f["plane"][3] - 20.0) < 1e-6][0]
+        result = execute_operation(CAMOperationRequest.from_payload({
+            "kind": "contour_mill",
+            "faces": [top["face_id"]],
+            "cell_mm": 0.5,
+            "top_z": 25.0,
+            "parameters": BASE_PARAMETERS,
+        }, part))
+        tp = result.toolpath
+        levels = depth_levels(25.0, 20.0, float(BASE_PARAMETERS["cut_depth_mm"]))
+        self._assert_single_entry_stays_in_level(tp, levels[0])
+        cuts = [m for m in tp.moves
+                if m.kind is MoveKind.CUT and "轮廓" in m.label]
+        self.assertEqual(len(cuts), len(levels))
+
+    def test_island_pocket_links_never_enter_the_island(self) -> None:
+        """带岛型腔：层内平移的直线绝不穿岛——穿岛的转移必须回退成抬刀。"""
+
+        region = build_region(SQUARE, [ISLAND], top_z=10.0, floor_z=0.0,
+                              cell_mm=0.4)
+        tp = plan_pocket_mill(context_for(region, cut_depth_mm=2.0,
+                                          cut_mode="zigzag"))
+        links = [m for m in tp.moves if m.kind is MoveKind.LINK]
+        self.assertTrue(links)
+        for move in links:
+            points = np.asarray(move.points, float)
+            samples = np.vstack([points, (points[:-1] + points[1:]) / 2.0])
+            crossed = ((np.abs(samples[:, 0]) < 5.0)
+                       & (np.abs(samples[:, 1]) < 5.0))
+            self.assertFalse(bool(crossed.any()),
+                             f"层内转移穿过岛屿：{move.label}")
+
+    def test_multi_face_still_retracts_between_regions(self) -> None:
+        """多面同层：区域内部平移衔接，跨区域的转移必须抬刀。"""
+
+        part = make_part(plate_with_pocket())
+        top = [f for f in part.features
+               if f["horizontal"] and abs(f["plane"][3] - 40.0) < 1e-6][0]
+        floor = [f for f in part.features
+                 if f["horizontal"] and abs(f["plane"][3] - 25.0) < 1e-6][0]
+        result = execute_operation(CAMOperationRequest.from_payload({
+            "kind": "pocket_mill",
+            "faces": [top["face_id"], floor["face_id"]],
+            "cell_mm": 0.5,
+            "top_z": 45.0,
+            "parameters": {**BASE_PARAMETERS, "cut_mode": "contour",
+                           "cutting_order": "level_first"},
+        }, part))
+        lifts = 0
+        for move in result.toolpath.moves:
+            zs = np.asarray(move.points, float)[:, 2]
+            if move.kind is MoveKind.RAPID and float(zs.max() - zs.min()) > 1e-9:
+                lifts += 1
+        links = [m for m in result.toolpath.moves if m.kind is MoveKind.LINK]
+        # 两个型腔之间的实体高出当前层，跨区域转移必须保留抬刀
+        self.assertGreaterEqual(lifts, 2)
+        # 而区域内部的环间/精修转移应当是层内平移
+        self.assertGreaterEqual(len(links), 3)
 
 
 class ContourAndRequestTests(unittest.TestCase):

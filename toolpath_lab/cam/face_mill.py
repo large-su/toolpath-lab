@@ -20,7 +20,8 @@ from typing import Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-from toolpath_lab.cam.common import MillingContext, MoveBuilder, depth_levels, stepped_levels
+from toolpath_lab.cam.common import (MillingContext, MoveBuilder, depth_levels,
+                                     in_level_transfer, stepped_levels)
 from toolpath_lab.cam.boundary import MachiningRegion, offset_outline_polygons
 from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.path import Toolpath
@@ -260,8 +261,18 @@ def _emit_layer(builder: MoveBuilder, context: MillingContext,
                 builder.plunge(points[0])
                 builder.cut(points, label=f"{label_prefix}第 {level_index + 1} 层")
                 continue
-            if mode == "zigzag" and float(np.linalg.norm(previous[:2] - points[0][:2])) < 1e-6:
+            gap = float(np.linalg.norm(previous[:2] - points[0][:2]))
+            z_gap = abs(float(previous[2]) - float(points[0][2]))
+            if mode == "zigzag" and gap < 1e-6:
                 builder.cut(points, label=f"{label_prefix}第 {level_index + 1} 层 连接刀")
+            elif mode != "one_way" and in_level_transfer(
+                    region, context.tool_radius, previous[:2], points[0][:2]):
+                # 往复的相邻刀线（以及层间的第一刀）在层内直接平移/斜降连过去，
+                # 一次下刀切完整层；one_way 的语义仍是"每刀抬刀、同向落刀"。
+                if gap > 1e-9 or z_gap > 1e-9:
+                    builder.link(np.vstack([previous, points[0]]),
+                                 label=f"{label_prefix}层内转移")
+                builder.cut(points, label=f"{label_prefix}第 {level_index + 1} 层")
             else:
                 builder.rapid_to_safe(points[0], label="层内转移")
                 builder.plunge(points[0])
@@ -272,17 +283,27 @@ def _emit_layer(builder: MoveBuilder, context: MillingContext,
 def _emit_finish_contour(builder: MoveBuilder, context: MillingContext,
                          region: MachiningRegion, offset: float, target_z: float, *,
                          label_prefix: str = "") -> None:
-    """沿等距轮廓补一刀精修。"""
+    """沿等距轮廓补一刀精修（去起点的平移优先走层内，出界才抬刀）。"""
 
     polygons = offset_outline_polygons(region, offset)
+    previous = builder.last_point
     for polygon in polygons:
         if polygon.shape[0] < 3:
             continue
         loop = np.vstack([polygon, polygon[:1]])
         points = np.column_stack((loop, np.full(loop.shape[0], target_z)))
-        builder.rapid_to_safe(points[0], label=f"{label_prefix}定位到轮廓起点")
-        builder.plunge(points[0], label=f"{label_prefix}下刀（精修）")
+        if previous is not None and in_level_transfer(
+                region, context.tool_radius, previous[:2], points[0][:2]):
+            gap = float(np.linalg.norm(previous[:2] - points[0][:2]))
+            z_gap = abs(float(previous[2]) - float(points[0][2]))
+            if gap > 1e-9 or z_gap > 1e-9:
+                builder.link(np.vstack([previous, points[0]]),
+                             label=f"{label_prefix}层内转移")
+        else:
+            builder.rapid_to_safe(points[0], label=f"{label_prefix}定位到轮廓起点")
+            builder.plunge(points[0], label=f"{label_prefix}下刀（精修）")
         builder.cut(points, label=f"{label_prefix}精修轮廓")
+        previous = builder.last_point
 
 
 __all__ = ["plan_face_mill", "plan_face_mill_multi"]

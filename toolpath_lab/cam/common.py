@@ -176,6 +176,48 @@ def stepped_levels(top_z: float, floor_targets: Sequence[float], cut_depth: floa
     return sorted(merged, reverse=True)
 
 
+def in_level_transfer(region: Any, tool_radius: float,
+                      start_xy: NDArray[np.float64] | Sequence[float],
+                      end_xy: NDArray[np.float64] | Sequence[float],
+                      *, level_mask: NDArray[np.bool_] | None = None) -> bool:
+    """刀心能否从 ``start_xy`` 直线平移到 ``end_xy`` 而不越出区域（层内转移判据）。
+
+    为什么需要它：层内两段刀路之间"抬到安全面再插下来"是最大的空程来源
+    （每层壁精修、面铣每一刀都各来一次）。只要转移直线的 XY 全程落在
+    **刀心可行区**（距边界 ≥ 刀具半径，可再与本层可切掩码求交）之内，
+    平移就既不会撞岛、也不会切出腔壁，可以直接在层内连过去；
+    穿岛、凹角贴边、跨两个型腔之间的实体都会被判否，调用方回退到抬刀转移。
+
+    判定按 ``cell_mm`` 的一半步长采样中间点（首末两点**豁免**：它们本身就是
+    既有刀路点，格化误差若把端点判成出界，会白白放弃本来安全的层内连接）。
+    """
+
+    mask = region.offset_mask(float(tool_radius))
+    if level_mask is not None:
+        mask = mask & level_mask
+    if mask.size == 0 or not bool(mask.any()):
+        return False
+    a = np.asarray(start_xy, dtype=np.float64).reshape(2)
+    b = np.asarray(end_xy, dtype=np.float64).reshape(2)
+    cell = float(region.cell_mm)
+    length = float(np.hypot(b[0] - a[0], b[1] - a[1]))
+    steps = int(ceil(length / max(0.5 * cell, 1e-9)))
+    if steps <= 1:
+        # 原地（层间直上直下的 XY 不动）：刀心刚走过这里，垂直降层必然安全
+        return True
+    x0, y0 = float(region.bounds[0]), float(region.bounds[1])
+    rows, cols = int(mask.shape[0]), int(mask.shape[1])
+    for k in range(1, steps):
+        point = a + (b - a) * (k / steps)
+        i = int(np.floor((point[0] - x0) / cell))
+        j = int(np.floor((point[1] - y0) / cell))
+        if i < 0 or j < 0 or i >= rows or j >= cols:
+            return False
+        if not bool(mask[i, j]):
+            return False
+    return True
+
+
 def positions_from_xy(points_xy: NDArray[np.float64], z: float) -> NDArray[np.float64]:
     planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
     return np.column_stack((planar, np.full(planar.shape[0], float(z))))
@@ -286,6 +328,7 @@ __all__ = [
     "MillingContext",
     "MoveBuilder",
     "depth_levels",
+    "in_level_transfer",
     "level_passes_per_depth",
     "positions_from_xy",
     "stepped_levels",

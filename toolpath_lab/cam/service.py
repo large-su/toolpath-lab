@@ -26,7 +26,7 @@ from toolpath_lab.cam.boundary import (DEFAULT_CELL_MM, MachiningRegion, adaptiv
                                        build_region, offset_outline_polygons,
                                        region_from_face)
 from toolpath_lab.cam.common import (MillingContext, MoveBuilder, depth_levels,
-                                     stepped_levels)
+                                     in_level_transfer, stepped_levels)
 from toolpath_lab.cam.face_mill import plan_face_mill, plan_face_mill_multi
 from toolpath_lab.cam.pocket_mill import plan_pocket_mill, plan_pocket_mill_multi
 from toolpath_lab.core.errors import ParameterError, PlanningError
@@ -627,8 +627,17 @@ def _plan_contour_mill(context: MillingContext, prefix: str = "") -> Toolpath:
             continue
         for level_index, target_z in enumerate(levels):
             points = np.column_stack((loop, np.full(loop.shape[0], float(target_z))))
-            builder.rapid_to_safe(points[0], label="定位到轮廓起点")
-            builder.plunge(points[0], label=f"下刀 Z{target_z:.3f}")
+            previous = builder.last_point
+            if previous is not None and in_level_transfer(
+                    region, context.tool_radius, previous[:2], points[0][:2]):
+                # 层内平移/层间斜降：一次下刀把各圈与各层连贯走完
+                gap = float(np.linalg.norm(previous[:2] - points[0][:2]))
+                z_gap = abs(float(previous[2]) - float(points[0][2]))
+                if gap > 1e-9 or z_gap > 1e-9:
+                    builder.link(np.vstack([previous, points[0]]), label="层内转移")
+            else:
+                builder.rapid_to_safe(points[0], label="定位到轮廓起点")
+                builder.plunge(points[0], label=f"下刀 Z{target_z:.3f}")
             builder.cut(points, label=f"{prefix}轮廓 {level_index + 1}/{len(levels)}")
     notes = [
         f"{prefix}轮廓铣：{len(levels)} 层，沿轮廓偏置 {offset:g} mm",
@@ -699,8 +708,16 @@ def _plan_contour_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
         for polygon in job.polygons:
             loop = np.vstack([polygon, polygon[:1]])
             points = np.column_stack((loop, np.full(loop.shape[0], float(target_z))))
-            builder.rapid_to_safe(points[0], label="定位到轮廓起点")
-            builder.plunge(points[0], label=f"下刀 Z{target_z:.3f}")
+            previous = builder.last_point
+            if previous is not None and in_level_transfer(
+                    job.region, job.context.tool_radius, previous[:2], points[0][:2]):
+                gap = float(np.linalg.norm(previous[:2] - points[0][:2]))
+                z_gap = abs(float(previous[2]) - float(points[0][2]))
+                if gap > 1e-9 or z_gap > 1e-9:
+                    builder.link(np.vstack([previous, points[0]]), label="层内转移")
+            else:
+                builder.rapid_to_safe(points[0], label="定位到轮廓起点")
+                builder.plunge(points[0], label=f"下刀 Z{target_z:.3f}")
             builder.cut(points,
                         label=f"{job.prefix}轮廓 {level_index + 1}/{len(job.levels)}")
 
