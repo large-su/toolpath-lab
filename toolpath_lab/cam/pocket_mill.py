@@ -186,9 +186,11 @@ def _cut_pocket_level(builder: MoveBuilder, job: _PocketJob, level_index: int,
     # 开粗按 R+allowance、精修按 R，侧面余量恰好被精修这一刀吃掉。
     # 不传层高掩码：斜/曲面时它的 Z=max(层高, 刀轴) 自己会防过切，
     # 裁掩码只会把贴壁底面从最终深度里裁掉（壁边留料，详见 _emit_wall_finish）。
+    # 但**几何障碍**要裁：贴壁环不许贴着凸台/悬臂走（与层高无关，只看谁挡着刀）。
     if bool(context.parameters.get("finish_pass", True)) \
             and region.offset_area_mm2(context.tool_radius) > 0.0:
         _emit_wall_finish(builder, context, region, context.tool_radius, target_z,
+                          mask=region.obstacle_mask(target_z, context.tool),
                           level_mask=level_region, label_prefix=job.prefix)
     return first_cut
 
@@ -522,9 +524,13 @@ def _emit_floor_follow(builder: MoveBuilder, context: MillingContext,
 
     count = 0
     mode = str(context.parameters.get("cut_mode", "contour"))
+    # 底面跟随按 floor_target 这一刀的障碍裁剪：区域可能已并入内环，
+    # 不裁就会贴着凸台顶把底面高度走过去（直接过切）。与层高掩码无关——
+    # 这里刻意不裁"刀轴高于本层"的贴壁带，只裁谁挡着刀。
+    allowed = region.obstacle_mask(floor_target, context.tool)
     shapes: list[tuple[NDArray[np.float64], bool]] = []
     if mode == "contour":
-        rings, _ = _contour_rings(region, base_offset, stepover, mask=None)
+        rings, _ = _contour_rings(region, base_offset, stepover, mask=allowed)
         # 环上的点要加密到栅格尺度再算 Z（详见 _densify_planar）：
         # 矩形腔的环被 _simplify 成 4 个角点，只在角点取 Z 会整条边骑弦，
         # 谷底残料、凸底过切都是这一下漏出来的。
@@ -532,10 +538,13 @@ def _emit_floor_follow(builder: MoveBuilder, context: MillingContext,
         shapes = [(_densify_planar(ring, dense, close=True), True) for ring in rings]
     else:
         angle = float(context.parameters.get("direction_deg", 0.0))
-        passes = _zigzag_passes(region, region.offset_mask(base_offset), angle, stepover,
+        scan_mask = region.offset_mask(base_offset)
+        if allowed is not None:
+            scan_mask = scan_mask & allowed
+        passes = _zigzag_passes(region, scan_mask, angle, stepover,
                                 subdivide=True)
         shapes = [(line, False) for line in passes]
-    cleanup = _cleanup_loop(region, floor_target, context, mask=None)
+    cleanup = _cleanup_loop(region, floor_target, context, mask=allowed)
     if cleanup is not None:
         shapes.append((cleanup[:, :2], True))
     for index, (shape, close) in enumerate(shapes):
@@ -543,7 +552,8 @@ def _emit_floor_follow(builder: MoveBuilder, context: MillingContext,
         if points.shape[0] < 2:
             continue
         _emit_ring(builder, context, points, first_cut, 0, index,
-                   region=region, label_prefix=f"{label_prefix}底面跟随 ",
+                   region=region, level_mask=allowed,
+                   label_prefix=f"{label_prefix}底面跟随 ",
                    label_suffix="（斜面/曲面底面）")
         first_cut = False
         count += 1

@@ -40,6 +40,10 @@ MAX_CELL_MM = 5.0
 #: 360 ≈ 0.28 mm/cell @ 100 mm 毛坯 / 0.56 mm/cell @ 200 mm 毛坯，
 #: 在常规零件上保持细腻，同时不会让大零件炸掉内存。
 TARGET_CELLS_PER_AXIS = 360
+#: 判定"几何高出底面"的容差（mm）：底面自身的面片与高度场取值实测一致到 7e-15，
+#: 容差只用来吸收双线性插值/浮点误差——高出不足 10 μm 的面（齐平、倒平）不算障碍，
+#: 斜面/曲面底的高度变化仍然由 axis/逐点 Z 负责，不会误裁贴壁带。
+FLOOR_SURFACE_TOL_MM = 0.01
 
 
 def adaptive_cell_mm(extent_mm: float, *, target: int = TARGET_CELLS_PER_AXIS,
@@ -124,6 +128,15 @@ class MachiningRegion:
     lift_grid_cache: NDArray[np.float64] | None = None
     #: 刀轴高度场的缓存（底面高度 + 防过切抬升），见 :meth:`axis_grid`。
     axis_grid_cache: NDArray[np.float64] | None = None
+    #: **几何障碍高度场**：区域栅格上"零件几何在该列（格心竖直向上）的最高点"，
+    #: 没有几何的列（通孔、悬空）为 ``-inf``。层的可切性据此判断——刀具从上方
+    #: 降到层高时，足迹圆内没有高出本层的几何才落得下来。``None`` 表示未做障碍
+    #: 判定（老行为：面内环一律排除）。见 :meth:`obstacle_mask`。
+    obstacle_top: NDArray[np.float64] | None = None
+    #: ``obstacle_top`` 的全局最大值（栅格建好后不再变，由 :meth:`set_obstacle_top` 填）。
+    obstacle_max: float | None = None
+    #: 障碍足迹最大值的缓存，键 = 足迹半径（刀具半径 + 半格），按刀具算一次。
+    obstacle_axis_cache: tuple[float, NDArray[np.float64]] | None = None
     notes: list[str] = field(default_factory=list)
 
     # -- 基本量 ------------------------------------------------------------
@@ -310,25 +323,82 @@ class MachiningRegion:
 
     def level_mask(self, level_z: float, tool: Any,
                    mask: NDArray[np.bool_] | None = None) -> NDArray[np.bool_]:
-        """这一层**还能切**的区域。
+        """这一层**还能切**的区域，两条判据取交：
 
-        判据是"刀轴放在这里、刀尖贴住该点底面"时，刀体不会扎进底面：
-
-            axis(x, y) = floor(x, y) + lift(∇floor) ≤ level_z
-
-        水平底面时抬升为 0、底面高度是常数，于是这一条对本层没有约束（等价于老行为）；
-        斜面/曲面时层高降到某处底面之下，掩码会自然把那一块裁掉，
-        否则刀会在层高上平着切过去、把高处的底面切掉。
+        1. ``axis(x, y) = floor(x, y) + lift(∇floor) ≤ level_z``——刀体不会扎进底面。
+           水平底面时抬升为 0、底面高度是常数，这一条对本层没有约束（等价于老行为）；
+           斜面/曲面时层高降到某处底面之下，掩码会把那一块裁掉，
+           否则刀会在层高上平着切过去、把高处的底面切掉。
+        2. 足迹圆内没有**高出本层的零件几何**（见 :meth:`obstacle_mask`）：
+           凸台/悬臂挡住的列被裁掉，层高越过凸台顶后整层恢复连通。
         """
 
+        allowed = self.obstacle_mask(level_z, tool)
         if self.is_flat_floor:
-            return self.inside if mask is None else mask
-        allowed = self.axis_grid(tool) <= float(level_z) + 1e-9
+            base = self.inside if mask is None else mask
+            return base if allowed is None else (base & allowed)
+        axis_ok = self.axis_grid(tool) <= float(level_z) + 1e-9
+        if allowed is not None:
+            axis_ok = axis_ok & allowed
         if mask is not None:
-            allowed = allowed & mask
+            axis_ok = axis_ok & mask
         # 与"刀心可行区域"求交：层高落到某处底面之下时被裁掉，而刀具半径/余量
         # 本来就要留出的那圈边距不能因此丢掉。
-        return self.offset_mask(0.0) & allowed
+        return self.offset_mask(0.0) & axis_ok
+
+    # -- 几何障碍（逐层可达性） --------------------------------------------
+    def set_obstacle_top(self, grid: NDArray[np.float64]) -> None:
+        """登记障碍高度场（区域建好之后再算，见 :func:`_obstacle_top_grid`）。"""
+
+        self.obstacle_top = grid
+        self.obstacle_max = float(grid.max()) if grid.size else None
+        self.obstacle_axis_cache = None
+
+    @property
+    def has_geometry_obstacle(self) -> bool:
+        """是否存在**可能挡住刀**的几何（有零件几何高出加工底面）。
+
+        没有它时任何层的障碍掩码都恒为"全通"，调用方可以整段走老路径——
+        这也是"无凸台零件零行为变化"的开关。
+        """
+
+        return (self.obstacle_top is not None and self.obstacle_max is not None
+                and bool(np.isfinite(self.obstacle_max))
+                and self.obstacle_max > float(self.floor_z) + 1e-9)
+
+    def obstacle_mask(self, level_z: float, tool: Any) -> NDArray[np.bool_] | None:
+        """本层"刀从上方降得下来"的区域；返回 ``None`` 表示无需裁剪。
+
+        判据：刀心所在格 + 足迹圆（半径 = 刀具半径 + 半格）内，零件几何的最高点
+        都不高于本层。于是：
+
+        - 层内没有凸台遮挡 → 全层连通，按一个连续平面规划刀路；
+        - 孔上方没有几何 → 孔与周边连通、合并进同一层加工；
+        - 孔里有柱子 / 跨孔悬臂 / 面上有凸台 → 按其顶面高度逐层排除，
+          层高越过凸台顶的那几层照常连通。
+
+        足迹多出的半格是栅格化的安全边界：只有格心落在三角形内才记障碍，
+        障碍格中心最多比真实边界缩进半格。
+        """
+
+        if not self.has_geometry_obstacle:
+            return None
+        axis = self._obstacle_axis_grid(tool)
+        return self.inside & (axis <= float(level_z) + 1e-9)
+
+    def _obstacle_axis_grid(self, tool: Any) -> NDArray[np.float64]:
+        """障碍高度场的足迹最大值（刀心放在该格时足迹圆内最高的几何），按半径缓存。"""
+
+        radius = float(getattr(tool, "radius_mm", 0.0) or 0.0)
+        clearance = radius + 0.5 * float(self.cell_mm)
+        cached = self.obstacle_axis_cache
+        if cached is not None and cached[0] == clearance:
+            return cached[1]
+        grid = self.obstacle_top if self.obstacle_top is not None \
+            else np.full(self.shape, -np.inf)
+        axis = _footprint_max_grid(grid, clearance, float(self.cell_mm))
+        self.obstacle_axis_cache = (clearance, axis)
+        return axis
 
     def deepest_floor_z(self) -> float:
         """**加工区域内**的底面最低点（斜底/曲底的最低处）。
@@ -538,9 +608,26 @@ def region_from_face(part: PartModel, face_id: int, *, cell_mm: float = DEFAULT_
     if start_z < floor_z:
         start_z = floor_z
 
+    # 内环要"并进来、按层避让"必须有几何可判（障碍场来自三角网格）：
+    # 网格为空时维持老行为——内环一律排除。
+    fill = part.mesh.triangle_count > 0
     region = build_region(outline, islands, top_z=start_z, floor_z=floor_z, cell_mm=cell_mm,
-                          floor=floor, inside_mask=inside_mask)
+                          floor=floor, inside_mask=inside_mask, fill_islands=fill)
     region.floor_z = region.deepest_floor_z()
+    obstacle = _obstacle_top_grid(part, region) if fill else None
+    if fill and obstacle is None:
+        # 防御：障碍高度场算不出来就不并内环（距离场不再避岛后没人负责避让，
+        # 并着会直接撞岛），回退"内环一律排除"的老行为。
+        fill = False
+        region = build_region(outline, islands, top_z=start_z, floor_z=floor_z, cell_mm=cell_mm,
+                              floor=floor, inside_mask=inside_mask)
+        region.floor_z = region.deepest_floor_z()
+    elif obstacle is not None:
+        region.set_obstacle_top(obstacle)
+    if fill and islands:
+        region.notes.append(
+            "面内环（孔/凸台投影）已并入可切区域：逐层按上方几何障碍判断连通与避让"
+        )
     return region
 
 
@@ -590,7 +677,8 @@ def planar_features(part: PartModel) -> list[dict[str, Any]]:
 def build_region(outline: NDArray[np.float64], islands: Sequence[NDArray[np.float64]] = (),
                  *, top_z: float, floor_z: float, cell_mm: float = DEFAULT_CELL_MM,
                  floor: FloorField | None = None,
-                 inside_mask: NDArray[np.bool_] | None = None) -> MachiningRegion:
+                 inside_mask: NDArray[np.bool_] | None = None,
+                 fill_islands: bool = False) -> MachiningRegion:
     """由外轮廓与岛屿建栅格、算距离场。
 
     ``floor`` 是加工底面的高度场：不传时按常数 ``floor_z`` 建一张水平底面，
@@ -599,6 +687,12 @@ def build_region(outline: NDArray[np.float64], islands: Sequence[NDArray[np.floa
     ``inside_mask`` 是"已经在同一张栅格上算好的实心掩码"：曲面型腔的底轮廓由
     底面三角面片光栅化得到（退化面片拼出来的轮廓用多边形拼不准），走这条路进来时
     就直接用它当内部区域，并把它的边界当作距离场的轮廓。
+
+    ``fill_islands=True`` 时内环（孔/凸台投影）不从掩码里挖掉、也不参与距离场与
+    面积核对——区域退化成"外轮廓围出的整块"，孔与周边连成一个连续区域。
+    代价是距离场不再围绕内环偏置，凸台的避让改由逐层障碍掩码负责
+    （见 :meth:`MachiningRegion.obstacle_mask`），所以只有"已登记障碍高度场"的
+    调用方才可以打开它。
     """
 
     x_min = float(outline[:, 0].min())
@@ -629,9 +723,10 @@ def build_region(outline: NDArray[np.float64], islands: Sequence[NDArray[np.floa
     grid_x, grid_y = np.meshgrid(xs, ys, indexing="ij")
 
     inside = _rasterize(outline, grid_x, grid_y)
-    for island in islands:
-        if island.shape[0] >= 3:
-            inside &= ~_rasterize(island, grid_x, grid_y)
+    if not fill_islands:
+        for island in islands:
+            if island.shape[0] >= 3:
+                inside &= ~_rasterize(island, grid_x, grid_y)
     if inside_mask is not None and inside_mask.shape == inside.shape:
         inside = inside_mask
         outline = _outline_from_mask(mask=inside, bounds=(x_min, y_min, x_max, y_max),
@@ -641,17 +736,22 @@ def build_region(outline: NDArray[np.float64], islands: Sequence[NDArray[np.floa
     # 到轮廓的距离：外轮廓与所有岛屿取最小，直接对原始多边形求，没有阶梯误差
     distance = _distance_to_contour(inside, np.asarray(outline, dtype=np.float64),
                                     x_min, y_min, spacing)
-    for island in islands:
-        if island.shape[0] >= 3:
-            distance = np.minimum(
-                distance,
-                _distance_to_contour(inside, np.asarray(island, dtype=np.float64),
+    if not fill_islands:
+        for island in islands:
+            if island.shape[0] >= 3:
+                distance = np.minimum(
+                    distance,
+                    _distance_to_contour(inside, np.asarray(island, dtype=np.float64),
                                      x_min, y_min, spacing),
             )
     distance = np.where(inside, distance, 0.0)
 
     # 面积核对：栅格化后的面积应当与多边形面积接近
-    polygon_area = abs(_polygon_area(outline)) - sum(abs(_polygon_area(item)) for item in islands)
+    # （并入内环时掩码本来就是"外轮廓整块"，核对也按整块算，避免误报警告）
+    polygon_area = abs(_polygon_area(outline)) if fill_islands else (
+        abs(_polygon_area(outline))
+        - sum(abs(_polygon_area(item)) for item in islands)
+    )
     raster_area = float(inside.sum()) * spacing * spacing
     if polygon_area > 0 and abs(raster_area - polygon_area) / polygon_area > 0.08:
         notes.append(
@@ -703,6 +803,132 @@ def _mask_from_triangles(positions: NDArray[np.float64], triangles: NDArray[np.i
         wc = 1.0 - wa - wb
         mask[x_lo:x_hi + 1, y_lo:y_hi + 1] |= ((wa >= -1e-9) & (wb >= -1e-9) & (wc >= -1e-9))
     return mask
+
+
+def _obstacle_top_grid(part: PartModel, region: MachiningRegion
+                       ) -> NDArray[np.float64] | None:
+    """区域栅格上"零件几何在该列的最高点"——逐层障碍判断（可达性）的依据。
+
+    - 只按**格心落在三角形内**写值：竖直壁的面片在 XY 上退化成分母为 0 的线段，
+      天然被跳过——紧贴区域边界的侧壁不会被误判成"高出底面的障碍"；
+    - **底面自身的面片不算障碍**（逐格与 :meth:`MachiningRegion.floor_grid` 比较，
+      容差 :data:`FLOOR_SURFACE_TOL_MM`）：斜面/曲面底的高度变化归 axis/逐点 Z 管，
+      记进来会把底面跟随与贴壁精修的壁边带误裁掉（实测踩过）；
+    - 不高于加工底面的面片直接不看：层高永远 ≥ 底面，它们挡不住刀（顺带让
+      "选腔底/选平面"这类常规工序免于全栅格扫描）；
+    - 区域之外的格子置 ``-inf``：刀心本来就到不了那里，留着反而会把紧贴边界的
+      高面（型腔外侧的顶面）经足迹最大值"传染"进区域、把整圈边缘误裁掉。
+    没有任何几何的列（通孔）保持 ``-inf``——正是"上方无障碍、可连通加工"的情形。
+    """
+
+    positions = np.asarray(part.mesh.positions, dtype=np.float64)
+    indices = np.asarray(part.mesh.indices, dtype=np.int64)
+    if positions.size == 0 or indices.size == 0:
+        return None
+    rows, cols = region.shape
+    grid = np.full((rows, cols), -np.inf)
+    if rows == 0 or cols == 0:  # pragma: no cover - 空区域上游已拦
+        return grid
+    x_min, y_min = float(region.bounds[0]), float(region.bounds[1])
+    spacing = float(region.cell_mm)
+    floor_z = float(region.floor_z)
+    corners = positions[indices]                       # (T, 3, 3)
+    t_min = corners.min(axis=1)
+    t_max = corners.max(axis=1)
+    keep = ((t_max[:, 0] >= x_min) & (t_min[:, 0] <= x_min + rows * spacing)
+            & (t_max[:, 1] >= y_min) & (t_min[:, 1] <= y_min + cols * spacing)
+            & (t_max[:, 2] > floor_z + 1e-9))
+    if keep.any():
+        xs = x_min + (np.arange(rows) + 0.5) * spacing
+        ys = y_min + (np.arange(cols) + 0.5) * spacing
+        # 底面自身在各格的高度：面片只有**高出当地底面**才算障碍（见下）
+        floor_here_grid = region.floor_grid()
+        for triangle in corners[keep]:
+            x_lo = int(max(0, np.floor((triangle[:, 0].min() - x_min) / spacing - 0.5)))
+            x_hi = int(min(rows - 1, np.ceil((triangle[:, 0].max() - x_min) / spacing - 0.5)))
+            y_lo = int(max(0, np.floor((triangle[:, 1].min() - y_min) / spacing - 0.5)))
+            y_hi = int(min(cols - 1, np.ceil((triangle[:, 1].max() - y_min) / spacing - 0.5)))
+            if x_hi < x_lo or y_hi < y_lo:
+                continue
+            block_x, block_y = np.meshgrid(xs[x_lo:x_hi + 1], ys[y_lo:y_hi + 1],
+                                           indexing="ij")
+            a, b, c = triangle[0], triangle[1], triangle[2]
+            denominator = ((b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]))
+            if abs(float(denominator)) < 1e-12:
+                continue                      # 竖直壁：XY 投影退化，不构成遮挡面
+            wa = ((b[1] - c[1]) * (block_x - c[0]) + (c[0] - b[0]) * (block_y - c[1])) / denominator
+            wb = ((c[1] - a[1]) * (block_x - c[0]) + (a[0] - c[0]) * (block_y - c[1])) / denominator
+            wc = 1.0 - wa - wb
+            hit = (wa >= -1e-9) & (wb >= -1e-9) & (wc >= -1e-9)
+            if not hit.any():
+                continue
+            height = wa * a[2] + wb * b[2] + wc * c[2]   # 面片在格心处的高度
+            # 底面自身的面片不算障碍：斜面/曲面底的"高度变化"由 axis/逐点 Z 负责，
+            # 记进来会把底面跟随与贴壁精修的整个壁边带误裁掉（实测踩过）。
+            obstacle = hit & (height > floor_here_grid[x_lo:x_hi + 1, y_lo:y_hi + 1]
+                              + FLOOR_SURFACE_TOL_MM)
+            if not obstacle.any():
+                continue
+            block = grid[x_lo:x_hi + 1, y_lo:y_hi + 1]
+            np.maximum(block, np.where(obstacle, height, -np.inf), out=block)
+    grid[~region.inside] = -np.inf
+    return grid
+
+
+#: 障碍足迹最大值的计算预算（格点数 × 偏移数），超预算先做最大值池化再滤波。
+_FOOTPRINT_MAX_BUDGET = 200_000_000
+
+
+def _footprint_max_grid(grid: NDArray[np.float64], radius_mm: float, cell_mm: float,
+                        *, budget: int = _FOOTPRINT_MAX_BUDGET) -> NDArray[np.float64]:
+    """每个格点足迹圆（半径 = ``radius_mm``）内的最大值。
+
+    **必须保守（绝不低估）**：障碍判定漏一点就是撞刀。格点数 × 圆内偏移数超出
+    预算时，先把栅格按 ``factor × factor`` 块取最大值池化到粗栅格、在粗栅格上做
+    等效半径的圆盘滤波，再逐格回投——块对齐会把障碍多扩约 ``2 × factor`` 格，
+    方向是安全的（宁可多让一点，不可少避一刀）。
+    """
+
+    rows, cols = grid.shape
+    if rows == 0 or cols == 0:
+        return grid.copy()
+    reach = int(np.ceil(float(radius_mm) / max(float(cell_mm), 1e-12)))
+    if reach <= 0:
+        return grid.copy()
+    cells = rows * cols
+    factor = 1
+    while factor < reach:
+        reach_c = -(-reach // factor)                       # ceil(reach / factor)
+        offsets = (2 * reach_c + 1) ** 2                    # 方形上界（够保守）
+        if offsets * max(1, -(-cells // (factor * factor))) <= budget:
+            break
+        factor += 1
+    if factor <= 1:
+        return _disk_max_grid(grid, reach)
+    pad_r, pad_c = (-rows) % factor, (-cols) % factor
+    padded = np.pad(grid, ((0, pad_r), (0, pad_c)), constant_values=-np.inf)
+    coarse = padded.reshape(padded.shape[0] // factor, factor,
+                            padded.shape[1] // factor, factor).max(axis=(1, 3))
+    coarse_axis = _disk_max_grid(coarse, -(-reach // factor))
+    return np.repeat(np.repeat(coarse_axis, factor, axis=0), factor, axis=1)[:rows, :cols]
+
+
+def _disk_max_grid(grid: NDArray[np.float64], reach: int) -> NDArray[np.float64]:
+    """半径 ``reach``（格）的圆盘最大值滤波：逐偏移切片做 maximum。"""
+
+    out = grid.copy()
+    rows, cols = grid.shape
+    off_i, off_j = np.ogrid[-reach:reach + 1, -reach:reach + 1]
+    disk = (off_i * off_i + off_j * off_j) <= reach * reach
+    for index_i, index_j in zip(*np.nonzero(disk)):
+        di, dj = int(index_i) - reach, int(index_j) - reach
+        s0, s1 = max(0, -di), min(rows, rows - di)
+        t0, t1 = max(0, -dj), min(cols, cols - dj)
+        if s0 >= s1 or t0 >= t1:
+            continue
+        np.maximum(out[s0:s1, t0:t1], grid[s0 + di:s1 + di, t0 + dj:t1 + dj],
+                   out=out[s0:s1, t0:t1])
+    return out
 
 
 def _outline_from_mask(mask: NDArray[np.bool_], bounds: tuple[float, float, float, float],

@@ -621,24 +621,40 @@ def _plan_contour_mill(context: MillingContext, prefix: str = "") -> Toolpath:
         raise PlanningError(
             f"{prefix}轮廓在偏置 {offset:g} mm 后为空：刀具相对加工区域太大"
         )
-    for polygon in polygons:
+
+    def emit(polygon: NDArray[np.float64], level_index: int, target_z: float,
+             allowed: NDArray[np.bool_] | None) -> None:
         loop = np.vstack([polygon, polygon[:1]]) if hasattr(polygon, "shape") else None
         if loop is None:  # pragma: no cover - polygons 一定是 ndarray
-            continue
+            return
+        points = np.column_stack((loop, np.full(loop.shape[0], float(target_z))))
+        previous = builder.last_point
+        if previous is not None and in_level_transfer(
+                region, context.tool_radius, previous[:2], points[0][:2],
+                level_mask=allowed):
+            # 层内平移/层间斜降：一次下刀把各圈与各层连贯走完
+            gap = float(np.linalg.norm(previous[:2] - points[0][:2]))
+            z_gap = abs(float(previous[2]) - float(points[0][2]))
+            if gap > 1e-9 or z_gap > 1e-9:
+                builder.link(np.vstack([previous, points[0]]), label="层内转移")
+        else:
+            builder.rapid_to_safe(points[0], label="定位到轮廓起点")
+            builder.plunge(points[0], label=f"下刀 Z{target_z:.3f}")
+        builder.cut(points, label=f"{prefix}轮廓 {level_index + 1}/{len(levels)}")
+
+    if region.has_geometry_obstacle:
+        # 有几何障碍的区域环要**逐层重算**：凸台挡住的列被裁掉后，
+        # 等距轮廓会缩环、断环甚至整层消失（层高越过凸台顶又恢复）。
         for level_index, target_z in enumerate(levels):
-            points = np.column_stack((loop, np.full(loop.shape[0], float(target_z))))
-            previous = builder.last_point
-            if previous is not None and in_level_transfer(
-                    region, context.tool_radius, previous[:2], points[0][:2]):
-                # 层内平移/层间斜降：一次下刀把各圈与各层连贯走完
-                gap = float(np.linalg.norm(previous[:2] - points[0][:2]))
-                z_gap = abs(float(previous[2]) - float(points[0][2]))
-                if gap > 1e-9 or z_gap > 1e-9:
-                    builder.link(np.vstack([previous, points[0]]), label="层内转移")
-            else:
-                builder.rapid_to_safe(points[0], label="定位到轮廓起点")
-                builder.plunge(points[0], label=f"下刀 Z{target_z:.3f}")
-            builder.cut(points, label=f"{prefix}轮廓 {level_index + 1}/{len(levels)}")
+            allowed = region.obstacle_mask(target_z, context.tool)
+            level_polygons = polygons if allowed is None else \
+                offset_outline_polygons(region, offset, mask=allowed)
+            for polygon in level_polygons:
+                emit(polygon, level_index, target_z, allowed)
+    else:
+        for polygon in polygons:
+            for level_index, target_z in enumerate(levels):
+                emit(polygon, level_index, target_z, None)
     notes = [
         f"{prefix}轮廓铣：{len(levels)} 层，沿轮廓偏置 {offset:g} mm",
         f"刀具 D{context.tool.diameter_mm:g} mm",
@@ -705,12 +721,17 @@ def _plan_contour_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
     builder = MoveBuilder(dispatch)
 
     def emit(job: _ContourJob, level_index: int, target_z: float) -> None:
-        for polygon in job.polygons:
+        # 有几何障碍时环按层重算（缩环/断环），层内转移也拿同一张掩码约束
+        allowed = job.region.obstacle_mask(target_z, job.context.tool)
+        polygons = job.polygons if allowed is None else \
+            offset_outline_polygons(job.region, job.offset, mask=allowed)
+        for polygon in polygons:
             loop = np.vstack([polygon, polygon[:1]])
             points = np.column_stack((loop, np.full(loop.shape[0], float(target_z))))
             previous = builder.last_point
             if previous is not None and in_level_transfer(
-                    job.region, job.context.tool_radius, previous[:2], points[0][:2]):
+                    job.region, job.context.tool_radius, previous[:2], points[0][:2],
+                    level_mask=allowed):
                 gap = float(np.linalg.norm(previous[:2] - points[0][:2]))
                 z_gap = abs(float(previous[2]) - float(points[0][2]))
                 if gap > 1e-9 or z_gap > 1e-9:

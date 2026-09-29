@@ -160,12 +160,14 @@ class DrillPlanner:
 
 | 成员 | 说明 |
 | --- | --- |
-| outline / islands | 外轮廓与岛屿（世界 XY，(N, 2)） |
+| outline / islands | 外轮廓与岛屿（世界 XY，(N, 2)）。`region_from_face` 已把内环**并入**可切区域，形状仍记录在此 |
 | top_z / floor_z | 这一层的起始高度与目标高度 |
 | inside | 刀心可行区域的布尔掩码（已按刀具半径 + 余量偏置） |
 | distance | 每个格点到轮廓的距离（毫米），等距与防撞判断都靠它 |
 | offset_mask(mm) / offset_outline_polygons(mm) | 等距区域与它的闭合边界环 |
 | scanline_levels / scanline_intervals | 按走刀方向布刀线与取区间 |
+| level_mask(层高, 刀具) | 本层"还能切"的区域：底面高度 + 防过切抬升 ≤ 层高，并叠加几何障碍裁剪 |
+| obstacle_mask(层高, 刀具) | 逐层几何障碍：足迹圆内没有高出本层的零件几何才放行；`None` = 无障碍、不要裁。刀路出区域前先与它求交 |
 
 ### 曲面类加工类型（不吃加工区域的那一类）
 

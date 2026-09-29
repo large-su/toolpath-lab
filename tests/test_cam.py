@@ -13,7 +13,7 @@ from math import pi
 
 import numpy as np
 
-from tests.fixtures import (plate_with_cylinder, plate_with_pocket,
+from tests.fixtures import (plate_with_boss, plate_with_cylinder, plate_with_pocket,
                             plate_with_two_pockets, simple_box)
 from toolpath_lab.cam.boundary import build_region, offset_outline_polygons, region_from_face
 from toolpath_lab.cam.common import MillingContext, depth_levels
@@ -711,6 +711,167 @@ class LevelTransferTests(unittest.TestCase):
         self.assertGreaterEqual(lifts, 2)
         # 而区域内部的环间/精修转移应当是层内平移
         self.assertGreaterEqual(len(links), 3)
+
+
+class ObstacleConnectivityTests(unittest.TestCase):
+    """逐层几何障碍判断：区域连通按"本层高度处的几何遮挡"决定。
+
+    - 层内没有凸台遮挡 → 该层整体按连续平面规划（刀线跨过）；
+    - 孔上方无障碍 → 孔与周边连通、合并进同一层加工；
+    - 孔/面上有凸台 → 低于其顶面的层逐列避让，层高越过顶面后恢复连通。
+    """
+
+    # plate_with_boss 的凸台：34×14 mm、居中，半宽 17 / 半深 7
+    PAD_HALF = (17.0, 7.0)
+
+    # -- 工具 --------------------------------------------------------------
+    def _boss_region(self, ceiling: float = 45.0):
+        part = make_part(plate_with_boss(), "boss")
+        moat = [f["face_id"] for f in part.features
+                if f["horizontal"] and abs(f["plane"][3] - 30.0) < 1e-6][0]
+        return region_from_face(part, moat, cell_mm=0.5, ceiling_z=ceiling)
+
+    @staticmethod
+    def _cut_polylines(tp) -> list:
+        return [np.asarray(m.points, dtype=float)
+                for m in tp.moves if m.kind is MoveKind.CUT and len(m.points) >= 2]
+
+    @staticmethod
+    def _min_dist_point(polylines, px: float, py: float) -> float:
+        """折线（含线段内部）到点的最小距离。"""
+
+        best = float("inf")
+        for poly in polylines:
+            a = poly[:, :2]
+            v = a[1:] - a[:-1]
+            w = a[:-1] - np.array([px, py])
+            denom = np.einsum("ij,ij->i", v, v)
+            safe = np.where(denom > 1e-18, denom, 1.0)
+            t = np.clip(-np.einsum("ij,ij->i", w, v) / safe, 0.0, 1.0)
+            t = np.where(denom > 1e-18, t, 0.0)
+            proj = a[:-1] + t[:, None] * v
+            best = min(best, float(np.hypot(proj[:, 0] - px, proj[:, 1] - py).min()))
+        return best
+
+    @staticmethod
+    def _min_dist_rect(polylines, half_x: float, half_y: float) -> float:
+        """折线（含线段内部）到原点矩形的最小距离（0 = 穿过）。"""
+
+        best = float("inf")
+        for poly in polylines:
+            for start, end in zip(poly[:-1], poly[1:]):
+                for point in start + np.linspace(0.0, 1.0, 64)[:, None] * (end - start):
+                    dx = max(abs(float(point[0])) - half_x, 0.0)
+                    dy = max(abs(float(point[1])) - half_y, 0.0)
+                    best = min(best, float(np.hypot(dx, dy)))
+        return best
+
+    @staticmethod
+    def _min_dist_points_rect(points, half_x: float, half_y: float) -> float:
+        """点集到原点矩形的最小距离（0 = 点在矩形内）。"""
+
+        dx = np.maximum(np.abs(points[:, 0]) - half_x, 0.0)
+        dy = np.maximum(np.abs(points[:, 1]) - half_y, 0.0)
+        return float(np.hypot(dx, dy).min())
+
+    def _cell(self, region, x: float, y: float) -> tuple[int, int]:
+        return (int((x - region.bounds[0]) / region.cell_mm),
+                int((y - region.bounds[1]) / region.cell_mm))
+
+    # -- 用例 --------------------------------------------------------------
+    def test_through_hole_merges_with_the_surrounding_plane(self) -> None:
+        """孔上方无障碍：孔并入同一层，面铣刀路从孔心跨过（要求 2）。"""
+
+        part = make_part(plate_with_cylinder(), "hole")
+        top = [f["face_id"] for f in part.features
+               if f["horizontal"] and abs(f["plane"][3] - 40.0) < 1e-6][0]
+        region = region_from_face(part, top, cell_mm=0.5, ceiling_z=42.0)
+        # 内环仍被记录（形状没丢），但已经并进可切区域
+        self.assertEqual(len(region.islands), 1)
+        self.assertGreater(region.area_mm2, 7800.0)     # 全幅 8000；老行为会扣掉 ~707
+        self.assertTrue(any("并入" in note for note in region.notes))
+        i, j = self._cell(region, 0.0, 0.0)
+        self.assertTrue(bool(region.inside[i, j]), "孔心不在可切区域内")
+        # 孔列没有几何 → 障碍场全为 -inf → 本层判据恒为"不裁"
+        context = context_for(region)
+        self.assertFalse(region.has_geometry_obstacle)
+        self.assertIsNone(region.obstacle_mask(40.0, context.tool))
+        # 刀路真的跨过孔心（未并入时刀线在孔边 15 mm 外就被切断）
+        tp = plan_face_mill(context_for(region, cut_mode="zigzag"))
+        crossing = self._min_dist_point(self._cut_polylines(tp), 0.0, 0.0)
+        self.assertLess(crossing, 12.0, "面铣刀路没有跨过通孔")
+
+    def test_boss_blocks_only_the_levels_below_its_top(self) -> None:
+        """凸台顶以上的层整层连通；低于凸台顶的层留刀具半径避让（要求 1/3）。"""
+
+        region = self._boss_region(ceiling=45.0)
+        context = context_for(region)
+        self.assertTrue(region.has_geometry_obstacle)
+        i, j = self._cell(region, 0.0, 0.0)          # 凸台正中
+        ring_i, ring_j = self._cell(region, 0.0, 20.0)   # 槽底环带（凸台之外）
+        allowed_high = region.obstacle_mask(41.0, context.tool)
+        allowed_low = region.obstacle_mask(35.0, context.tool)
+        self.assertTrue(bool(allowed_high[i, j]), "层高越过凸台顶后应连通")
+        self.assertFalse(bool(allowed_low[i, j]), "层高低于凸台顶时应被遮挡")
+        self.assertTrue(bool(allowed_low[ring_i, ring_j]), "遮挡不应波及凸台外的槽底")
+
+        tp = plan_face_mill(context_for(region))
+        points = np.vstack([np.asarray(m.points, dtype=float) for m in tp.moves
+                            if m.kind is MoveKind.CUT])
+        above = points[points[:, 2] >= 40.0 - 1e-6]
+        below = points[points[:, 2] < 40.0 - 1e-6]
+        self.assertGreater(above.shape[0], 0)
+        self.assertGreater(below.shape[0], 0)
+        # 凸台顶以上的层：刀线从凸台正上方跨过（整层按连续平面规划）
+        above_lines = [p for p in self._cut_polylines(tp) if p[:, 2].max() >= 40.0 - 1e-6]
+        self.assertEqual(self._min_dist_rect(above_lines, 16.0, 6.0), 0.0,
+                         "凸台顶以上的层没有跨过凸台")
+        # 低于凸台顶的层：刀心离凸台边至少 (刀具半径 - 栅格量化)，不允许切进凸台
+        clearance = self._min_dist_points_rect(below, *self.PAD_HALF)
+        self.assertGreaterEqual(clearance, context.tool_radius - 1.0,
+                                f"低于凸台顶的层离凸台只有 {clearance:.3f} mm")
+
+    def test_contour_mill_carves_a_hole_around_the_boss_each_level(self) -> None:
+        """轮廓铣逐层重算等距环：低于凸台顶的层绕开凸台（环上出现内边界）。"""
+
+        part = make_part(plate_with_boss(), "boss")
+        moat = [f["face_id"] for f in part.features
+                if f["horizontal"] and abs(f["plane"][3] - 30.0) < 1e-6][0]
+        result = execute_operation(CAMOperationRequest.from_payload({
+            "kind": "contour_mill",
+            "faces": [moat],
+            "cell_mm": 0.5,
+            "parameters": BASE_PARAMETERS,
+        }, part))
+        points = np.vstack([np.asarray(m.points, dtype=float) for m in result.toolpath.moves
+                            if m.kind is MoveKind.CUT])
+        self.assertGreater(points.shape[0], 0)
+        # 部件顶 = 凸台顶 40：所有层都低于凸台顶，每层的环都必须绕开凸台
+        self.assertTrue(bool((points[:, 2] < 40.0 + 1e-6).all()))
+        clearance = self._min_dist_points_rect(points, *self.PAD_HALF)
+        # 判据是一个区间：≥4（栅格量化内仍留出刀具半径）证明没贴着凸台走，
+        # ≤8 证明环**确实**绕着凸台缩出了内边界——不裁的老路径是 ~12.7 mm。
+        self.assertGreaterEqual(clearance, 4.0, f"轮廓贴着凸台走（距离 {clearance:.3f}）")
+        self.assertLessEqual(clearance, 8.0,
+                             f"轮廓没有绕凸台缩环（距离 {clearance:.3f}）")
+
+    def test_pocket_floor_keeps_the_no_obstacle_path(self) -> None:
+        """兜底：面内没有高出底面的几何时，逐层判据不裁（行为同老路径）。"""
+
+        part = make_part(plate_with_pocket())
+        floor_id = [f["face_id"] for f in part.features
+                    if f["horizontal"] and abs(f["plane"][3] - 25.0) < 1e-6][0]
+        region = region_from_face(part, floor_id, cell_mm=0.5, ceiling_z=45.0,
+                                  require_horizontal=False)
+        self.assertIsNotNone(region.obstacle_top)      # 障碍场照常建立（全 -inf）
+        self.assertFalse(region.has_geometry_obstacle)
+        context = context_for(region)
+        self.assertIsNone(region.obstacle_mask(region.floor_z, context.tool))
+        # 刀路不受影响：仍然一次下刀切完整条
+        tp = plan_pocket_mill(context_for(region, cut_mode="contour"))
+        plunges = [m for m in tp.moves
+                   if m.kind is MoveKind.CUT and "下刀" in m.label]
+        self.assertEqual(len(plunges), 1)
 
 
 class ContourAndRequestTests(unittest.TestCase):

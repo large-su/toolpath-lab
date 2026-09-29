@@ -22,9 +22,9 @@ from toolpath_lab.brep import load_brep, to_tessellated_model
 from toolpath_lab.brep.tessellate_model import MeshOptions
 from toolpath_lab.core.part import build_part
 
-__all__ = ["cylinder_boss", "fixture_shape", "plate_with_curved_pocket", "plate_with_cylinder",
-           "plate_with_pocket", "plate_with_sloped_pocket", "simple_box", "solid_and_part",
-           "solid_bytes", "to_part"]
+__all__ = ["cylinder_boss", "fixture_shape", "plate_with_boss", "plate_with_curved_pocket",
+           "plate_with_cylinder", "plate_with_pocket", "plate_with_sloped_pocket",
+           "simple_box", "solid_and_part", "solid_bytes", "to_part"]
 
 #: 夹具用的离散精度：比默认细一点，让面积/体积断言更接近解析值。
 FIXTURE_MESH = MeshOptions(linear_deflection=0.02, angular_deflection=0.35,
@@ -219,6 +219,26 @@ def plate_with_cylinder(width: float = 100.0, depth: float = 80.0, height: float
     plate = _box(width, depth, height)
     hole = _cylinder(hole_diameter / 2.0, height + 2.0, z=-1.0)
     return _to_part(_cut(plate, hole), name)
+
+
+def plate_with_boss(width: float = 100.0, depth: float = 80.0, height: float = 40.0,
+                    moat_x: float = 70.0, moat_y: float = 50.0, moat_width: float = 18.0,
+                    moat_depth: float = 10.0, name: str = "plate_boss"):
+    """带**凸台**的板：顶面挖一圈方框浅槽，槽中央留出凸台（凸台顶与板顶同高）。
+
+    槽底面在 ``z = height - moat_depth``（外环 = 槽外沿，内环 = 凸台投影），
+    凸台高出该面 ``moat_depth``、顶面 ``z = height``。这是"逐层几何障碍判断"的考题：
+
+    - 选**槽底面**加工：层高 ≥ 凸台顶时整层连通（刀从凸台上方跨过），
+      低于凸台顶时必须绕开凸台，并留出刀具半径的避让；
+    - 选**板顶面**加工：槽是顶面的内环，槽内没有高出顶面的几何 → 槽与顶面连通合并。
+    """
+
+    plate = _box(width, depth, height, z=0.0)
+    outer = _box(moat_x, moat_y, moat_depth + 1.0, z=height - moat_depth)
+    inner = _box(moat_x - 2.0 * moat_width, moat_y - 2.0 * moat_width,
+                 moat_depth + 3.0, z=height - moat_depth - 2.0)
+    return _to_part(_cut(plate, _cut(outer, inner)), name)
 
 
 def cylinder_boss(diameter: float = 60.0, height: float = 50.0, name: str = "boss"):

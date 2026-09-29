@@ -79,12 +79,23 @@ def _cut_face_level(builder: MoveBuilder, job: _FaceJob, level_index: int,
             f"{context.stock_allowance:g} mm 已超过加工区域，该层被跳过"
         )
         return first_cut
+    # 逐层几何障碍：刀从上方降到 target_z 时，足迹内高出本层的几何（凸台/悬臂）
+    # 挡住的列被裁掉；层高越过凸台顶后整层恢复连通（孔上方无障碍时一路并通）。
+    allowed = region.obstacle_mask(target_z, context.tool)
+    if allowed is not None:
+        if not (mask & allowed).any():
+            context.warn(
+                f"第 {level_index + 1} 层：本层可切区域全部被上方几何遮挡，该层被跳过"
+            )
+            return first_cut
+        mask &= allowed
 
     intervals = _scan_intervals(region, mask, job.angle, job.stepover, context)
     if not intervals:
         return first_cut
     _emit_layer(builder, context, intervals, target_z, region, job.mode,
-                first_cut=first_cut, level_index=level_index, label_prefix=job.prefix)
+                first_cut=first_cut, level_index=level_index, label_prefix=job.prefix,
+                level_mask=allowed)
     first_cut = False
 
     # BUG-004 修：先前判据 offset ≤ 0.5·R+1e-9 恒假（offset = R+allowance ≥ R），
@@ -93,7 +104,7 @@ def _cut_face_level(builder: MoveBuilder, job: _FaceJob, level_index: int,
     if bool(context.parameters.get("finish_pass", True)) \
             and region.offset_area_mm2(context.tool_radius) > 0.0:
         _emit_finish_contour(builder, context, region, context.tool_radius, target_z,
-                             label_prefix=job.prefix)
+                             label_prefix=job.prefix, level_mask=allowed)
     return first_cut
 
 
@@ -239,8 +250,9 @@ def _to_world(interval: tuple[float, float, float], angle: float) -> NDArray[np.
 def _emit_layer(builder: MoveBuilder, context: MillingContext,
                 passes: list[list[tuple[float, float, float]]], target_z: float,
                 region: MachiningRegion, mode: str, *, first_cut: bool,
-                level_index: int, label_prefix: str = "") -> None:
-    """走完一层的所有刀线。"""
+                level_index: int, label_prefix: str = "",
+                level_mask: NDArray[np.bool_] | None = None) -> None:
+    """走完一层的所有刀线。``level_mask`` 是本层障碍裁剪后的可切掩码。"""
 
     angle = float(context.parameters.get("direction_deg", 0.0))
     for pass_index, intervals in enumerate(passes):
@@ -266,7 +278,8 @@ def _emit_layer(builder: MoveBuilder, context: MillingContext,
             if mode == "zigzag" and gap < 1e-6:
                 builder.cut(points, label=f"{label_prefix}第 {level_index + 1} 层 连接刀")
             elif mode != "one_way" and in_level_transfer(
-                    region, context.tool_radius, previous[:2], points[0][:2]):
+                    region, context.tool_radius, previous[:2], points[0][:2],
+                    level_mask=level_mask):
                 # 往复的相邻刀线（以及层间的第一刀）在层内直接平移/斜降连过去，
                 # 一次下刀切完整层；one_way 的语义仍是"每刀抬刀、同向落刀"。
                 if gap > 1e-9 or z_gap > 1e-9:
@@ -282,10 +295,15 @@ def _emit_layer(builder: MoveBuilder, context: MillingContext,
 
 def _emit_finish_contour(builder: MoveBuilder, context: MillingContext,
                          region: MachiningRegion, offset: float, target_z: float, *,
-                         label_prefix: str = "") -> None:
-    """沿等距轮廓补一刀精修（去起点的平移优先走层内，出界才抬刀）。"""
+                         label_prefix: str = "",
+                         level_mask: NDArray[np.bool_] | None = None) -> None:
+    """沿等距轮廓补一刀精修（去起点的平移优先走层内，出界才抬刀）。
 
-    polygons = offset_outline_polygons(region, offset)
+    ``level_mask`` 是本层障碍裁剪后的可切掩码：精修环同样不许贴着凸台/悬臂走，
+    也拿它约束层内转移的直线。
+    """
+
+    polygons = offset_outline_polygons(region, offset, mask=level_mask)
     previous = builder.last_point
     for polygon in polygons:
         if polygon.shape[0] < 3:
@@ -293,7 +311,8 @@ def _emit_finish_contour(builder: MoveBuilder, context: MillingContext,
         loop = np.vstack([polygon, polygon[:1]])
         points = np.column_stack((loop, np.full(loop.shape[0], target_z)))
         if previous is not None and in_level_transfer(
-                region, context.tool_radius, previous[:2], points[0][:2]):
+                region, context.tool_radius, previous[:2], points[0][:2],
+                level_mask=level_mask):
             gap = float(np.linalg.norm(previous[:2] - points[0][:2]))
             z_gap = abs(float(previous[2]) - float(points[0][2]))
             if gap > 1e-9 or z_gap > 1e-9:
