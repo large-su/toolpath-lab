@@ -149,6 +149,33 @@ def level_passes_per_depth(depth: float, cut_depth: float) -> int:
     return max(1, int(ceil(max(depth, 0.0) / max(cut_depth, 1e-6) - 1e-9)))
 
 
+def stepped_levels(top_z: float, floor_targets: Sequence[float], cut_depth: float) -> list[float]:
+    """多区域共用的层高网格：从 ``top_z`` 按每层切深递减，并把每个区域各自的
+    加工底（``floor_targets``）并入网格作为该区域的末层，返回从高到低的全部层 Z。
+
+    与 :func:`depth_levels`（单区域把总深**均分**）不同，这里层高是**绝对网格**，
+    与区域个数、各自深度无关——同一高度的层在所有区域间天然对齐，"层优先"因此
+    能把多个区域在该高度的加工安排在一起（UG 的 Level First）；层高不随切削顺序
+    改变，层优先/深度优先只是遍历顺序不同，切下来的几何完全一致。
+    """
+
+    floors = [float(value) for value in floor_targets]
+    if not floors:
+        return []
+    top = float(top_z)
+    step = max(float(cut_depth), 1e-6)
+    lowest = min(floors)
+    grid: list[float] = []
+    z = top - step
+    while z > lowest + 1e-9:
+        grid.append(z)
+        z -= step
+    # 按 9 位小数去重：网格步进的浮点误差会让"恰好落在加工底上的网格层"与
+    # floor_target 差出 1e-14，不去重就会多出一层幽灵薄层。
+    merged = {round(value, 9) for value in grid + floors}
+    return sorted(merged, reverse=True)
+
+
 def positions_from_xy(points_xy: NDArray[np.float64], z: float) -> NDArray[np.float64]:
     planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
     return np.column_stack((planar, np.full(planar.shape[0], float(z))))
@@ -261,4 +288,5 @@ __all__ = [
     "depth_levels",
     "level_passes_per_depth",
     "positions_from_xy",
+    "stepped_levels",
 ]

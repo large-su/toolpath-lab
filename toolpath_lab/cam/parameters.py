@@ -111,6 +111,11 @@ def cutting_parameters() -> ParameterSet:
                  step=15.0, unit="°", group="切削"),
             spec("finish_pass", "精修轮廓", K.BOOL, True, group="切削",
                  help="在每层最后沿轮廓补一刀，侧壁更光洁"),
+            spec("cutting_order", "切削顺序", K.CHOICE, "level_first", group="切削", choices=(
+                Choice("level_first", "层优先 Level first"),
+                Choice("depth_first", "深度优先 Depth first"),
+            ), help="选了多个加工面时的区域调度（UG/NX 同名概念）：层优先=各区域在同一高度"
+                    "合并、逐层下切；深度优先=一个区域从上到下切完再换下一个。只选一个面时两者相同"),
         )
     )
 

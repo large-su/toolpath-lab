@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import re
 import unittest
+from collections import Counter
 from math import pi
 
 import numpy as np
@@ -306,6 +308,167 @@ class PocketMillTests(unittest.TestCase):
         }, self.part))
         self.assertEqual(len(both.regions), 1)
         self.assertTrue(both.toolpath.notes)
+
+
+class MultiFaceCuttingOrderTests(unittest.TestCase):
+    """多加工面的区域调度：层优先合并同高度，深度优先按面切完再换（UG/NX 同名概念）。
+
+    夹具：带型腔的板，顶面 z=40、型腔底 z=25。加工起始高度显式给 44（等效"毛坯顶面
+    高于零件"），每层切深 2 →所有面共用的层高网格为 [42, 40, 38, …, 26, 25]：
+    顶面区域切 [42, 40]，腔底区域切 [42 … 25]。层优先时两面在 42 / 40 两个高度
+    合并加工，正是"同一高度能合并就合并"的诉求。
+    """
+
+    def setUp(self) -> None:
+        self.part = make_part(plate_with_pocket(), "plate")
+        self.top = [f for f in self.part.features
+                    if f["horizontal"] and abs(f["plane"][3] - 40.0) < 1e-6][0]
+        self.floor = [f for f in self.part.features
+                      if f["horizontal"] and abs(f["plane"][3] - 25.0) < 1e-6][0]
+        self.faces = [self.top["face_id"], self.floor["face_id"]]
+
+    def _run(self, kind: str, faces, **overrides):
+        payload = {
+            "kind": kind,
+            "faces": list(faces),
+            "cell_mm": 0.5,
+            "top_z": 44.0,
+            "parameters": {**BASE_PARAMETERS, "cut_mode": "contour",
+                           "cutting_order": "level_first", **overrides},
+        }
+        return execute_operation(CAMOperationRequest.from_payload(payload, self.part))
+
+    @staticmethod
+    def _cuts(result):
+        """非下刀的切削段序列 ``[(面号, 首点 Z, 标签), …]``；面号取自"面 #N："前缀。"""
+
+        items = []
+        for move in result.toolpath.moves:
+            if move.kind is not MoveKind.CUT or "下刀" in move.label:
+                continue
+            match = re.match(r"^面 #(\d+)：", move.label)
+            items.append((int(match.group(1)) if match else None,
+                          round(float(np.asarray(move.points, dtype=float)[0][2]), 3),
+                          move.label))
+        return items
+
+    @staticmethod
+    def _cut_signatures(result):
+        """切削段几何签名的多重集（与先后顺序无关）。"""
+
+        counts: Counter = Counter()
+        for move in result.toolpath.moves:
+            if move.kind is not MoveKind.CUT or "下刀" in move.label:
+                continue
+            points = np.asarray(move.points, dtype=float)
+            counts[(move.label, len(points),
+                    round(float(points[0][0]), 4), round(float(points[0][1]), 4),
+                    round(float(points[0][2]), 4))] += 1
+        return counts
+
+    def test_level_first_merges_both_faces_at_the_same_height(self) -> None:
+        result = self._run("pocket_mill", self.faces, cutting_order="level_first")
+        self.assertEqual(len(result.regions), 2)
+        seq = self._cuts(result)
+        top_id, floor_id = self.top["face_id"], self.floor["face_id"]
+        first_top = next(i for i, item in enumerate(seq) if item[0] == top_id)
+        first_floor = next(i for i, item in enumerate(seq) if item[0] == floor_id)
+        # 同高度合并：两面的第一刀都在 42 层，层内先后仍按选面顺序
+        self.assertLess(first_top, first_floor)
+        self.assertAlmostEqual(seq[first_top][1], 42.0, places=3)
+        self.assertAlmostEqual(seq[first_floor][1], 42.0, places=3)
+        # 层优先下降：42 层两面都做完之后才降到 40（顶面第二层夹在腔底各段之间）
+        second_top = next(i for i in range(first_floor + 1, len(seq))
+                          if seq[i][0] == top_id)
+        self.assertAlmostEqual(seq[second_top][1], 40.0, places=3)
+        # 腔底在顶面结束后继续下潜到底
+        last_top = max(i for i, item in enumerate(seq) if item[0] == top_id)
+        last_floor = max(i for i, item in enumerate(seq) if item[0] == floor_id)
+        self.assertGreater(last_floor, last_top)
+        self.assertTrue(any("层优先" in note for note in result.toolpath.notes))
+
+    def test_depth_first_finishes_one_face_before_the_next(self) -> None:
+        result = self._run("pocket_mill", self.faces, cutting_order="depth_first")
+        seq = self._cuts(result)
+        top_id, floor_id = self.top["face_id"], self.floor["face_id"]
+        last_top = max(i for i, item in enumerate(seq) if item[0] == top_id)
+        first_floor = min(i for i, item in enumerate(seq) if item[0] == floor_id)
+        # 深度优先：顶面（含它的全部层）加工完才开始腔底
+        self.assertLess(last_top, first_floor)
+        # 每个面内部仍然是从上到下逐层
+        top_zs = [z for face, z, _ in seq if face == top_id]
+        floor_zs = [z for face, z, _ in seq if face == floor_id]
+        self.assertEqual(top_zs, sorted(top_zs, reverse=True))
+        self.assertEqual(floor_zs, sorted(floor_zs, reverse=True))
+        self.assertTrue(any("深度优先" in note for note in result.toolpath.notes))
+
+    def test_cutting_order_does_not_change_the_cut_geometry(self) -> None:
+        """切削顺序只改排列：两种顺序切的层与每层刀路必须完全一致。"""
+
+        level = self._run("pocket_mill", self.faces, cutting_order="level_first")
+        depth = self._run("pocket_mill", self.faces, cutting_order="depth_first")
+        self.assertEqual(self._cut_signatures(level), self._cut_signatures(depth))
+        # 顺序确实不同（否则上一条断言毫无意义）
+        self.assertNotEqual([item[0] for item in self._cuts(level)],
+                            [item[0] for item in self._cuts(depth)])
+
+    def test_single_face_is_identical_for_both_orders(self) -> None:
+        """只选一个面时层优先 ≡ 深度优先：参数不能改变单面刀路。"""
+
+        level = self._run("pocket_mill", [self.floor["face_id"]])
+        depth = self._run("pocket_mill", [self.floor["face_id"]],
+                          cutting_order="depth_first")
+        left = [(move.label, move.points.tobytes()) for move in level.toolpath.moves]
+        right = [(move.label, move.points.tobytes()) for move in depth.toolpath.moves]
+        self.assertEqual(left, right)
+
+    def test_unknown_cutting_order_is_rejected(self) -> None:
+        with self.assertRaises(ParameterError):
+            self._run("pocket_mill", self.faces, cutting_order="sideways")
+
+    def test_face_mill_honours_cutting_order(self) -> None:
+        faces = [self.floor["face_id"], self.top["face_id"]]
+        level = self._run("face_mill", faces, cutting_order="level_first")
+        depth = self._run("face_mill", faces, cutting_order="depth_first")
+
+        def runs(result):
+            order = []
+            for face, _, _ in self._cuts(result):
+                if not order or order[-1] != face:
+                    order.append(face)
+            return order
+
+        # 深度优先：按面分组，一个面铣完再换下一个
+        self.assertEqual(runs(depth), faces)
+        # 层优先：同高度的两面交错出现，首段仍按选面顺序
+        level_runs = runs(level)
+        self.assertGreater(len(level_runs), len(faces))
+        self.assertEqual(level_runs[0], faces[0])
+        self.assertEqual(self._cut_signatures(level), self._cut_signatures(depth))
+
+    def test_contour_mill_honours_cutting_order(self) -> None:
+        level = self._run("contour_mill", self.faces, cutting_order="level_first")
+        depth = self._run("contour_mill", self.faces, cutting_order="depth_first")
+        top_id, floor_id = self.top["face_id"], self.floor["face_id"]
+        seq_level = [item[0] for item in self._cuts(level)]
+        seq_depth = [item[0] for item in self._cuts(depth)]
+        # 层优先：腔底的 42 层轮廓出现在顶面 40 层之前（同高度合并、交替下降）
+        first_floor = seq_level.index(floor_id)
+        self.assertLess(first_floor, len(seq_level) - 1 - seq_level[::-1].index(top_id))
+        # 深度优先：顶面的全部轮廓在腔底之前
+        self.assertLess(max(i for i, face in enumerate(seq_depth) if face == top_id),
+                        min(i for i, face in enumerate(seq_depth) if face == floor_id))
+        self.assertEqual(self._cut_signatures(level), self._cut_signatures(depth))
+
+    def test_catalog_declares_cutting_order(self) -> None:
+        catalog = planning_catalog()
+        entry = next((item for item in catalog["parameters"]
+                      if item["key"] == "cutting_order"), None)
+        self.assertIsNotNone(entry, "切削顺序参数必须出现在能力目录里")
+        self.assertEqual(entry["default"], "level_first")
+        self.assertEqual({choice["value"] for choice in entry["choices"]},
+                         {"level_first", "depth_first"})
+        self.assertEqual(catalog["defaults"]["cutting_order"], "level_first")
 
 
 class ContourAndRequestTests(unittest.TestCase):

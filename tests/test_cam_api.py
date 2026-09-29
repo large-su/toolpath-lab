@@ -330,6 +330,27 @@ class OperationApiTests(ServerCase):
         self.assertIn("轮廓", body["operation"]["kind_label"])
         self.assertGreater(body["result"]["statistics"]["cut_length_mm"], 0)
 
+    def test_multi_face_operation_honours_cutting_order(self) -> None:
+        """多个加工面的工序按"切削顺序"参数生成（深度优先 = 按面分组）。"""
+
+        status, body = self.post("/api/operations", {
+            "kind": "pocket_mill",
+            "faces": [self.top["face_id"], self.floor["face_id"]],
+            "parameters": {**PARAMETERS, "cutting_order": "depth_first"},
+        })
+        self.assertEqual(status, 200, body)
+        self.assertEqual(len(body["result"]["regions"]), 2)
+        notes = body["result"]["toolpath"]["notes"]
+        self.assertTrue(any("深度优先" in note for note in notes), notes)
+
+    def test_unknown_cutting_order_is_rejected(self) -> None:
+        status, body = self.post("/api/operations", {
+            "kind": "pocket_mill",
+            "faces": [self.floor["face_id"]],
+            "parameters": {**PARAMETERS, "cutting_order": "sideways"},
+        })
+        self.assertEqual(status, 400, body)
+
     def test_tree_lists_operations_in_order(self) -> None:
         first = self._create(name="第一道")["operation"]
         second = self._create(name="第二道")["operation"]

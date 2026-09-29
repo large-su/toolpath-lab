@@ -125,6 +125,32 @@
 冒烟自检新增 8c：仿真在场时真实点击"生成刀路"，断言仿真清空、刀路重画、
 播放控件复位。
 
+### 新增：多加工面的切削顺序——层优先 / 深度优先（对标 UG/NX）
+
+以前选多个加工面时按**选面顺序逐面独立规划**（每面从上到下切完再换下一面，
+拼接层纯 `moves.extend`）：先选型腔上表面再选腔底，就先把上表面铣完（跳过型腔
+开口）才回头挖型腔，同一高度的加工被拆散。现在多个 2.5 轴加工面（平面铣 /
+型腔铣 / 轮廓铣）走**统一层调度**：
+
+- 新参数 `cutting_order`（`cam/parameters.py`，切削组）：**层优先**（默认，
+  各区域在同一高度合并、逐层下切）/ **深度优先**（单区域切完再换下一个），
+  与 UG/NX 的 Level First / Depth First 同名同义；只选一个面时两者完全等价。
+- 新 `cam/common.py:stepped_levels`：多区域共用的**绝对层高网格**（单面仍用
+  均分的 `depth_levels`，行为一字不改）。各区域的加工底并入网格作为自己的末层，
+  同一高度的层在区域间天然对齐——层高与顺序无关，两种顺序切下的几何完全一致。
+- `pocket_mill` / `face_mill` 把"区域的一层"抽成共用单元（`_cut_pocket_level` /
+  `_cut_face_level`），单面与多面共用；新增 `plan_pocket_mill_multi` /
+  `plan_face_mill_multi` 与 `service.py:_plan_contour_mill_multi`：共享一个
+  MoveBuilder（跨面转移由 `rapid_to_safe`/`plunge`/`link` 自动接住，安全高度取
+  全局最高顶面），层优先按层遍历区域、深度优先按区域遍历层；斜/曲面底的
+  "底面跟随"跟随区域收尾。`execute_operation` 在多面且属于这三类时走新调度，
+  单面与旧路径逐字一致。
+- 刀路标签与备注带"面 #N："前缀与"切削顺序：…"说明；参数经
+  `ParameterSet.coerce` 校验（非法值 400），老工序缺键时默认层优先。
+- 测试：`tests/test_cam.py:MultiFaceCuttingOrderTests`（8 项：同高度合并、
+  深度优先分组、两种顺序几何签名多重集相等、单面两顺序逐字相等、参数/目录）；
+  `tests/test_cam_api.py` 镜像 2 项。
+
 ### 新增：刀具库（对标 UG/NX 的刀具管理）
 
 - `core/tool.py`：**两层刀具模型**。`Tool` 是计算用的几何（类型 / 直径 / 长度 / 刃长 /

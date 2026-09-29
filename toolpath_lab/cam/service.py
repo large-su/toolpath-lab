@@ -22,12 +22,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from toolpath_lab.cam import parameters as cam_parameters_module
-from toolpath_lab.cam.boundary import (DEFAULT_CELL_MM, adaptive_cell_mm,
+from toolpath_lab.cam.boundary import (DEFAULT_CELL_MM, MachiningRegion, adaptive_cell_mm,
                                        build_region, offset_outline_polygons,
                                        region_from_face)
-from toolpath_lab.cam.common import MillingContext, MoveBuilder, depth_levels
-from toolpath_lab.cam.face_mill import plan_face_mill
-from toolpath_lab.cam.pocket_mill import plan_pocket_mill
+from toolpath_lab.cam.common import (MillingContext, MoveBuilder, depth_levels,
+                                     stepped_levels)
+from toolpath_lab.cam.face_mill import plan_face_mill, plan_face_mill_multi
+from toolpath_lab.cam.pocket_mill import plan_pocket_mill, plan_pocket_mill_multi
 from toolpath_lab.core.errors import ParameterError, PlanningError
 from toolpath_lab.core.operation import (FACE_SELECTION_KINDS, OPERATION_KIND_LABELS,
                                          SURFACE_KINDS, SURFACE_STRATEGIES, OperationKind)
@@ -251,6 +252,15 @@ def _ceiling_for(request: CAMOperationRequest, floor_z: float) -> float:
     return max(part_top, floor_z + float(request.parameters.get("cut_depth_mm", 1.0)))
 
 
+#: 选了多个加工面时按几何高度统一排层的加工类型——"切削顺序"参数只在这几类上生效
+#: （清边铣不选面、曲面工序走另一条路，都只有一个加工区域）。
+_MULTI_FACE_KINDS = frozenset({
+    OperationKind.FACE_MILL.value,
+    OperationKind.POCKET_MILL.value,
+    OperationKind.CONTOUR_MILL.value,
+})
+
+
 def execute_operation(request: CAMOperationRequest) -> CAMOperationResult:
     """执行一次工序，返回刀路与加工区域摘要。"""
 
@@ -263,11 +273,13 @@ def execute_operation(request: CAMOperationRequest) -> CAMOperationResult:
     if request.kind == OperationKind.EDGE_CLEAR.value:
         return _plan_edge_clear(request)
 
-    toolpaths: list[Toolpath] = []
     regions: list[dict[str, Any]] = []
+    region_notes: list[list[str]] = []
+    planned: list[tuple[MillingContext, str]] = []
     warnings: list[str] = []
 
-    for index, face_id in enumerate(request.face_ids):
+    # 第一遍：逐面建加工区域与规划现场（不规划刀路）。
+    for face_id in request.face_ids:
         record = request.part.face(face_id)
         # 层高的起算点：平面面读平面方程，曲面/斜面无平面方程时用零件顶面，
         # 真正的底面高度由 region.floor_z（区域内底面最低点）给出。
@@ -282,7 +294,7 @@ def execute_operation(request: CAMOperationRequest) -> CAMOperationResult:
             require_horizontal=horizontal_only,
         )
         regions.append(region.describe())
-        warnings.extend(region.notes)
+        region_notes.append(list(region.notes))
         context = MillingContext(
             tool=request.tool,
             top_z=region.top_z,
@@ -291,18 +303,38 @@ def execute_operation(request: CAMOperationRequest) -> CAMOperationResult:
             region=region,
         )
         prefix = f"面 #{face_id}：" if len(request.face_ids) > 1 else ""
+        planned.append((context, prefix))
+
+    # 第二遍：规划刀路。多个加工面时按几何高度统一排层（UG 的层优先/深度优先），
+    # 否则逐面各自切完，"先选了哪个面"就直接决定了加工顺序。
+    merged: Toolpath
+    if len(planned) > 1 and request.kind in _MULTI_FACE_KINDS:
+        order = str(request.parameters.get("cutting_order", "level_first"))
         if request.kind == OperationKind.FACE_MILL.value:
-            toolpath = plan_face_mill(context, notes_prefix=prefix)
+            merged = plan_face_mill_multi(planned, order=order)
         elif request.kind == OperationKind.POCKET_MILL.value:
-            toolpath = plan_pocket_mill(context, notes_prefix=prefix)
-        elif request.kind == OperationKind.CONTOUR_MILL.value:
-            toolpath = _plan_contour_mill(context, prefix)
-        else:  # pragma: no cover - from_payload 已校验
-            raise PlanningError(f"尚未实现的加工类型 {request.kind!r}")
-        toolpaths.append(toolpath)
+            merged = plan_pocket_mill_multi(planned, order=order)
+        else:  # CONTOUR_MILL（_MULTI_FACE_KINDS 只含这三类）
+            merged = _plan_contour_mill_multi(planned, order=order)
+    else:
+        toolpaths: list[Toolpath] = []
+        for context, prefix in planned:
+            if request.kind == OperationKind.FACE_MILL.value:
+                toolpath = plan_face_mill(context, notes_prefix=prefix)
+            elif request.kind == OperationKind.POCKET_MILL.value:
+                toolpath = plan_pocket_mill(context, notes_prefix=prefix)
+            elif request.kind == OperationKind.CONTOUR_MILL.value:
+                toolpath = _plan_contour_mill(context, prefix)
+            else:  # pragma: no cover - from_payload 已校验
+                raise PlanningError(f"尚未实现的加工类型 {request.kind!r}")
+            toolpaths.append(toolpath)
+        merged = _merge_toolpaths(toolpaths, request.kind)
+
+    # 警告按"面"交错收集：区域备注在前、该面规划产生的警告在后（与逐面规划一致）。
+    for notes, (context, _) in zip(region_notes, planned):
+        warnings.extend(notes)
         warnings.extend(context.warnings)
 
-    merged = _merge_toolpaths(toolpaths, request.kind)
     return CAMOperationResult(
         request=request,
         toolpath=merged,
@@ -602,6 +634,104 @@ def _plan_contour_mill(context: MillingContext, prefix: str = "") -> Toolpath:
         f"{prefix}轮廓铣：{len(levels)} 层，沿轮廓偏置 {offset:g} mm",
         f"刀具 D{context.tool.diameter_mm:g} mm",
     ]
+    return builder.finish(planner="contour_mill", label="轮廓铣", notes=notes)
+
+
+@dataclass(slots=True)
+class _ContourJob:
+    """轮廓铣多区域调度里一个加工面的现场。"""
+
+    context: MillingContext
+    region: MachiningRegion
+    prefix: str
+    offset: float
+    polygons: list[NDArray[np.float64]]
+    levels: list[float] = field(default_factory=list)
+
+
+def _plan_contour_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
+                             order: str = "level_first") -> Toolpath:
+    """轮廓铣的多区域统一层调度（UG/NX 的层优先 / 深度优先）。
+
+    层高用绝对网格在区域间对齐（同 :func:`toolpath_lab.cam.common.stepped_levels`）：
+    层优先=每层把各面的轮廓走完再下降；深度优先=一个面的各层走完再换下一个面。
+    两种顺序只差遍历顺序，层高与每层刀路完全一致。
+    """
+
+    jobs: list[_ContourJob] = []
+    for context, prefix in items:
+        region = context.region
+        offset = context.tool_radius + context.stock_allowance
+        polygons = offset_outline_polygons(region, offset)
+        if not polygons:
+            raise PlanningError(
+                f"{prefix}轮廓在偏置 {offset:g} mm 后为空：刀具相对加工区域太大"
+            )
+        jobs.append(_ContourJob(context=context, region=region, prefix=prefix,
+                                offset=offset, polygons=list(polygons)))
+
+    global_top = max(float(job.region.top_z) for job in jobs)
+    layers = stepped_levels(
+        global_top,
+        [float(job.region.floor_z) + job.context.finish_allowance for job in jobs],
+        float(jobs[0].context.cut_depth),
+    )
+    for job in jobs:
+        top = float(job.region.top_z)
+        floor_target = float(job.region.floor_z) + job.context.finish_allowance
+        job.levels = [z for z in layers if floor_target - 1e-9 <= z <= top - 1e-9]
+        if not job.levels:
+            # 与单面一致：没有可切深度时也补一刀贴底轮廓（光一刀）。
+            job.levels = [float(job.region.floor_z)]
+
+    # 共享一个 MoveBuilder，安全高度取全局最高顶面。
+    lead = jobs[0].context
+    dispatch = MillingContext(
+        tool=lead.tool,
+        top_z=global_top,
+        floor_z=min(float(job.region.floor_z) for job in jobs),
+        parameters=lead.parameters,
+        region=None,
+    )
+    builder = MoveBuilder(dispatch)
+
+    def emit(job: _ContourJob, level_index: int, target_z: float) -> None:
+        for polygon in job.polygons:
+            loop = np.vstack([polygon, polygon[:1]])
+            points = np.column_stack((loop, np.full(loop.shape[0], float(target_z))))
+            builder.rapid_to_safe(points[0], label="定位到轮廓起点")
+            builder.plunge(points[0], label=f"下刀 Z{target_z:.3f}")
+            builder.cut(points,
+                        label=f"{job.prefix}轮廓 {level_index + 1}/{len(job.levels)}")
+
+    if str(order) == "depth_first":
+        for job in jobs:
+            for level_index, target_z in enumerate(job.levels):
+                emit(job, level_index, target_z)
+    else:
+        # 未知取值一律按层优先（参数校验在上游，这里是防御性回退，与 cut_mode 同风格）。
+        index_of = [{z: index for index, z in enumerate(job.levels)} for job in jobs]
+        all_levels = sorted({z for job in jobs for z in job.levels}, reverse=True)
+        for target_z in all_levels:
+            for job, mapping in zip(jobs, index_of):
+                level_index = mapping.get(target_z)
+                if level_index is None:
+                    continue
+                emit(job, level_index, target_z)
+
+    notes = [
+        f"{job.prefix}轮廓铣：{len(job.levels)} 层，沿轮廓偏置 {job.offset:g} mm"
+        for job in jobs
+    ]
+    notes.append(f"刀具 D{lead.tool.diameter_mm:g} mm")
+    if str(order) == "depth_first":
+        notes.append(
+            f"切削顺序：深度优先——单个区域从上到下切完再换下一个（共 {len(jobs)} 个加工面）"
+        )
+    else:
+        notes.append(
+            f"切削顺序：层优先——各区域在同一高度合并、逐层下切（共 {len(jobs)} 个加工面）"
+        )
     return builder.finish(planner="contour_mill", label="轮廓铣", notes=notes)
 
 
