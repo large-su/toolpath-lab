@@ -53,18 +53,21 @@ def _translate(shape, dz: float):
     return BRepBuilderAPI_Transform(shape, transform, True).Shape()
 
 
-def _box(width: float, depth: float, height: float, *, z: float = 0.0, centered: bool = True):
+def _box(width: float, depth: float, height: float, *, z: float = 0.0, centered: bool = True,
+         x: float = 0.0, y: float = 0.0):
     """长方体。
 
     注意 ``BRepPrimAPI_MakeBox(gp_Pnt(...), dx, dy, dz)`` 的参考点是**角点**、不是中心：
     直接传原点会让长方体落在第一象限，外轮廓和型腔就不再同心 —— 型腔会跑到边上去变成
     一个角缺口（面数从 11 掉到 9，体积也全错）。所以默认把角点挪到 ``(-w/2, -d/2, z)``。
+    ``x`` / ``y`` 是在该基准上的平移，用于把第二个型腔摆到旁边（多型腔夹具）。
     """
 
     _, make_box, _, _, _, gp_Pnt = _ocp()
-    x = -width / 2.0 if centered else 0.0
-    y = -depth / 2.0 if centered else 0.0
-    return make_box(gp_Pnt(x, y, float(z)), float(width), float(depth), float(height)).Shape()
+    base_x = -width / 2.0 if centered else 0.0
+    base_y = -depth / 2.0 if centered else 0.0
+    return make_box(gp_Pnt(base_x + float(x), base_y + float(y), float(z)),
+                    float(width), float(depth), float(height)).Shape()
 
 
 def _cylinder(radius: float, height: float, *, z: float = 0.0):
@@ -182,6 +185,28 @@ def plate_with_pocket(width: float = 100.0, depth: float = 80.0, height: float =
     """
 
     return _to_part(_plate_shape(width, depth, height, pocket_x, pocket_y, pocket_depth), name)
+
+
+def plate_with_two_pockets(width: float = 120.0, depth: float = 80.0, height: float = 40.0,
+                           pocket_x: float = 40.0, pocket_y: float = 50.0,
+                           pocket_depth: float = 15.0, spacing: float = 60.0,
+                           name: str = "plate2"):
+    """带**两个并排型腔**的板：多型腔层调度（层优先 / 深度优先）测试用。
+
+    两个型腔开口都朝上、底面同在 ``z = height - pocket_depth``，中心沿 X 对称相距
+    ``spacing``（两腔间壁厚 = ``spacing - pocket_x``，默认 60-40=20 mm；
+    外侧壁厚 = (width - spacing - pocket_x) / 2 = 10 mm）。返回的 PartModel 里有
+    **两张**朝上的腔底面（平面方程 d = 底面高度），分别代表两个型腔。
+    """
+
+    plate = _box(width, depth, height)
+    left = _box(pocket_x, pocket_y, pocket_depth + 1.0, z=height - pocket_depth,
+                x=-float(spacing) / 2.0)
+    right = _box(pocket_x, pocket_y, pocket_depth + 1.0, z=height - pocket_depth,
+                 x=float(spacing) / 2.0)
+    plate = _cut(plate, left)
+    plate = _cut(plate, right)
+    return _to_part(plate, name)
 
 
 def plate_with_cylinder(width: float = 100.0, depth: float = 80.0, height: float = 40.0,

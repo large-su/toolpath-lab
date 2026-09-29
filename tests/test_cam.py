@@ -13,7 +13,8 @@ from math import pi
 
 import numpy as np
 
-from tests.fixtures import plate_with_cylinder, plate_with_pocket
+from tests.fixtures import (plate_with_cylinder, plate_with_pocket,
+                            plate_with_two_pockets)
 from toolpath_lab.cam.boundary import build_region, offset_outline_polygons, region_from_face
 from toolpath_lab.cam.common import MillingContext, depth_levels
 from toolpath_lab.cam.parameters import cam_parameters, tool_from_cam_parameters
@@ -469,6 +470,101 @@ class MultiFaceCuttingOrderTests(unittest.TestCase):
         self.assertEqual({choice["value"] for choice in entry["choices"]},
                          {"level_first", "depth_first"})
         self.assertEqual(catalog["defaults"]["cutting_order"], "level_first")
+
+
+class MultiPocketCuttingOrderTests(unittest.TestCase):
+    """多型腔加工：层优先=所有型腔共用当前高度、该层全部完成再下降；深度优先=单腔挖完再换。
+
+    夹具：120×80×40 的板带两个 40×50、深 15 的并排型腔，腔底同在 z=25。
+    加工起始高度 45（毛坯高于型腔上表面），每层切深 2 → 两个型腔共用层高网格
+    [43, 41, 39, …, 27, 25]。调度序列折叠成 ``[(面, 层), …]`` 后可与两种策略的
+    期望**逐项精确**比对。
+    """
+
+    def setUp(self) -> None:
+        self.part = make_part(plate_with_two_pockets(), "plate2")
+        floors = sorted([f for f in self.part.features
+                         if f["horizontal"] and abs(f["plane"][3] - 25.0) < 1e-6],
+                        key=lambda item: item["face_id"])
+        self.assertEqual(len(floors), 2, "双型腔夹具应有两张腔底面")
+        self.pockets = [floors[0]["face_id"], floors[1]["face_id"]]
+        self.levels = [43.0, 41.0, 39.0, 37.0, 35.0, 33.0, 31.0, 29.0, 27.0, 25.0]
+
+    def _run(self, **overrides):
+        payload = {
+            "kind": "pocket_mill",
+            "faces": list(self.pockets),
+            "cell_mm": 0.5,
+            "top_z": 45.0,
+            "parameters": {**BASE_PARAMETERS, "cut_mode": "contour",
+                           "cutting_order": "level_first", **overrides},
+        }
+        return execute_operation(CAMOperationRequest.from_payload(payload, self.part))
+
+    @staticmethod
+    def _schedule(result) -> list[tuple[int, float]]:
+        """把连续同 (面, 层) 的切削段折叠成调度序列 ``[(面号, 层高 Z), …]``。"""
+
+        pairs: list[tuple[int, float]] = []
+        for move in result.toolpath.moves:
+            if move.kind is not MoveKind.CUT or "下刀" in move.label:
+                continue
+            match = re.match(r"^面 #(\d+)：", move.label)
+            if match is None:
+                continue
+            item = (int(match.group(1)),
+                    round(float(np.asarray(move.points, dtype=float)[0][2]), 3))
+            if not pairs or pairs[-1] != item:
+                pairs.append(item)
+        return pairs
+
+    @staticmethod
+    def _signatures(result) -> Counter:
+        counts: Counter = Counter()
+        for move in result.toolpath.moves:
+            if move.kind is not MoveKind.CUT or "下刀" in move.label:
+                continue
+            points = np.asarray(move.points, dtype=float)
+            counts[(move.label, len(points),
+                    round(float(points[0][0]), 4), round(float(points[0][1]), 4),
+                    round(float(points[0][2]), 4))] += 1
+        return counts
+
+    def test_level_first_shares_every_level_across_pockets(self) -> None:
+        result = self._run(cutting_order="level_first")
+        expected = [(face, z) for z in self.levels for face in self.pockets]
+        self.assertEqual(self._schedule(result), expected,
+                         "层优先：每个高度上两个型腔依次切完才允许下降")
+        self.assertTrue(any("层优先" in note for note in result.toolpath.notes))
+
+    def test_depth_first_digs_one_pocket_out_before_the_next(self) -> None:
+        result = self._run(cutting_order="depth_first")
+        expected = [(face, z) for face in self.pockets for z in self.levels]
+        self.assertEqual(self._schedule(result), expected,
+                         "深度优先：单个型腔由上至下完整切完再切换到下一个型腔")
+        self.assertTrue(any("深度优先" in note for note in result.toolpath.notes))
+
+    def test_both_orders_cut_the_same_geometry(self) -> None:
+        level = self._run(cutting_order="level_first")
+        depth = self._run(cutting_order="depth_first")
+        self.assertEqual(self._signatures(level), self._signatures(depth))
+        self.assertNotEqual(self._schedule(level), self._schedule(depth))
+
+    def test_face_selection_order_does_not_break_level_scheduling(self) -> None:
+        """选面顺序反过来：层优先仍按高度对齐，只是同层内先后随选面顺序。"""
+
+        payload = {
+            "kind": "pocket_mill",
+            "faces": [self.pockets[1], self.pockets[0]],
+            "cell_mm": 0.5,
+            "top_z": 45.0,
+            "parameters": {**BASE_PARAMETERS, "cut_mode": "contour",
+                           "cutting_order": "level_first"},
+        }
+        result = execute_operation(CAMOperationRequest.from_payload(payload, self.part))
+        expected = [(face, z) for z in self.levels
+                    for face in (self.pockets[1], self.pockets[0])]
+        self.assertEqual(self._schedule(result), expected)
 
 
 class ContourAndRequestTests(unittest.TestCase):
