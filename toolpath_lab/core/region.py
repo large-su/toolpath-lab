@@ -107,6 +107,15 @@ class RegionShape:
 
         return self.machining_boundary(footprint_mm)
 
+    def surface_step_levels(self) -> list[float]:
+        """加工面上"平台"所在的高度。
+
+        分层粗加工会把这些高度也列进层里：平台之上的毛坯得有人清，而精加工那一遍未必到得了它
+        （斜坡默认只加工斜面段，平顶就不在精加工范围里）。平面区域不需要——精加工一遍就覆盖全了。
+        """
+
+        return []
+
     def surface_patches(self) -> list[NDArray[np.float64]]:
         """顶面的分片（每片都是共面的凸多边形，带 Z）。
 
@@ -395,26 +404,37 @@ class RampRegion(RegionShape):
     def machining_boundary_at(
         self, z_mm: float, footprint_mm: float
     ) -> NDArray[np.float64]:
-        """斜面的第 z 层：只有 x ≥ 边长/2 − z/斜度 的地方加工面还低于这一层（还有料）。
+        """斜面的第 z 层：加工面低于这一层的地方还有料，也就只该切那些地方。
 
-        这条边就是该层的料边，**不再外扩**：按足迹内缩之后，刀心正好停在"刀边贴住料边"的位置，
-        既不会切进已经成形的斜面，也不会留下切不到的窄条。
+        - z 还没到 Z 上限：只有 x ≥ 边长/2 − z/斜度 一侧还有料（斜面上越往下越窄）；
+        - z 到了 Z 上限：**整块（含平顶）都在这层之下**，所以整个区域都有料——平顶之上的毛坯
+          就是在这里被清掉的。
+
+        这条料边**不再外扩**：按足迹内缩之后刀心正好停在"刀边贴住料边"的位置，既不会切进已经
+        成形的斜面，也不会留下切不到的窄条。
         """
 
-        base = self.machining_boundary(footprint_mm)
         half = self.side_mm / 2.0
         if self.slope <= _EPS:
-            return base
-        limit = half - float(z_mm) / self.slope
-        if limit <= -half:
-            return base  # 这一层在整块之上：整个加工范围都要切
-        if limit >= half:
-            return np.empty((0, 2), dtype=np.float64)  # 已经在加工面之下：没有料
-        x_low = max(limit, float(base[:, 0].min()))
+            return self.boundary()
+        z = float(z_mm)
+        if z >= self.cap_z_mm:
+            return self.boundary()
+        x_low = max(half - z / self.slope, -half)
+        if x_low >= half:
+            return np.empty((0, 2), dtype=np.float64)
         return np.array(
             [(x_low, -half), (half, -half), (half, half), (x_low, half)],
             dtype=np.float64,
         )
+
+    def surface_step_levels(self) -> list[float]:
+        """平顶所在的高度：默认"只加工斜面段"时，精加工那一遍到不了平顶，
+        所以粗加工必须专门有一层落在平顶高度上，把平顶之上的毛坯清掉。"""
+
+        if self.include_plateau or self.slope <= _EPS or self.crease_x_mm is None:
+            return []
+        return [self.cap_z_mm]
 
     def surface_payload(self) -> dict[str, Any]:
         return {

@@ -294,9 +294,16 @@ class PlanTests(ApiTestCase):
                    if move["kind"] == "cut" and move["label"] == "沿面切入"]
         self.assertEqual(len(lead_in), 1)
         self.assertAlmostEqual(lead_in[0]["points"][0][0], 42.0, places=4)
-        passes = [move for move in payload["toolpath"]["moves"]
-                  if move["kind"] == "cut" and move["label"] != "沿面切入"]
-        self.assertGreater(passes[0]["points"][-1][2], passes[0]["points"][0][2])
+        # 沿加工面的那一遍由低往高；另有平顶高度上的一层负责清掉平顶之上的毛坯
+        surface = [move for move in payload["toolpath"]["moves"]
+                   if move["kind"] == "cut" and move["label"] != "沿面切入"
+                   and move["points"][-1][2] != move["points"][0][2]]
+        self.assertGreater(surface[0]["points"][-1][2], surface[0]["points"][0][2])
+        levels = {point[2] for move in payload["toolpath"]["moves"]
+                  if move["kind"] == "cut" and move["label"] != "沿面切入"
+                  for point in move["points"]
+                  if all(point[2] == other[2] for other in move["points"])}
+        self.assertIn(80.0, levels)
 
     def test_ramp_z_cap_is_configurable(self) -> None:
         status, payload, _ = self.plan(

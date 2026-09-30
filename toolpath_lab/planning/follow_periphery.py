@@ -207,11 +207,17 @@ class FollowPeripheryPlanner(Planner):
             f"边界内缩一个刀具足迹半径（本刀 {context.tool.footprint_radius_mm:g} mm），"
             "安全高度 5 mm、快移 5000 mm/min 为固定值",
         ]
-        if layer_count:
+        if layer_count and context.layer_depth_mm > 0:
             _, high = context.surface_z_range
             notes.append(
                 f"分层粗加工：每层 {context.layer_depth_mm:g} mm、共 {layer_count} 层"
                 f"（毛坯顶面在 {high + context.stock_margin_mm:g} mm），"
                 "每层只切该高度上还有料的范围，最后沿加工面精加工一遍"
+            )
+        steps = context.region.surface_step_levels()
+        if steps and context.stock_margin_mm > 0:
+            notes.append(
+                f"平台高度 {steps[0]:g} mm 上单独走一遍：那一层覆盖整个区域，"
+                "把平台之上的毛坯清掉（沿加工面的那一遍只走斜面段，到不了平台）"
             )
         return tuple(notes)

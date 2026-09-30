@@ -115,17 +115,33 @@ class PlanningContext:
         return float(heights.min()), float(heights.max())
 
     def layer_levels(self) -> list[float]:
-        """分层粗加工的每层 Z：从毛坯顶面往下，步进一个每层深度，最下一层仍在加工面之上。"""
+        """要按层走一遍的 Z，从高到低。
 
-        depth = self.layer_depth_mm
-        if depth <= 0.0 or self.level_z is not None:
+        两部分合起来：
+
+        - **分层粗削**（`layer_depth_mm > 0`）：从毛坯顶面往下、每层这么深，最下一层仍在加工面之上；
+        - **平台那一层**：区域报出来的"平台高度"（斜坡的平顶）。平台之上的毛坯总得有人清，而沿加工面
+          的那一遍未必到得了它，所以只要它低于毛坯顶面（也就是上面确实有料）就补一层。
+
+        `layer_depth_mm = 0` 且没有平台时返回空——那就是只走一遍沿加工面的刀路，与以前完全一样。
+        """
+
+        if self.level_z is not None:
             return []
         low, high = self.surface_z_range
         top = high + self.stock_margin_mm
-        if top <= low + 1e-9:
-            return []
-        count = max(int(np.ceil((top - low) / depth - 1e-9)), 1)
-        return [top - index * depth for index in range(count)]
+        candidates: list[float] = []
+        if self.layer_depth_mm > 0.0 and top > low + 1e-9:
+            count = max(int(np.ceil((top - low) / self.layer_depth_mm - 1e-9)), 1)
+            candidates = [top - index * self.layer_depth_mm for index in range(count)]
+        for step in self.region.surface_step_levels():
+            if float(step) < top - 1e-9:  # 顶上没料就不用补这一层
+                candidates.append(float(step))
+        levels: list[float] = []
+        for z in sorted(candidates, reverse=True):
+            if not any(abs(z - kept) < 1e-6 for kept in levels):
+                levels.append(z)
+        return levels
 
     # -- 几何 --------------------------------------------------------------
     @property

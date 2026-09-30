@@ -189,6 +189,18 @@ def _lead_ins(toolpath: Toolpath):
     return [move for move in _cut_moves(toolpath) if move.label == "沿面切入"]
 
 
+def _level_passes(toolpath: Toolpath):
+    """水平层上的刀（Z 恒定的那些）：分层粗削与平台清料都算。"""
+
+    return [move for move in _pass_cuts(toolpath) if np.ptp(move.points[:, 2]) < 1e-9]
+
+
+def _surface_passes(toolpath: Toolpath):
+    """沿加工面的刀（Z 随位置变化）：不分层时它就是全部刀路。"""
+
+    return [move for move in _pass_cuts(toolpath) if np.ptp(move.points[:, 2]) > 1e-9]
+
+
 class SlopedSurfaceTests(unittest.TestCase):
     """斜面区域：XY 投影不变，Z 跟着加工面走；由低往高走刀，下刀沿面切入。"""
 
@@ -271,15 +283,36 @@ class SlopedSurfaceTests(unittest.TestCase):
         region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
         toolpath = _ramp_plan(angle=60.0).toolpath
         self.assertIsNotNone(region.crease_x_mm)
-        for move in _pass_cuts(toolpath):
+        # 沿加工面的那一遍仍然只走斜面段，正好停在折痕上
+        surface = _surface_passes(toolpath)
+        self.assertTrue(surface)
+        for move in surface:
             self.assertGreaterEqual(float(move.points[:, 0].min()),
                                     region.crease_x_mm - 1e-9)
-        # 刀路正好停在折痕上（分界处那条边留了一个足迹半径再内缩）
-        self.assertAlmostEqual(float(_pass_cuts(toolpath)[0].points[:, 0].min()),
-                               region.crease_x_mm, places=6)
-        for move in _pass_cuts(toolpath):
             self.assertTrue(np.allclose(move.points[:, 2],
                                         region.height_at(move.points[:, :2]), atol=1e-9))
+        self.assertAlmostEqual(float(surface[0].points[:, 0].min()),
+                               region.crease_x_mm, places=6)
+
+    def test_plateau_stock_is_cleared_even_though_the_slope_is_the_target(self) -> None:
+        """平顶不在精加工范围里，但它上面的毛坯（顶面余量）必须清掉。"""
+
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
+        toolpath = _ramp_plan(angle=60.0).toolpath
+        levels = _level_passes(toolpath)
+        self.assertEqual(sorted({round(float(m.points[0][2]), 6) for m in levels}),
+                         [region.cap_z_mm])
+        # 那一层覆盖整个区域（D6 内缩 3）：平顶之上因此不会留下毛坯
+        self.assertAlmostEqual(float(levels[0].points[:, 0].min()), -37.0, places=6)
+        self.assertAlmostEqual(float(levels[0].points[:, 0].max()), 37.0, places=6)
+        self.assertIn("平台高度", " ".join(toolpath.notes))
+
+    def test_plateau_layer_disappears_without_stock_above_it(self) -> None:
+        self.assertEqual(
+            _level_passes(_ramp_plan({"stock_margin_mm": 0.0}, angle=60.0).toolpath), []
+        )
+        # 平顶一起精加工时也不需要单独一层：沿加工面的那一遍就覆盖它了
+        self.assertEqual(_level_passes(_ramp_plan(angle=60.0, plateau=True).toolpath), [])
 
     def test_plateau_is_machined_when_asked(self) -> None:
         region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
@@ -297,9 +330,12 @@ class SlopedSurfaceTests(unittest.TestCase):
                                40.0, places=6)
         self.assertAlmostEqual(float(region.crease_x_mm),
                                40.0 - 40.0 / np.tan(np.radians(60.0)), places=6)
-        for move in passes:
+        for move in _surface_passes(toolpath):
             self.assertGreaterEqual(float(move.points[:, 0].min()),
                                     float(region.crease_x_mm) - 1e-9)
+        # 上限 40 → 平顶层也落在 40
+        self.assertEqual(sorted({round(float(m.points[0][2]), 6)
+                                 for m in _level_passes(toolpath)}), [40.0])
 
     def test_a_larger_cap_leaves_no_plateau(self) -> None:
         # 60° 时整块坡度只升 138.6 mm，上限 200 → 一路都是斜面；
@@ -444,13 +480,18 @@ class LayerRoughingTests(unittest.TestCase):
         toolpath = self._layered(
             "ramp", depth=20.0, region_parameters={"side_mm": 80.0, "angle_deg": 60.0}
         ).toolpath
-        rough = [m for m in _pass_cuts(toolpath) if np.ptp(m.points[:, 2]) < 1e-9]
+        rough = _level_passes(toolpath)
         levels = sorted({round(float(m.points[0][2]), 3) for m in rough}, reverse=True)
-        self.assertEqual(levels, [82.0, 62.0, 42.0, 22.0])  # 2 mm 那一层放不下刀具，跳过
+        # 82 / 62 / 42 / 22 是每层 20 mm 的结果，80 是平顶那一层；
+        # 2 mm 那一层放不下刀具，被跳过（见提醒）
+        self.assertEqual(levels, [82.0, 80.0, 62.0, 42.0, 22.0])
+        slope_levels = [z for z in levels if z < region.cap_z_mm]
         x_min = {round(float(m.points[0][2]), 3): float(m.points[:, 0].min()) for m in rough}
-        for higher, lower in zip(levels, levels[1:]):
+        for higher, lower in zip(slope_levels, slope_levels[1:]):
             # 越往下只有靠低边（+X）那一侧还有料，所以料边一路往 +X 挪
             self.assertGreater(x_min[lower], x_min[higher])
+        # 平顶那一层反过来：整个区域都要清
+        self.assertAlmostEqual(x_min[80.0], -35.0, places=6)
 
     def test_the_cutter_never_digs_into_the_finished_side(self) -> None:
         region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
@@ -483,11 +524,11 @@ class LayerRoughingTests(unittest.TestCase):
         self.assertIn("每层 2 mm", notes)
 
     def test_layers_that_cannot_hold_the_cutter_are_reported(self) -> None:
-        # 60°、上限 80：规划出 5 层（82/62/42/22/2），但 2 mm 那层只剩 1.15 mm 宽，放不下 D10
+        # 60°、上限 80：规划出 6 层（82/80/62/42/22/2），但 2 mm 那层只剩 1.15 mm 宽，放不下 D10
         outcome = self._layered(
             "ramp", depth=20.0, region_parameters={"side_mm": 80.0, "angle_deg": 60.0}
         )
-        self.assertIn("共 4 层", " ".join(outcome.toolpath.notes))
+        self.assertIn("共 5 层", " ".join(outcome.toolpath.notes))
         self.assertTrue(any("已跳过" in warning for warning in outcome.warnings))
 
     def test_follow_periphery_layers_too(self) -> None:

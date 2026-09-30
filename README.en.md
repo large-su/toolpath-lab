@@ -35,10 +35,11 @@ by parameters, and the parameter panel is generated from the backend's parameter
     rises from the outermost **+X edge** (Z = 0) towards -X at an adjustable angle (up to 80°) and an
     adjustable **Z cap** (the highest the slope may climb, 80 mm by default, range 1–1000): it turns
     into a flat top at the cap, so a smaller cap or a steeper angle widens the plateau, and a cap
-    above the whole rise leaves no plateau at all. **Only the slope is machined by default** - the
-    toolpath stops right at the crease and never runs onto the flat top (left for another operation);
-    tick the region parameter "machine plateau" to cover both. (A height setting is not offered for
-    the ramp yet.)
+    above the whole rise leaves no plateau at all. **Only the slope is finished by default** - that
+    surface-following pass stops right at the crease - but the **stock above the plateau is still
+    cleared**: the part of the blank that sits above the plateau gets its own layer at exactly the
+    plateau height, covering the whole region, so no material is left lying on the plateau. Tick the
+    region parameter "machine plateau" to finish the plateau together with the slope.
   - All three shapes also take a **part thickness** (how thick the body below the machining surface
     is, 20 mm by default). It is pure geometry: it only affects the workpiece solid in the 3D view
     and **never enters the toolpath** - make the stock thicker or thinner and the toolpath is
@@ -55,7 +56,8 @@ by parameters, and the parameter panel is generated from the backend's parameter
   cutting where that height still has material** (on a slope the area shrinks as you go down, and the
   cutter's edge lands exactly on that layer's material boundary, so it neither digs into the finished
   side nor leaves a sliver), followed by the usual surface-following pass as the finishing cut.
-  ap = 0 (the default) means just that finishing pass.
+  ap = 0 (the default) means just that finishing pass; either way a **platform layer** is added (see
+  above) so nothing is left on a flat plateau.
 - **Cutting on a slope** (automatic whenever the machining surface is not horizontal, and switchable
   through the "entry" parameter): passes run **uphill**, the tool enters **along the surface** from
   outside the part instead of plunging into the slope, and one-way passes are **linked along the
