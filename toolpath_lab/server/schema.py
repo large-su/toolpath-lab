@@ -15,6 +15,7 @@ from toolpath_lab.core.region import RegionShape, build_region
 from toolpath_lab.core.tool import Tool, tool_parameters
 from toolpath_lab.planning.registry import PLANNERS
 from toolpath_lab.server.catalog import DEFAULT_PLANNER_ID, DEFAULT_REGION_ID
+from toolpath_lab.simulation.material import StockSettings, stock_parameters
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,7 @@ class PlanRequest:
     region_id: str = DEFAULT_REGION_ID
     region_parameters: dict[str, Any] = field(default_factory=dict)
     planner_parameters: dict[str, Any] = field(default_factory=dict)
+    stock: StockSettings = field(default_factory=StockSettings)
     warnings: tuple[str, ...] = ()
 
     @classmethod
@@ -64,6 +66,7 @@ class PlanRequest:
             region_id=region_id,
             region_parameters=region.parameters.coerce(region_parameters),
             planner_parameters=planner_class.parameters.coerce(planner_parameters),
+            stock=StockSettings.from_parameters(coerce_group(payload, "stock")),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -73,6 +76,7 @@ class PlanRequest:
             "tool": dict(self.tool_parameters),
             "region": {"shape": self.region_id, "parameters": dict(self.region_parameters)},
             "planner": {"id": self.planner_id, "parameters": dict(self.planner_parameters)},
+            "stock": self.stock.describe(),
         }
 
     def header_lines(self) -> list[str]:

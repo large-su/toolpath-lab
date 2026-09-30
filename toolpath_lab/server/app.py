@@ -116,7 +116,9 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
 
     def _export_gcode(self, payload: Mapping[str, Any] | None) -> Response:
-        result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
+        result = execute_plan(
+            PlanRequest.from_payload(payload), with_timeline=False, with_stock=False
+        )
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         content = toolpath_to_gcode(
             result.toolpath,

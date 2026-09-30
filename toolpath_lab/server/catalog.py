@@ -13,6 +13,11 @@ from toolpath_lab.core.region import REGION_SHAPES, region_catalog
 from toolpath_lab.core.tool import tool_parameters
 from toolpath_lab.planning import RAPID_FEED_MM_PER_MIN, SAFE_HEIGHT_MM
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
+from toolpath_lab.simulation.material import (
+    DEFAULT_FRAME_BUDGET,
+    MAX_GRID_CELLS,
+    stock_parameters,
+)
 
 DEFAULT_REGION_ID = "square"
 DEFAULT_PLANNER_ID = "raster"
@@ -34,6 +39,10 @@ def default_planner_parameters(planner_id: str = DEFAULT_PLANNER_ID) -> dict[str
     return _defaults(PLANNERS, planner_id)
 
 
+def default_stock_parameters() -> dict[str, Any]:
+    return stock_parameters().defaults()
+
+
 def catalog_payload() -> dict[str, Any]:
     """能力、参数声明与默认值。"""
 
@@ -52,6 +61,15 @@ def catalog_payload() -> dict[str, Any]:
             "list": planner_catalog(),
             "default_id": DEFAULT_PLANNER_ID,
             "defaults": default_planner_parameters(),
+        },
+        # 毛坯参数控制的是材料切除仿真的离散化，与刀路无关，所以单独一组。
+        "stock": {
+            "parameters": stock_parameters().to_dicts(),
+            "defaults": default_stock_parameters(),
+            "simulation": {
+                "max_grid_cells": MAX_GRID_CELLS,
+                "default_frame_budget": DEFAULT_FRAME_BUDGET,
+            },
         },
         # 这些量在主程序里是固定的，界面上只做展示；想变成参数就在 planning/base.py 里改。
         "fixed": {

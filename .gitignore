@@ -14,3 +14,6 @@ examples/toolpath_demo.csv
 
 # Electron 壳（package-lock.json 需要提交，保证 Electron 版本可复现）
 node_modules/
+
+# 本机工具产生的临时目录（例如 DSH 的文件权限修复记录）
+.dsh-acl-recovery/
