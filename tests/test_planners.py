@@ -482,6 +482,14 @@ class LayerRoughingTests(unittest.TestCase):
         self.assertIn("分层粗加工", notes)
         self.assertIn("每层 2 mm", notes)
 
+    def test_layers_that_cannot_hold_the_cutter_are_reported(self) -> None:
+        # 60°、上限 80：规划出 5 层（82/62/42/22/2），但 2 mm 那层只剩 1.15 mm 宽，放不下 D10
+        outcome = self._layered(
+            "ramp", depth=20.0, region_parameters={"side_mm": 80.0, "angle_deg": 60.0}
+        )
+        self.assertIn("共 4 层", " ".join(outcome.toolpath.notes))
+        self.assertTrue(any("已跳过" in warning for warning in outcome.warnings))
+
     def test_follow_periphery_layers_too(self) -> None:
         outcome = self._layered(
             "circle", depth=1.0, planner="follow_periphery",

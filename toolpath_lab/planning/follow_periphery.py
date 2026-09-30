@@ -88,9 +88,16 @@ class FollowPeripheryPlanner(Planner):
         levels = context.layer_levels()
         moves: list[Move] = []
         index = 0
+        produced = 0
         for z in levels:
             level_moves, index = self._ring_moves(context.at_level(z), index)
+            if level_moves:
+                produced += 1
             moves.extend(level_moves)
+        if produced < len(levels):
+            context.warn(
+                f"有 {len(levels) - produced} 层在那个高度上剩下的料比刀还窄（放不下刀具），已跳过"
+            )
         finish_moves, index = self._ring_moves(context, index)
         moves.extend(finish_moves)
         if index == 0:
@@ -103,7 +110,7 @@ class FollowPeripheryPlanner(Planner):
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
-            notes=self._notes(context, index, len(levels)),
+            notes=self._notes(context, index, produced),
         )
 
     # -- 内部步骤 ----------------------------------------------------------

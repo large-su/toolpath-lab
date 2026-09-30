@@ -96,9 +96,16 @@ class RasterPlanner(Planner):
         levels = context.layer_levels()
         moves: list[Move] = []
         index = 0
+        produced = 0
         for z in levels:
             level_moves, index = self._pass_moves(context.at_level(z), index, flip=flipped)
+            if level_moves:
+                produced += 1
             moves.extend(level_moves)
+        if produced < len(levels):
+            context.warn(
+                f"有 {len(levels) - produced} 层在那个高度上剩下的料比刀还窄（放不下刀具），已跳过"
+            )
         finish_moves, index = self._pass_moves(context, index, flip=flipped)
         if not finish_moves:
             raise PlanningError(
@@ -110,7 +117,7 @@ class RasterPlanner(Planner):
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
-            notes=self._notes(context, index, len(levels), flipped),
+            notes=self._notes(context, index, produced, flipped),
         )
 
     # -- 内部步骤 ----------------------------------------------------------
