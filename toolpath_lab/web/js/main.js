@@ -75,6 +75,7 @@ const dom = {
   stop: document.getElementById("btn-stop"),
   step: document.getElementById("btn-step"),
   speed: document.getElementById("speed"),
+  speedValue: document.getElementById("speed-value"),
   scrub: document.getElementById("scrub"),
   time: document.getElementById("time"),
   opAdd: document.getElementById("btn-op-add"),
@@ -351,9 +352,13 @@ function wireButtons() {
     if (mode === "cam") seekSimulation(cam.simulationFrame + 1);
     else playback.stepForward();
   });
-  dom.speed.addEventListener("change", () => {
+  // 速度是滑条（1×–64×）：input 拖动过程中就换倍速并刷新读数，change 兜底。
+  const syncSpeed = () => {
     playback.speed = Number(dom.speed.value) || 1;
-  });
+    dom.speedValue.textContent = playback.speed + "×";
+  };
+  dom.speed.addEventListener("input", syncSpeed);
+  dom.speed.addEventListener("change", syncSpeed);
   dom.scrub.addEventListener("input", () => {
     scrubbing = true;
     if (mode === "cam") {
@@ -1252,6 +1257,9 @@ async function runSimulation() {
     // 显示状态隐藏，按钮与面板勾选同步更新——之后到再次点「切削仿真」之前，
     // 用户随时可以再显示/隐藏（旧实现在视口里硬性隐藏，按钮点了没反应）。
     camPanel.syncDisplay("showStock", false);
+    // 刀路同理自动让位：整屏刀线会盖住正在成形的切除体。同样只改显示状态，
+    // 想看刀线随时在面板「显示·刀路」里勾回来，与毛坯走的是同一条同步路径。
+    camPanel.syncDisplay("showPath", false);
     if (result.toolpath) drawToolpath(result.toolpath, { keepTool: true });
     renderSimulationStats(result);
     if (result.summary && result.summary.warnings && result.summary.warnings.length) {

@@ -90,15 +90,18 @@
       <section class="stage">
         <div class="viewport" id="viewport">
           <div class="view-toolbar" id="view-toolbar" role="toolbar" aria-label="标准视图"></div>
-          <div class="appearance-toolbar" role="toolbar" aria-label="外观">
-            <button type="button" data-appearance="shadows" class="active">实时阴影</button>
-            <button type="button" data-appearance="white">白色背景</button>
-            <button type="button" data-appearance="grid" class="active">网格地面</button>
-          </div>
-          <div class="pick-toolbar" id="pick-toolbar" role="toolbar" aria-label="选择模式">
-            <button type="button" data-pick="face">拾取面</button>
-            <button type="button" data-pick="clear">清除</button>
-            <span class="pick-hint" id="pick-hint">未选中任何面</span>
+          <!-- 左上角两个工具条叠成一列：各自绝对定位时会互相压住（拾取面被外观开关盖住）。 -->
+          <div class="corner-toolbars">
+            <div class="appearance-toolbar" role="toolbar" aria-label="外观">
+              <button type="button" data-appearance="shadows" class="active">实时阴影</button>
+              <button type="button" data-appearance="white">白色背景</button>
+              <button type="button" data-appearance="grid" class="active">网格地面</button>
+            </div>
+            <div class="pick-toolbar" id="pick-toolbar" role="toolbar" aria-label="选择模式" hidden>
+              <button type="button" data-pick="face">拾取面</button>
+              <button type="button" data-pick="clear">清除</button>
+              <span class="pick-hint" id="pick-hint">未选中任何面</span>
+            </div>
           </div>
           <div class="stats" id="stats"></div>
           <div class="banner hidden" id="banner"></div>
@@ -113,13 +116,8 @@
           <span class="time" id="time">0.00 / 0.00 s</span>
           <label class="speed" title="仿真播放速度">
             速度
-            <select id="speed">
-              <option value="0.25">0.25×</option>
-              <option value="1" selected>1×</option>
-              <option value="2">2×</option>
-              <option value="4">4×</option>
-              <option value="8">8×</option>
-            </select>
+            <input id="speed" class="speed-slider" type="range" min="1" max="64" step="1" value="1" />
+            <output id="speed-value" class="speed-value" for="speed">1×</output>
           </label>
         </footer>
       </section>

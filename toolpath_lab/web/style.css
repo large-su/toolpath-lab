@@ -399,10 +399,6 @@ input[type="checkbox"] {
 }
 
 .appearance-toolbar {
-  position: absolute;
-  top: 14px;
-  left: 14px;
-  z-index: 3;
   display: flex;
   gap: 2px;
   padding: 3px;
@@ -430,6 +426,64 @@ input[type="checkbox"] {
   color: var(--teal);
   border-color: rgba(84, 214, 196, 0.32);
   background: var(--teal-soft);
+}
+
+/* 左上角工具条一列：外观开关在上，拾取面在下——分开绝对定位时两者会重叠。 */
+.corner-toolbars {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.pick-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(7, 16, 20, 0.86);
+  backdrop-filter: blur(10px);
+}
+
+/* JS 用 hidden 属性切换显隐（实验台模式下不出现），必须压过上面的 display:flex。 */
+.pick-toolbar[hidden] {
+  display: none;
+}
+
+.pick-toolbar button {
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.pick-toolbar button:hover {
+  color: var(--text);
+}
+
+.pick-toolbar button.active {
+  color: var(--teal);
+  border-color: rgba(84, 214, 196, 0.32);
+  background: var(--teal-soft);
+}
+
+.pick-hint {
+  max-width: 260px;
+  overflow: hidden;
+  padding: 0 6px;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------------------------------------------------------------- 统计 */
@@ -518,6 +572,26 @@ input[type="checkbox"] {
 .time {
   min-width: 118px;
   color: var(--text-dim);
+  font: 11px var(--mono);
+  text-align: right;
+}
+
+/* 速度滑条（1×–64×）：固定宽度，拖动时倍数读数不抖动。 */
+.speed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.speed-slider {
+  width: 132px;
+}
+
+.speed-value {
+  min-width: 38px;
+  color: var(--text);
   font: 11px var(--mono);
   text-align: right;
 }
