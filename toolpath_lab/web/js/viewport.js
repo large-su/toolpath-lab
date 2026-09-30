@@ -266,6 +266,7 @@ export class Viewport {
         new THREE.CylinderGeometry(radius, radius, Math.max(flute - radius, 0.2), 64),
         toolMaterial()
       );
+      body.rotation.x = Math.PI / 2;
       body.position.z = radius + body.geometry.parameters.height / 2;
       const tip = new THREE.Mesh(
         new THREE.SphereGeometry(radius, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
@@ -274,26 +275,47 @@ export class Viewport {
       tip.position.z = radius; // 球心在 z=radius，刀尖正好落在 z=0 加工面
       cuttingParts.push(body, tip);
     } else if (tool.kind === "bull") {
-      const body = new THREE.Mesh(
-        new THREE.CylinderGeometry(radius, radius, flute, 64),
-        toolMaterial()
-      );
-      body.position.z = flute / 2;
-      cuttingParts.push(body);
-      const corner = Math.max(Number(tool.corner_radius_mm) || 0, 0);
+      // 圆角半径超过刀具半径一半时，圆角环会自我交叉成怪形状；
+      // 真实圆鼻刀的圆角远小于刀径，这里限制在 45% 半径以内。
+      const corner = Math.min(Math.max(Number(tool.corner_radius_mm) || 0, 0), radius * 0.45);
       if (corner > 0.001) {
+        // 圆鼻刀三段组合（标准造型）：
+        //   底部短圆柱：底面半径 R-Rc、高 Rc，底面是平的（圆角以下的部分）；
+        //   圆角环：从底面外缘（R-Rc）向上过渡到圆柱侧面（R）；
+        //   主体圆柱：半径 R，从 z=Rc 起向上。
+        const base = new THREE.Mesh(
+          new THREE.CylinderGeometry(Math.max(radius - corner, 0.001), Math.max(radius - corner, 0.001), corner, 64),
+          toolMaterial()
+        );
+        base.rotation.x = Math.PI / 2;
+        base.position.z = corner / 2;
         const fillet = new THREE.Mesh(
           new THREE.TorusGeometry(Math.max(radius - corner, 0.001), corner, 16, 64),
           toolMaterial()
         );
         fillet.position.z = corner;
-        cuttingParts.push(fillet);
+        const body = new THREE.Mesh(
+          new THREE.CylinderGeometry(radius, radius, Math.max(flute - corner, 0.001), 64),
+          toolMaterial()
+        );
+        body.rotation.x = Math.PI / 2;
+        body.position.z = corner + Math.max(flute - corner, 0.001) / 2;
+        cuttingParts.push(base, fillet, body);
+      } else {
+        const body = new THREE.Mesh(
+          new THREE.CylinderGeometry(radius, radius, flute, 64),
+          toolMaterial()
+        );
+        body.rotation.x = Math.PI / 2;
+        body.position.z = flute / 2;
+        cuttingParts.push(body);
       }
     } else {
       const body = new THREE.Mesh(
         new THREE.CylinderGeometry(radius, radius, flute, 64),
         toolMaterial()
       );
+      body.rotation.x = Math.PI / 2;
       body.position.z = flute / 2;
       cuttingParts.push(body);
     }
@@ -309,10 +331,7 @@ export class Viewport {
       mesh.receiveShadow = true;
       this.toolGroup.add(mesh);
     }
-    // 沿 Z 轴竖放：切削段顶端统一在 z=flute，刀柄底端贴住它向上延伸。
-    for (const mesh of cuttingParts) {
-      mesh.rotation.x = Math.PI / 2;
-    }
+    // 刀柄沿 Z 轴竖放，底端贴住切削段顶端（z=flute），向上延伸。
     shank.rotation.x = Math.PI / 2;
     shank.position.z = flute + holder / 2;
     this.toolMesh = this.toolGroup;
