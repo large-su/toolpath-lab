@@ -14,6 +14,8 @@ const COLORS = {
   background: 0x071014,
   white: 0xffffff,
   workpiece: 0x5b6b7e,
+  blank: 0xb07cf0,
+  blankEdge: 0xe2ccff,
   contour: 0x54d6c4,
   cut: 0xffa726,
   link: 0xf2c94c,
@@ -25,6 +27,9 @@ const COLORS = {
 
 //: 刀路画在工件上表面之上一点点，避免与上表面 z-fighting。
 const PATH_LIFT_MM = 0.05;
+
+//: 毛坯相对工件在四周与顶面各留的余量（mm）：毛坯因此一定比工件大一圈。
+const BLANK_MARGIN_MM = 2.0;
 
 //: 视图工具条上的按钮，按常用顺序排列。
 export const VIEW_BUTTONS = [
@@ -194,6 +199,57 @@ export function buildToolParts(tool) {
   return parts;
 }
 
+// 毛坯的外形：把区域整个包进去，四周与顶面各留 BLANK_MARGIN_MM 余量；底面与工件底面齐平
+// （料是从下面那块基体一直长到顶面之上的，所以毛坯一定比工件大一圈）。
+export function blankSize(region, marginMm = BLANK_MARGIN_MM) {
+  const [xRange, yRange] = region.bounds_mm;
+  const surface = region.surface || {};
+  const baseZ = Number(surface.base_z_mm || 0);
+  const topZ = Number(surface.top_z_mm != null ? surface.top_z_mm : baseZ);
+  const thickness = Number(region.thickness_mm) > 0 ? Number(region.thickness_mm) : 0;
+  const width = (xRange[1] - xRange[0]) + 2 * marginMm;
+  const depth = (yRange[1] - yRange[0]) + 2 * marginMm;
+  return {
+    width,
+    depth,
+    diameter: width,
+    height: topZ - (baseZ - thickness) + marginMm,
+    bottom: baseZ - thickness,
+    top: topZ + marginMm,
+    centreX: (xRange[0] + xRange[1]) / 2,
+    centreY: (yRange[0] + yRange[1]) / 2,
+  };
+}
+
+// 毛坯实体：方形与斜坡用长方体，圆形用竖直圆柱；半透明 + 棱线，与工件颜色明显区分。
+export function buildBlankMesh(region, marginMm = BLANK_MARGIN_MM) {
+  const size = blankSize(region, marginMm);
+  const cylindrical = region.id === "circle";
+  const geometry = cylindrical
+    ? new THREE.CylinderGeometry(size.diameter / 2, size.diameter / 2, size.height, 96)
+    : new THREE.BoxGeometry(size.width, size.depth, size.height);
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+    color: COLORS.blank, metalness: 0.1, roughness: 0.9,
+    transparent: true, opacity: 0.22, depthWrite: false,
+  }));
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geometry),
+    new THREE.LineBasicMaterial({ color: COLORS.blankEdge, transparent: true, opacity: 0.9 })
+  );
+  if (cylindrical) {
+    // 圆柱默认沿 Y，转成竖直（沿 Z）与工件的圆形端面对齐。
+    mesh.rotation.x = Math.PI / 2;
+    edges.rotation.x = Math.PI / 2;
+  }
+  const centreZ = size.bottom + size.height / 2;
+  mesh.position.set(size.centreX, size.centreY, centreZ);
+  edges.position.set(size.centreX, size.centreY, centreZ);
+  const group = new THREE.Group();
+  group.name = "blank";
+  group.add(mesh, edges);
+  return group;
+}
+
 export class Viewport {
   constructor(container) {
     this.container = container;
@@ -250,13 +306,14 @@ export class Viewport {
     this.scene.add(rim);
 
     this.gridGroup = new THREE.Group();
+    this.blankGroup = new THREE.Group();
     this.workpieceGroup = new THREE.Group();
     this.contourGroup = new THREE.Group();
     this.pathGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
     this.toolGroup = new THREE.Group();
     this.scene.add(
-      this.gridGroup, this.workpieceGroup,
+      this.gridGroup, this.blankGroup, this.workpieceGroup,
       this.contourGroup, this.pathGroup, this.traceGroup, this.toolGroup
     );
 
@@ -264,6 +321,8 @@ export class Viewport {
     this.toolMesh = null;
     this.traceLine = null;
     this.rapidLine = null;
+    //: 毛坯当前包住的区域（null = 没显示毛坯）。
+    this.blankRegion = null;
 
     this.resize();
     if (typeof ResizeObserver !== "undefined") {
@@ -311,6 +370,8 @@ export class Viewport {
     // 轮廓画的是"刀路覆盖的范围"：斜坡只加工斜面段时它比工件轮廓窄。
     this.contourGroup.add(this._contour(region.machining_boundary || region.boundary));
     this._rebuildGrid(span, thickness, surfaceZ);
+    // 毛坯正显示着的话，跟着当前区域重新生成（改区域参数时毛坯一起变）。
+    if (this.blankRegion) this.setBlank(region);
 
     const groups = { cut: [], link: [], rapid: [] };
     for (const move of payload.toolpath.moves) {
@@ -337,6 +398,9 @@ export class Viewport {
     this.bounds = new THREE.Box3().setFromObject(this.workpieceGroup);
     const pathBounds = new THREE.Box3().setFromObject(this.pathGroup);
     if (!pathBounds.isEmpty()) this.bounds.union(pathBounds);
+    if (this.blankGroup.children.length) {
+      this.bounds.union(new THREE.Box3().setFromObject(this.blankGroup));
+    }
     // 让刀具的上半截也落在取景范围内（长度直接来自响应，不依赖调用顺序）。
     const toolLength = Number((payload.tool && payload.tool.length_mm) || 0);
     if (toolLength > 0) {
@@ -347,10 +411,24 @@ export class Viewport {
     this._autoFrame();
   }
 
+  /** 毛坯：把区域整个包住的长方体（方形、斜坡）或竖直圆柱（圆形）；传 null 收起。
+   *
+   *  只换几何、不负责重绘——调用方按本文件的习惯自己 render()。
+   */
+  setBlank(region) {
+    this.blankRegion = region || null;
+    this._clear(this.blankGroup);
+    if (this.blankRegion) this.blankGroup.add(buildBlankMesh(this.blankRegion));
+    return this.blankRegion !== null;
+  }
+
+  get blankVisible() {
+    return this.blankRegion !== null;
+  }
+
   // 只在"工件尺寸变了"或第一次出结果时重新取景：
   // 调一个切宽就把视角拉回默认，是很烦人的体验。
-  _autoFrame() {
-    const size = this.bounds.getSize(new THREE.Vector3());
+  _autoFrame() {    const size = this.bounds.getSize(new THREE.Vector3());
     const diagonal = size.length();
     const changed = !this.fittedDiagonal
       || Math.abs(diagonal - this.fittedDiagonal) / this.fittedDiagonal > 0.12;

@@ -137,5 +137,49 @@ check("厚度 30：基体挂在顶面之下 30", Math.abs(deepBox.min.z + 10) < 
 check("厚度不改变加工面高度", Math.abs(deepBox.max.z - 20) < 1e-6,
   `顶面 ${deepBox.max.z.toFixed(3)}`);
 
+// 6. 毛坯：形状随区域（方形/斜坡长方体、圆形竖直圆柱），且一定把工件整个包住 ------
+console.log("毛坯：");
+const blankOf = (region, margin) => {
+  const group = viewport.buildBlankMesh(region, margin);
+  group.updateMatrixWorld(true);
+  return { group, box: new THREE.Box3().setFromObject(group), mesh: group.children[0] };
+};
+const blankRegion = (id, topZ = 0) => ({
+  id,
+  bounds_mm: [[-40, 40], [-40, 40]],
+  thickness_mm: 20,
+  surface: { kind: id === "ramp" ? "ramp" : "flat", base_z_mm: 0, top_z_mm: topZ },
+});
+
+const squareBlank = blankOf(blankRegion("square"));
+check("方形毛坯是长方体", squareBlank.mesh.geometry.type === "BoxGeometry",
+  squareBlank.mesh.geometry.type);
+check("四周各宽出 2 mm",
+  Math.abs(squareBlank.box.max.x - 42) < 1e-6 && Math.abs(squareBlank.box.min.y + 42) < 1e-6,
+  `X ${squareBlank.box.min.x.toFixed(1)}…${squareBlank.box.max.x.toFixed(1)}`);
+check("底面与工件底面齐平", Math.abs(squareBlank.box.min.z + 20) < 1e-6,
+  `底 ${squareBlank.box.min.z.toFixed(2)}`);
+check("顶面高出工件 2 mm", Math.abs(squareBlank.box.max.z - 2) < 1e-6,
+  `顶 ${squareBlank.box.max.z.toFixed(2)}`);
+check("毛坯把工件整个包住", squareBlank.box.containsBox(
+  new THREE.Box3(new THREE.Vector3(-40, -40, -20), new THREE.Vector3(40, 40, 0))
+));
+check("余量可调（5 mm → 90 宽）",
+  Math.abs(blankOf(blankRegion("square"), 5).box.max.x - 45) < 1e-6);
+
+const circleBlank = blankOf(blankRegion("circle"));
+check("圆形毛坯是竖直圆柱", circleBlank.mesh.geometry.type === "CylinderGeometry",
+  circleBlank.mesh.geometry.type);
+check("圆柱毛坯竖直摆放（高度沿 Z）",
+  Math.abs((circleBlank.box.max.z - circleBlank.box.min.z) - 22) < 1e-6,
+  `高 ${(circleBlank.box.max.z - circleBlank.box.min.z).toFixed(2)}`);
+check("圆柱毛坯直径 = 工件直径 + 4",
+  Math.abs((circleBlank.box.max.x - circleBlank.box.min.x) - 84) < 1e-6,
+  `直径 ${(circleBlank.box.max.x - circleBlank.box.min.x).toFixed(1)}`);
+
+const rampBlank = blankOf(blankRegion("ramp", 80));
+check("斜坡毛坯包到 Z 上限之上", Math.abs(rampBlank.box.max.z - 82) < 1e-6,
+  `顶 ${rampBlank.box.max.z.toFixed(2)}`);
+
 console.log(failed === 0 ? "\n全部通过" : `\n有 ${failed} 项不通过`);
 process.exit(failed === 0 ? 0 : 1);

@@ -59,7 +59,7 @@ by parameters, and the parameter panel is generated from the backend's parameter
   Safe height, rapid feed, lead-in length and boundary handling are constants (see
   "Configuration constants").
 - **3D view**: workpiece, region contour, toolpath (cut / link / rapid colour coded), cutter solid,
-  traversed path and live shadows.
+  traversed path, live shadows, and a **stock blank** you can generate / hide at any time (see below).
 - **Playback**: time is parameterised by each move's own feed rate; play / pause, scrubbing, cutting
   length and estimated machining time.
 - **Export**: NC program (G-code, G21 / G90 / G17 with G0 / G1 and F).
@@ -75,6 +75,12 @@ The left side is the parameter panel; the right side holds the 3D view, statisti
 | Middle wheel | Zoom |
 | Right drag | Pan |
 
+- **Top bar buttons**: "Generate toolpath", "Generate stock", "Export NC". **Generate stock** wraps the
+  current region - a **box for square and ramp, a vertical cylinder for circle** - with a 2 mm margin
+  on the sides and the top and a bottom flush with the workpiece, so the stock is always a step bigger
+  than the part. It is drawn as a translucent violet volume with brighter edges, clearly apart from the
+  workpiece and the paths; it follows region parameter changes and toggles away on a second click (the
+  label switches between "Generate stock" and "Hide stock").
 - **View toolbar** (top centre): fit / front / back / left / right / top / bottom; clicking the active
   direction again flips to the opposite side.
 - **Appearance toggles** (top left): live shadows, white background, grid floor.
@@ -190,6 +196,7 @@ the window - so the planning code runs headless. See [docs/architecture.md](docs
 | Loop linking | every loop runs in the same winding; loops are linked by a radial step-over at the seam, at feed, without retracting | `toolpath_lab/planning/follow_periphery.py` |
 | Default ramp Z cap | 80 mm (a region parameter, 1–1000; the slope turns into the flat top there) | `toolpath_lab/core/region.py` |
 | Default part thickness | 20 mm (a region parameter, 1–500); when a payload omits it the front-end falls back to 9% of the span, clamped to 4–24 mm | `toolpath_lab/core/region.py`, `toolpath_lab/web/js/viewport.js` |
+| Stock margin | 2 mm on the sides and the top (the bottom is flush with the workpiece) | `toolpath_lab/web/js/viewport.js` |
 
 To expose them as adjustable parameters, see [docs/extending.md](docs/extending.md).
 

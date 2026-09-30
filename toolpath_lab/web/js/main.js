@@ -14,6 +14,7 @@ const dom = {
   stats: document.getElementById("stats"),
   banner: document.getElementById("banner"),
   generate: document.getElementById("btn-generate"),
+  blankButton: document.getElementById("btn-blank"),
   exportButton: document.getElementById("btn-export"),
   play: document.getElementById("btn-play"),
   stop: document.getElementById("btn-stop"),
@@ -137,6 +138,7 @@ function wireAppearanceToolbar() {
 
 function wireButtons() {
   dom.generate.addEventListener("click", () => regenerate());
+  dom.blankButton.addEventListener("click", toggleBlank);
   dom.exportButton.addEventListener("click", exportGcode);
   dom.play.addEventListener("click", () => playback.toggle());
   dom.stop.addEventListener("click", () => playback.stop());
@@ -182,6 +184,21 @@ async function regenerate() {
       regenerate();
     }
   }
+}
+
+// ------------------------------------------------------------------ 毛坯
+// 毛坯按"当前区域"生成：方形与斜坡是长方体，圆形是竖直圆柱，四周与顶面各留一点余量，
+// 所以一定把工件整个包住。区域参数改了就跟着重新生成，直到再点一次收起。
+function toggleBlank() {
+  if (!lastResult) {
+    showBanner("先点「生成刀路」，毛坯按当前区域计算", "info");
+    return;
+  }
+  const show = !viewport.blankVisible;
+  viewport.setBlank(show ? lastResult.region : null);
+  viewport.render();
+  dom.blankButton.textContent = show ? "隐藏毛坯" : "生成毛坯";
+  dom.blankButton.classList.toggle("active", show);
 }
 
 async function exportGcode() {

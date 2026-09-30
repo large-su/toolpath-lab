@@ -335,6 +335,13 @@ input[type="checkbox"] {
   background: var(--teal-soft);
 }
 
+/* 顶栏按钮里的开关态（例如"生成毛坯"打开时） */
+.button.active {
+  color: var(--teal);
+  border-color: rgba(84, 214, 196, 0.45);
+  background: var(--teal-soft);
+}
+
 .view-toolbar strong {
   font-size: 10px;
   font-weight: 600;
