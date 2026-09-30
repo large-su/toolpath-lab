@@ -12,9 +12,12 @@ import * as THREE from "three";
 
 import { blankSize } from "./blank.js";
 
-export const STOCK_CELL_MM = 1.2;
-export const STOCK_MAX_NODES = 192;
+export const STOCK_CELL_MM = 0.6;
+export const STOCK_MAX_NODES = 240;
 export const STOCK_WALL_SEGMENTS = 96;
+
+/** 已切到加工面的颜色：与"还没切到的料"拉开对比，一眼看出哪里铣过了。 */
+export const STOCK_CUT_COLOUR = 0xe0cfa8;
 
 const EPS = 1e-9;
 
@@ -80,7 +83,10 @@ export class StockSimulation {
     this.dirty = true;
     this._markActive();
     this.reset();
-    this.object3d = this._buildObject(options.colour == null ? 0xb07cf0 : options.colour);
+    this.object3d = this._buildObject(
+      options.colour == null ? 0xb07cf0 : options.colour,
+      options.cutColour == null ? STOCK_CUT_COLOUR : options.cutColour,
+    );
   }
 
   get nodeCount() {
@@ -186,7 +192,7 @@ export class StockSimulation {
   }
 
   // -- 网格 ---------------------------------------------------------------
-  _buildObject(colour) {
+  _buildObject(colour, cutColour) {
     const positions = [];
     const indices = [];
     const top = this.size.top;
@@ -278,15 +284,26 @@ export class StockSimulation {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    const colourList = new Float32Array(positions.length);
+    const uncut = new THREE.Color(colour);
+    for (let index = 0; index < positions.length; index += 3) {
+      colourList[index] = uncut.r;
+      colourList[index + 1] = uncut.g;
+      colourList[index + 2] = uncut.b;
+    }
+    geometry.setAttribute("color", new THREE.Float32BufferAttribute(colourList, 3));
     geometry.setIndex(indices);
     geometry.computeBoundingSphere();
     this.geometry = geometry;
+    this.uncutColour = uncut;
+    this.cutColour = new THREE.Color(cutColour);
     const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-      color: colour,
+      color: 0xffffff,
+      vertexColors: true,
       metalness: 0.08,
       roughness: 0.85,
       transparent: true,
-      opacity: 0.62,
+      opacity: 0.82,
       side: THREE.DoubleSide,
       flatShading: true,
     }));
@@ -311,20 +328,36 @@ export class StockSimulation {
     return (h00 * (1 - tx) + h10 * tx) * (1 - ty) + (h01 * (1 - tx) + h11 * tx) * ty;
   }
 
-  /** 把高度写进顶点；只有真的削到料时才调用（切削是单调的，脏标记够用）。 */
+  /** 把高度写进顶点；只有真的削到料时才调用（切削是单调的，脏标记够用）。
+   *  同时按"这里切到加工面没有"给顶点上色：没切到的料保持毛坯色，切过的地方换一个色，
+   *  于是"哪里铣过了、哪里还留着"一眼可辨。
+   */
   updateGeometry() {
     const array = this.geometry.attributes.position.array;
+    const colours = this.geometry.attributes.color.array;
+    const top = this.size.top;
+    const setColour = (vertex, height) => {
+      const source = height < top - 1e-6 ? this.cutColour : this.uncutColour;
+      colours[vertex * 3] = source.r;
+      colours[vertex * 3 + 1] = source.g;
+      colours[vertex * 3 + 2] = source.b;
+    };
     for (let node = 0; node < this.count; node += 1) {
       const vertex = this.nodeVertex[node];
       if (vertex < 0) continue;
-      array[vertex * 3 + 2] = this.heights[node];
+      const height = this.heights[node];
+      array[vertex * 3 + 2] = height;
+      setColour(vertex, height);
     }
     for (const item of this.wallTops) {
-      array[item.vertex * 3 + 2] = item.node != null
+      const height = item.node != null
         ? this.heights[item.node]
         : this.heightAt(item.x, item.y);
+      array[item.vertex * 3 + 2] = height;
+      setColour(item.vertex, height);
     }
     this.geometry.attributes.position.needsUpdate = true;
+    this.geometry.attributes.color.needsUpdate = true;
     this.dirty = false;
     return this;
   }

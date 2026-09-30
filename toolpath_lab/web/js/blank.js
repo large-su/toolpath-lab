@@ -44,13 +44,15 @@ function blankGeometry(region, topMarginMm) {
   return { size, geometry };
 }
 
-/** 毛坯的棱线：既是"未切削毛坯"的轮廓，也是切削时"被削掉了多少"的参照。 */
+/** 毛坯的棱线：既是"未切削毛坯"的轮廓，也是切削时"被削掉了多少"的参照。
+ *  切削时用低不透明度的中性灰白（ghost），避免和"剩下的料"撞色。
+ */
 export function buildBlankOutline(region, topMarginMm = BLANK_TOP_MARGIN_MM,
-                                  edgeColour = BLANK_EDGE_COLOUR) {
+                                  edgeColour = BLANK_EDGE_COLOUR, opacity = 0.9) {
   const { size, geometry } = blankGeometry(region, topMarginMm);
   const edges = new THREE.LineSegments(
     new THREE.EdgesGeometry(geometry),
-    new THREE.LineBasicMaterial({ color: edgeColour, transparent: true, opacity: 0.9 })
+    new THREE.LineBasicMaterial({ color: edgeColour, transparent: true, opacity })
   );
   if (blankCylindrical(region)) {
     // 圆柱默认沿 Y，转成竖直（沿 Z）与工件的圆形端面对齐。

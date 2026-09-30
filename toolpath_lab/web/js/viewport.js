@@ -12,7 +12,7 @@ import { RoomEnvironment } from "../vendor/RoomEnvironment.js";
 import {
   BLANK_TOP_MARGIN_MM, blankSize, buildBlankMesh, buildBlankOutline,
 } from "./blank.js";
-import { StockSimulation, decodeKinds } from "./stock.js";
+import { StockSimulation, STOCK_CUT_COLOUR, decodeKinds } from "./stock.js";
 
 // 毛坯外形的实现在 blank.js、切削仿真在 stock.js；这里转发一下，既有的引用
 // （包括 tools/check_frontend_geometry.mjs）不用改。
@@ -24,6 +24,8 @@ const COLORS = {
   workpiece: 0x5b6b7e,
   blank: 0xb07cf0,
   blankEdge: 0xe2ccff,
+  //: 切削仿真里"未切削毛坯"的参照轮廓：中性灰白、很淡，不与剩下的料撞色。
+  blankGhost: 0xcbd8dc,
   contour: 0x54d6c4,
   cut: 0xffa726,
   link: 0xf2c94c,
@@ -383,15 +385,17 @@ export class Viewport {
       const timeline = this.payload && this.payload.timeline;
       const cuttable = Boolean(timeline && timeline.positions && timeline.positions.length > 1);
       if (cuttable) {
-        // 未切削毛坯的棱线留着：一眼看得出被削掉了多少。
+        // 未切削毛坯的棱线留着（中性灰白、很淡）：一眼看得出被削掉了多少，
+        // 又不会和"剩下那块料"（紫色/砂色）撞色。
         this.blankGroup.add(
-          buildBlankOutline(this.blankRegion, this.blankTopMarginMm, COLORS.blankEdge)
+          buildBlankOutline(this.blankRegion, this.blankTopMarginMm, COLORS.blankGhost, 0.3)
         );
         this.stock = new StockSimulation(this.blankRegion, (this.payload || {}).tool || {},
           this.blankTopMarginMm, {
             timeline,
             kinds: decodeKinds(timeline),
             colour: COLORS.blank,
+            cutColour: STOCK_CUT_COLOUR,
           });
         this.blankGroup.add(this.stock.object3d);
         if (this.playhead) this.stock.syncTo(this.playhead.index, this.playhead.position);

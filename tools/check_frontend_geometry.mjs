@@ -227,11 +227,28 @@ const simOf = (positions, kinds, tool = flatTool, region = simRegion) =>
 
 const onePass = simOf([[-20, 0, 0], [20, 0, 0]], ["cut", "cut"]);
 onePass.syncTo(1, [20, 0, 0]);
+onePass.updateGeometry();
 check("刀盘扫过的地方压到刀尖高度", Math.abs(nodeAt(onePass, 0, 0)) < 1e-6,
   `(0,0) 高 ${nodeAt(onePass, 0, 0).toFixed(3)}`);
 check("刀盘外面不动", Math.abs(nodeAt(onePass, 0, 10) - 2) < 1e-6
   && Math.abs(nodeAt(onePass, 35, 0) - 2) < 1e-6,
   `(0,10) 高 ${nodeAt(onePass, 0, 10).toFixed(3)}`);
+
+// 顶点着色：没切到的料保持毛坯色，切到加工面的地方换色，这样"哪里铣过了"一眼可辨。
+const colourOf = (sim, x, y) => {
+  const i = Math.round((x - sim.x0) / sim.dx);
+  const j = Math.round((y - sim.y0) / sim.dy);
+  const vertex = sim.nodeVertex[j * sim.nx1 + i];
+  const attribute = sim.geometry.attributes.color;
+  return [attribute.getX(vertex), attribute.getY(vertex), attribute.getZ(vertex)];
+};
+const sameColour = (value, colour) => Math.abs(value[0] - colour.r) < 1e-6
+  && Math.abs(value[1] - colour.g) < 1e-6 && Math.abs(value[2] - colour.b) < 1e-6;
+check("没切到的料保持毛坯色", sameColour(colourOf(onePass, 0, 10), new THREE.Color(0xb07cf0)),
+  colourOf(onePass, 0, 10).map((v) => v.toFixed(2)).join(","));
+check("切到加工面的地方换色",
+  sameColour(colourOf(onePass, 0, 0), new THREE.Color(stock.STOCK_CUT_COLOUR)),
+  colourOf(onePass, 0, 0).map((v) => v.toFixed(2)).join(","));
 
 // 覆盖整块区域的往复刀路（切宽 4、D6）：走完以后内部应该完全变成区域形状。
 const raster = [];
