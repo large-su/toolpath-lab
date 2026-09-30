@@ -357,7 +357,7 @@ def build(out_dir: Path, figure_dir: Path) -> Path:
                 raise SystemExit(f"content.DECK_ORDER 里的 {key!r} 在 FEATURES 中不存在")
             deck.feature(feature)
     out_dir.mkdir(parents=True, exist_ok=True)
-    target = out_dir / "ToolpathLab-开发过程与功能介绍.pptx"
+    target = out_dir / f"{content.META.get('deck_file', 'ToolpathLab-开发过程与功能介绍')}.pptx"
     deck.prs.save(target)
     return target
 

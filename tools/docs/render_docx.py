@@ -229,9 +229,9 @@ def build(out_dir: Path, figure_dir: Path) -> Path:
     # -------- 5 质量保障
     doc.heading("5. 质量保障", level=1)
     doc.heading("5.1 两层测试", level=2)
-    doc.para("后端与库用 unittest：几何裁剪与等距偏置、两种策略的刀路（平面 / 斜面 / 分层）、安全高度、"
-             "时间参数化、G-code 导出、HTTP 接口与静态资源，共 263 项。前端另有一层几何自检："
-             "node tools/check_frontend_geometry.mjs，13 项，覆盖“渲染前把三维点变成几何”的那几步。",
+    doc.para("后端与库用 unittest：几何裁剪与等距偏置、两种策略的刀路（平面 / 斜面 / 分层）与环距校核、"
+             "安全高度、时间参数化、G-code 导出、HTTP 接口与静态资源，共 267 项。前端另有一层几何自检："
+             "node tools/check_frontend_geometry.mjs，28 项，覆盖刀路抬升、刀具刀面、毛坯贴合与切削仿真。",
              size=10, space_after=6)
     doc.heading("5.2 被测试守住的关键不变量", level=2)
     invariants = content.TABLES["invariants"]
