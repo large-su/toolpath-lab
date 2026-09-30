@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from toolpath_lab.core.errors import PlanningError
+from toolpath_lab.core.errors import ParameterError, PlanningError
 from toolpath_lab.core.path import MoveKind, Toolpath
 from toolpath_lab.core.region import build_region
 from toolpath_lab.core.tool import Tool, ToolKind
@@ -52,7 +52,8 @@ class RegistryTests(unittest.TestCase):
         keys = [item["key"] for item in entry["parameters"]]
         self.assertEqual(
             keys,
-            ["mode", "linking", "stepover_mm", "direction_deg", "feed_mm_per_min", "entry"],
+            ["mode", "linking", "stepover_mm", "direction_deg", "feed_mm_per_min", "entry",
+             "layer_depth_mm", "stock_margin_mm"],
         )
         self.assertEqual(entry["label"], "栅格刀路")
 
@@ -391,6 +392,110 @@ class RegionHeightTests(unittest.TestCase):
         for first, second in zip(thin.moves, thick.moves):
             self.assertEqual(first.kind, second.kind)
             self.assertTrue(np.allclose(first.points, second.points))
+
+
+class LayerRoughingTests(unittest.TestCase):
+    """分层粗加工：毛坯逐层铣掉，每层深度可设，最后仍沿加工面精加工一刀。"""
+
+    def _layered(self, shape="square", *, depth=2.0, margin=2.0, planner="raster",
+                 region_parameters=None, tool=None, **overrides):
+        options = {"mode": "one_way", "stepover_mm": 20.0, "direction_deg": 0.0,
+                   "feed_mm_per_min": 600.0}
+        if depth is not None:
+            options["layer_depth_mm"] = depth
+            options["stock_margin_mm"] = margin
+        options.update(overrides)
+        return run_plan(
+            planner_id=planner,
+            tool=tool or _tool(diameter=10.0),
+            region=build_region(shape, region_parameters
+                                or {"side_mm": 80.0, "thickness_mm": 20.0}),
+            parameters=options,
+        )
+
+    def test_layering_is_off_by_default(self) -> None:
+        plain = self._layered(depth=None)  # 连参数都不给
+        off = self._layered(depth=0.0)  # 给了参数但每层深度为 0
+        self.assertAlmostEqual(plain.toolpath.cut_length_mm, off.toolpath.cut_length_mm,
+                               places=9)
+        self.assertEqual(len(plain.toolpath.moves), len(off.toolpath.moves))
+        for first, second in zip(plain.toolpath.moves, off.toolpath.moves):
+            self.assertTrue(np.allclose(first.points, second.points))
+
+    def test_flat_region_is_cut_in_layers(self) -> None:
+        toolpath = self._layered(depth=1.0).toolpath
+        levels = {round(float(move.points[0][2]), 6) for move in _pass_cuts(toolpath)}
+        self.assertEqual(levels, {0.0, 1.0, 2.0})  # 2 mm 余量抹成两层，最后一层落在加工面
+        self.assertEqual(toolpath.pass_count, 15)  # 5 刀 × 3 遍
+        for move in _pass_cuts(toolpath):
+            self.assertAlmostEqual(float(np.ptp(move.points[:, 2])), 0.0, places=9)
+
+    def test_stock_margin_sets_the_first_layer(self) -> None:
+        toolpath = self._layered(depth=5.0, margin=8.0).toolpath
+        levels = sorted({round(float(m.points[0][2]), 6) for m in _pass_cuts(toolpath)},
+                        reverse=True)
+        self.assertEqual(levels[0], 8.0)  # 第一层就在毛坯顶面
+        self.assertEqual(levels, [8.0, 3.0, 0.0])
+        # 余量为 0 时没有料要粗铣，只剩精加工那一遍
+        self.assertEqual(self._layered(depth=5.0, margin=0.0).toolpath.pass_count, 5)
+
+    def test_ramp_layers_shrink_towards_the_low_edge(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
+        toolpath = self._layered(
+            "ramp", depth=20.0, region_parameters={"side_mm": 80.0, "angle_deg": 60.0}
+        ).toolpath
+        rough = [m for m in _pass_cuts(toolpath) if np.ptp(m.points[:, 2]) < 1e-9]
+        levels = sorted({round(float(m.points[0][2]), 3) for m in rough}, reverse=True)
+        self.assertEqual(levels, [82.0, 62.0, 42.0, 22.0])  # 2 mm 那一层放不下刀具，跳过
+        x_min = {round(float(m.points[0][2]), 3): float(m.points[:, 0].min()) for m in rough}
+        for higher, lower in zip(levels, levels[1:]):
+            # 越往下只有靠低边（+X）那一侧还有料，所以料边一路往 +X 挪
+            self.assertGreater(x_min[lower], x_min[higher])
+
+    def test_the_cutter_never_digs_into_the_finished_side(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
+        toolpath = self._layered(
+            "ramp", depth=20.0, region_parameters={"side_mm": 80.0, "angle_deg": 60.0}
+        ).toolpath
+        footprint = _tool(diameter=10.0).footprint_radius_mm
+        for move in _pass_cuts(toolpath):
+            if np.ptp(move.points[:, 2]) > 1e-9:
+                continue  # 只看水平层；精加工那一遍本身就是贴着加工面走的
+            for point in move.points:
+                edge = np.array([[float(point[0]) - footprint, float(point[1])]])
+                self.assertLessEqual(float(region.height_at(edge)[0]),
+                                     float(point[2]) + 1e-6)
+
+    def test_finishing_pass_follows_the_surface(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
+        toolpath = self._layered(
+            "ramp", depth=40.0, region_parameters={"side_mm": 80.0, "angle_deg": 60.0}
+        ).toolpath
+        finish = [m for m in _pass_cuts(toolpath) if np.ptp(m.points[:, 2]) > 1e-9]
+        self.assertTrue(finish)
+        for move in finish:
+            self.assertTrue(np.allclose(move.points[:, 2],
+                                        region.height_at(move.points[:, :2]), atol=1e-9))
+
+    def test_notes_describe_the_layers(self) -> None:
+        notes = " ".join(self._layered(depth=2.0).toolpath.notes)
+        self.assertIn("分层粗加工", notes)
+        self.assertIn("每层 2 mm", notes)
+
+    def test_follow_periphery_layers_too(self) -> None:
+        outcome = self._layered(
+            "circle", depth=1.0, planner="follow_periphery",
+            region_parameters={"diameter_mm": 80.0, "thickness_mm": 20.0},
+            tool=_tool(kind=ToolKind.BALL), direction="inward", winding="ccw",
+            stepover_mm=10.0, sample_step_mm=1.0,
+        )
+        levels = {round(float(m.points[0][2]), 6) for m in _pass_cuts(outcome.toolpath)}
+        self.assertEqual(levels, {0.0, 1.0, 2.0})
+        self.assertEqual(outcome.toolpath.pass_count, 12)  # 4 环 × 3 遍
+
+    def test_negative_layer_depth_is_rejected(self) -> None:
+        with self.assertRaises(ParameterError):
+            self._layered(depth=-1.0)
 
 
 class BullToolTests(unittest.TestCase):

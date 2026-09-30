@@ -50,14 +50,20 @@ by parameters, and the parameter panel is generated from the backend's parameter
   - **follow-periphery** - constant offset loops that march inwards from the region contour until the
     region is cleared; the **cut order** is either inwards (contour first) or outwards (centre first)
     and the **winding** counter-clockwise or clockwise (seen from above), the same for every loop.
+- **Layered roughing**: set "depth per layer" (ap) above 0 and the stock is milled away layer by layer -
+  starting at the "stock top margin" (2 mm by default) and stepping down by ap, with **each layer only
+  cutting where that height still has material** (on a slope the area shrinks as you go down, and the
+  cutter's edge lands exactly on that layer's material boundary, so it neither digs into the finished
+  side nor leaves a sliver), followed by the usual surface-following pass as the finishing cut.
+  ap = 0 (the default) means just that finishing pass.
 - **Cutting on a slope** (automatic whenever the machining surface is not horizontal, and switchable
   through the "entry" parameter): passes run **uphill**, the tool enters **along the surface** from
   outside the part instead of plunging into the slope, and one-way passes are **linked along the
   surface** instead of lifting to the safe plane every time.
-- **Parameters**: stepover, pass direction, mode, entry, linking, cut order and feed rate; the region
-  side adds side / diameter, machining height, part thickness, angle, Z cap and "machine plateau".
-  Safe height, rapid feed, lead-in length and boundary handling are constants (see
-  "Configuration constants").
+- **Parameters**: stepover, pass direction, mode, entry, linking, depth per layer, stock top margin,
+  cut order and feed rate; the region side adds side / diameter, machining height, part thickness,
+  angle, Z cap and "machine plateau". Safe height, rapid feed, lead-in length and boundary handling are
+  constants (see "Configuration constants").
 - **3D view**: workpiece, region contour, toolpath (cut / link / rapid colour coded), cutter solid,
   traversed path, live shadows, and a **stock blank** you can generate / hide at any time (see below).
 - **Playback**: time is parameterised by each move's own feed rate; play / pause, scrubbing, cutting
@@ -75,14 +81,14 @@ The left side is the parameter panel; the right side holds the 3D view, statisti
 | Middle wheel | Zoom |
 | Right drag | Pan |
 
-- **Top bar buttons**: "Generate toolpath", "Generate stock", "Export NC", with a **top margin** input
-  next to the stock button. **Generate stock** builds the blank for the current region - a **box for
-  square and ramp, a vertical cylinder for circle** - with its **vertical faces flush against the
-  region** (no XY margin) and its bottom flush with the workpiece; only the **top** carries the
-  "top margin" (2 mm by default, editable 0–50), and changing it redraws the blank immediately without
-  re-planning. It is drawn as a translucent violet volume with brighter edges, clearly apart from the
-  workpiece and the paths; it follows region parameter changes and toggles away on a second click (the
-  label switches between "Generate stock" and "Hide stock").
+- **Top bar buttons**: "Generate toolpath", "Generate stock", "Export NC".
+  **Generate stock** builds the blank for the current region - a **box for square and ramp, a vertical
+  cylinder for circle** - with its **vertical faces flush against the region** (no XY margin) and its
+  bottom flush with the workpiece; only the **top** carries the "stock top margin" (a planner parameter
+  in the panel, 2 mm by default), so the blank you see and the layered roughing plan the same block.
+  It is drawn as a translucent violet volume with brighter edges, clearly apart from the workpiece and
+  the paths; it follows region parameter changes and toggles away on a second click (the label switches
+  between "Generate stock" and "Hide stock").
 - **View toolbar** (top centre): fit / front / back / left / right / top / bottom; clicking the active
   direction again flips to the opposite side.
 - **Appearance toggles** (top left): live shadows, white background, grid floor.
@@ -198,7 +204,7 @@ the window - so the planning code runs headless. See [docs/architecture.md](docs
 | Loop linking | every loop runs in the same winding; loops are linked by a radial step-over at the seam, at feed, without retracting | `toolpath_lab/planning/follow_periphery.py` |
 | Default ramp Z cap | 80 mm (a region parameter, 1–1000; the slope turns into the flat top there) | `toolpath_lab/core/region.py` |
 | Default part thickness | 20 mm (a region parameter, 1–500); when a payload omits it the front-end falls back to 9% of the span, clamped to 4–24 mm | `toolpath_lab/core/region.py`, `toolpath_lab/web/js/viewport.js` |
-| Default stock top margin | 2 mm (editable 0–50 in the top bar; vertical faces are flush with the region and the bottom with the workpiece) | `toolpath_lab/web/js/viewport.js` |
+| Default stock top margin | 2 mm (a planner parameter, 0–50; vertical faces are flush with the region, the bottom with the workpiece, and layered roughing starts there) | `toolpath_lab/planning/base.py`, `toolpath_lab/web/js/viewport.js` |
 
 To expose them as adjustable parameters, see [docs/extending.md](docs/extending.md).
 

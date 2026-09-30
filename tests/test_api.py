@@ -178,6 +178,24 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(payload["toolpath"]["statistics"]["cut_length_mm"],
                          baseline["toolpath"]["statistics"]["cut_length_mm"])
 
+    def test_layered_roughing_is_planned_through_the_api(self) -> None:
+        status, payload, _ = self.plan(
+            {
+                "region": {"shape": "square", "parameters": {"side_mm": 80.0}},
+                "planner": {"id": "raster",
+                            "parameters": {"mode": "one_way", "stepover_mm": 20.0,
+                                           "layer_depth_mm": 1.0,
+                                           "stock_margin_mm": 2.0}},
+            }
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["request"]["planner"]["parameters"]["layer_depth_mm"], 1.0)
+        self.assertEqual(payload["request"]["planner"]["parameters"]["stock_margin_mm"], 2.0)
+        cuts = [move for move in payload["toolpath"]["moves"] if move["kind"] == "cut"]
+        levels = {round(point[2], 6) for move in cuts for point in move["points"]}
+        self.assertEqual(levels, {0.0, 1.0, 2.0})
+        self.assertIn("分层粗加工", " ".join(payload["toolpath"]["notes"]))
+
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.get("/api/nope")

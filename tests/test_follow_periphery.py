@@ -67,7 +67,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(
             [item["key"] for item in entry["parameters"]],
             ["direction", "winding", "stepover_mm", "sample_step_mm", "feed_mm_per_min",
-             "entry"],
+             "entry", "layer_depth_mm", "stock_margin_mm"],
         )
 
     def test_catalog_publishes_both_choices(self) -> None:

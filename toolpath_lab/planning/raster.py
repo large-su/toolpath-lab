@@ -34,7 +34,13 @@ from toolpath_lab.core.parameters import (
     spec,
 )
 from toolpath_lab.core.path import Move, Toolpath
-from toolpath_lab.planning.base import ENTRY_LEAD_IN_MM, SURFACE_PARAMETERS, Planner, PlanningContext
+from toolpath_lab.planning.base import (
+    ENTRY_LEAD_IN_MM,
+    LAYER_PARAMETERS,
+    SURFACE_PARAMETERS,
+    Planner,
+    PlanningContext,
+)
 from toolpath_lab.planning.geometry2d import scanline_intervals
 from toolpath_lab.planning.registry import PLANNERS
 
@@ -71,24 +77,63 @@ class RasterPlanner(Planner):
                  step=5.0, unit="°", group="刀路", help="扫描线的行进方向；切宽方向与之垂直"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
-        ) + SURFACE_PARAMETERS
+        ) + SURFACE_PARAMETERS + LAYER_PARAMETERS
     )
 
     def plan(self, context: PlanningContext) -> Toolpath:
+        stepover = self.require_positive(
+            float(context.parameters["stepover_mm"]), "切宽 stepover_mm"
+        )
+        self._warn_if_stepover_too_large(context, stepover)
+
+        # 加工面有起伏时改成"由低往高"：这样下刀的那一端就是低处，沿面切入不会撞上高处的材料。
+        # 分层粗加工的每一层用同一个方向，粗精加工的方向因此保持一致。
+        u_axis = direction_2d(float(context.parameters["direction_deg"]))
+        flipped = context.entry_along_surface and context.surface_rise(u_axis) < 0.0
+
+        # 先逐层把毛坯铣掉（每层是水平面，范围收窄到该层还有料的地方），
+        # 最后再沿加工面走一遍——这一遍就是精加工，也是不分层时的全部刀路。
+        levels = context.layer_levels()
+        moves: list[Move] = []
+        index = 0
+        for z in levels:
+            level_moves, index = self._pass_moves(context.at_level(z), index, flip=flipped)
+            moves.extend(level_moves)
+        finish_moves, index = self._pass_moves(context, index, flip=flipped)
+        if not finish_moves:
+            raise PlanningError(
+                "没有生成任何刀轨：请检查区域尺寸、刀具直径与切宽是否匹配"
+            )
+        moves.extend(finish_moves)
+
+        return Toolpath(
+            moves=tuple(moves),
+            planner=self.id,
+            planner_label=self.label,
+            notes=self._notes(context, index, len(levels), flipped),
+        )
+
+    # -- 内部步骤 ----------------------------------------------------------
+    def _pass_moves(
+        self, context: PlanningContext, first_index: int, *, flip: bool
+    ) -> tuple[list[Move], int]:
+        """在给定上下文上跑一遍完整的栅格走法（分层时是某一层，最后是沿加工面的一遍）。
+
+        返回（这一段运动, 下一段要用的走刀序号）。这一层没有料（范围退化）时返回空。
+        """
+
         mode = str(context.parameters["mode"])
         stepover = self.require_positive(
             float(context.parameters["stepover_mm"]), "切宽 stepover_mm"
         )
         offset = context.tool.footprint_radius_mm
-        self._warn_if_stepover_too_large(context, stepover)
-
         boundary = context.machining_boundary
+        if boundary.shape[0] < 3:
+            return [], first_index  # 这一层已经没有料了
+
         u_axis = direction_2d(float(context.parameters["direction_deg"]))
-        # 加工面有起伏时改成"由低往高"：这样下刀的那一端就是低处，沿面切入不会撞上高处的材料。
-        flipped = False
-        if context.entry_along_surface and context.surface_rise(u_axis) < 0.0:
+        if flip:
             u_axis = -u_axis
-            flipped = True
         v_axis = np.array([-u_axis[1], u_axis[0]], dtype=np.float64)
         frame = np.column_stack((u_axis, v_axis))
         planar = boundary @ frame
@@ -103,17 +148,18 @@ class RasterPlanner(Planner):
                     continue
                 passes.append((start, end, float(level)))
         if not passes:
-            raise PlanningError(
-                "没有生成任何刀轨：请检查区域尺寸、刀具直径与切宽是否匹配"
-            )
+            return [], first_index
 
         moves: list[Move] = []
         first_line = self._pass_line(passes[0], frame, reverse=False)
-        moves.extend(context.entry_moves(first_line[0], first_line[1], pass_index=0))
+        moves.extend(
+            context.entry_moves(first_line[0], first_line[1], pass_index=first_index)
+        )
 
         previous: np.ndarray | None = None
-        for index, item in enumerate(passes):
-            reverse = mode == "zigzag" and index % 2 == 1
+        for step, item in enumerate(passes):
+            index = first_index + step
+            reverse = mode == "zigzag" and step % 2 == 1
             world = self._pass_line(item, frame, reverse=reverse)
             positions = context.to_positions(world)
             if previous is not None:
@@ -128,15 +174,10 @@ class RasterPlanner(Planner):
             moves.append(context.cut_move(world, pass_index=index, label=f"第 {index + 1} 刀"))
             previous = positions[-1]
 
-        moves.append(context.retract_move_up(previous))
-        return Toolpath(
-            moves=tuple(moves),
-            planner=self.id,
-            planner_label=self.label,
-            notes=self._notes(context, mode, stepover, len(passes), flipped),
-        )
+        if previous is not None:
+            moves.append(context.retract_move_up(previous))
+        return moves, first_index + len(passes)
 
-    # -- 内部步骤 ----------------------------------------------------------
     @staticmethod
     def _pass_line(
         item: tuple[float, float, float], frame: np.ndarray, *, reverse: bool
@@ -180,11 +221,12 @@ class RasterPlanner(Planner):
     @staticmethod
     def _notes(
         context: PlanningContext,
-        mode: str,
-        stepover: float,
         pass_count: int,
+        layer_count: int,
         flipped: bool,
     ) -> tuple[str, ...]:
+        mode = str(context.parameters["mode"])
+        stepover = float(context.parameters["stepover_mm"])
         direction = float(context.parameters["direction_deg"])
         surface: list[str] = []
         if context.entry_along_surface:
@@ -202,6 +244,13 @@ class RasterPlanner(Planner):
             f"边界内缩一个刀具足迹半径（本刀 {context.tool.footprint_radius_mm:g} mm），"
             "安全高度 5 mm、快移 5000 mm/min 为固定值",
         ]
+        if layer_count:
+            _, high = context.surface_z_range
+            notes.append(
+                f"分层粗加工：每层 {context.layer_depth_mm:g} mm、共 {layer_count} 层"
+                f"（毛坯顶面在 {high + context.stock_margin_mm:g} mm），"
+                "每层只切该高度上还有料的范围，最后沿加工面精加工一刀"
+            )
         if surface:
             notes.append("；".join(surface))
         return tuple(notes)

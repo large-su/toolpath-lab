@@ -38,7 +38,12 @@ from toolpath_lab.core.parameters import (
     spec,
 )
 from toolpath_lab.core.path import Move, Toolpath
-from toolpath_lab.planning.base import SURFACE_PARAMETERS, Planner, PlanningContext
+from toolpath_lab.planning.base import (
+    LAYER_PARAMETERS,
+    SURFACE_PARAMETERS,
+    Planner,
+    PlanningContext,
+)
 from toolpath_lab.planning.geometry2d import offset_polygon, resample_ring, signed_area
 from toolpath_lab.planning.registry import PLANNERS
 
@@ -74,10 +79,42 @@ class FollowPeripheryPlanner(Planner):
                  step=0.1, unit="mm", group="刀路", help="轮廓与凹角圆弧的离散精度"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
-        ) + SURFACE_PARAMETERS
+        ) + SURFACE_PARAMETERS + LAYER_PARAMETERS
     )
 
     def plan(self, context: PlanningContext) -> Toolpath:
+        # 先逐层把毛坯铣掉（每层是水平面，环的范围收窄到该层还有料的地方），
+        # 最后再沿加工面走一遍——这一遍就是精加工，也是不分层时的全部刀路。
+        levels = context.layer_levels()
+        moves: list[Move] = []
+        index = 0
+        for z in levels:
+            level_moves, index = self._ring_moves(context.at_level(z), index)
+            moves.extend(level_moves)
+        finish_moves, index = self._ring_moves(context, index)
+        moves.extend(finish_moves)
+        if index == 0:
+            raise PlanningError(
+                f"刀具足迹半径 {context.tool.footprint_radius_mm:g} mm 相对区域尺寸过大，"
+                "跟随周边生成不了任何一环"
+            )
+
+        return Toolpath(
+            moves=tuple(moves),
+            planner=self.id,
+            planner_label=self.label,
+            notes=self._notes(context, index, len(levels)),
+        )
+
+    # -- 内部步骤 ----------------------------------------------------------
+    def _ring_moves(
+        self, context: PlanningContext, first_index: int
+    ) -> tuple[list[Move], int]:
+        """在给定上下文上跑一遍完整的环切（分层时是某一层，最后是沿加工面的一遍）。
+
+        返回（这一段运动, 下一段要用的序号）。这一层没有料（范围退化）时返回空。
+        """
+
         direction = str(context.parameters["direction"])
         winding = str(context.parameters["winding"])
         stepover = self.require_positive(
@@ -89,13 +126,16 @@ class FollowPeripheryPlanner(Planner):
         self._warn_if_stepover_too_large(context, stepover)
 
         rings = self._rings(context, stepover)
+        if not rings:
+            return [], first_index
         if direction == "outward":
             rings.reverse()
         clockwise = winding == "cw"
 
         moves: list[Move] = []
         previous: NDArray[np.float64] | None = None
-        for index, ring in enumerate(rings):
+        for step, ring in enumerate(rings):
+            index = first_index + step
             sampled = resample_ring(ring, sample_step)
             closed = np.vstack([sampled, sampled[:1]])
             # 每一环同向绕行：偏置出来的环本来就是逆时针，要顺时针就把整环反过来。
@@ -113,22 +153,18 @@ class FollowPeripheryPlanner(Planner):
                 context.cut_move(closed, pass_index=index, label=f"第 {index + 1} 环")
             )
             previous = positions[-1]
-        moves.append(context.retract_move_up(previous))
+        if previous is not None:
+            moves.append(context.retract_move_up(previous))
+        return moves, first_index + len(rings)
 
-        return Toolpath(
-            moves=tuple(moves),
-            planner=self.id,
-            planner_label=self.label,
-            notes=self._notes(context, direction, winding, stepover, sample_step, len(rings)),
-        )
-
-    # -- 内部步骤 ----------------------------------------------------------
     @staticmethod
     def _rings(context: PlanningContext, stepover: float) -> list[NDArray[np.float64]]:
         """从刀路范围（斜坡"只加工斜面段"时比轮廓窄）内缩一个足迹半径开始，每环再推进一个切宽。"""
 
         boundary = context.machining_boundary
         rings: list[NDArray[np.float64]] = []
+        if boundary.shape[0] < 3:
+            return rings  # 这一层已经没有料了
         distance = context.tool.footprint_radius_mm
         while len(rings) < _MAX_RINGS:
             ring = offset_polygon(boundary, distance)
@@ -136,11 +172,6 @@ class FollowPeripheryPlanner(Planner):
                 break
             rings.append(ring)
             distance += stepover
-        if not rings:
-            raise PlanningError(
-                f"刀具足迹半径 {context.tool.footprint_radius_mm:g} mm 相对区域尺寸过大，"
-                "跟随周边生成不了任何一环"
-            )
         if len(rings) == _MAX_RINGS:
             context.warn(f"环数达到上限 {_MAX_RINGS}，请检查切宽是否过小")
         return rings
@@ -156,15 +187,24 @@ class FollowPeripheryPlanner(Planner):
     @staticmethod
     def _notes(
         context: PlanningContext,
-        direction: str,
-        winding: str,
-        stepover: float,
-        sample_step: float,
         ring_count: int,
+        layer_count: int,
     ) -> tuple[str, ...]:
-        return (
+        direction = str(context.parameters["direction"])
+        winding = str(context.parameters["winding"])
+        stepover = float(context.parameters["stepover_mm"])
+        sample_step = float(context.parameters["sample_step_mm"])
+        notes = [
             f"{_DIRECTION_LABELS[direction]}走刀，{_WINDING_LABELS[winding]}绕行，"
             f"共 {ring_count} 环，切宽 {stepover:g} mm，采样步长 {sample_step:g} mm",
-            f"边界内缩一个刀具半径（本刀 R{context.tool.footprint_radius_mm:g} mm），"
+            f"边界内缩一个刀具足迹半径（本刀 {context.tool.footprint_radius_mm:g} mm），"
             "安全高度 5 mm、快移 5000 mm/min 为固定值",
-        )
+        ]
+        if layer_count:
+            _, high = context.surface_z_range
+            notes.append(
+                f"分层粗加工：每层 {context.layer_depth_mm:g} mm、共 {layer_count} 层"
+                f"（毛坯顶面在 {high + context.stock_margin_mm:g} mm），"
+                "每层只切该高度上还有料的范围，最后沿加工面精加工一遍"
+            )
+        return tuple(notes)

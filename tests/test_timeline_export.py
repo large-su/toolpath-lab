@@ -136,6 +136,20 @@ class GcodeTests(unittest.TestCase):
         self.assertIn("Z20.000", text)  # 加工面高度
         self.assertIn("Z25.000", text)  # 它之上 5 mm 的安全面
 
+    def test_layer_levels_travel_into_the_gcode(self) -> None:
+        toolpath = run_plan(
+            planner_id="raster",
+            tool=Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=30.0),
+            region=build_region("square", {"side_mm": 80.0, "thickness_mm": 20.0}),
+            parameters={"mode": "one_way", "stepover_mm": 20.0, "feed_mm_per_min": 600.0,
+                        "layer_depth_mm": 1.0, "stock_margin_mm": 2.0},
+        ).toolpath
+        text = toolpath_to_gcode(toolpath, program_name="LAYERS")
+        self.assertIn("(分层粗加工", text)  # 说明里带上分层信息
+        for level in ("Z2.000", "Z1.000", "Z0.000"):
+            self.assertIn(level, text)
+        self.assertIn("Z7.000", text)  # 最高那一层之上 5 mm 的安全面
+
 
 if __name__ == "__main__":
     unittest.main()

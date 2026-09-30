@@ -342,34 +342,6 @@ input[type="checkbox"] {
   background: var(--teal-soft);
 }
 
-/* 顶栏里的行内小输入（毛坯的顶部余量） */
-.field-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-
-.field-inline input {
-  width: 54px;
-  padding: 5px 6px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(135, 169, 166, 0.08);
-  color: var(--text);
-  font: inherit;
-  font-family: var(--mono);
-  text-align: right;
-}
-
-.field-inline input:focus {
-  outline: none;
-  border-color: rgba(84, 214, 196, 0.45);
-  background: var(--teal-soft);
-}
-
 .view-toolbar strong {
   font-size: 10px;
   font-weight: 600;

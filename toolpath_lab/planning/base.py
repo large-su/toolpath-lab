@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import isfinite
 from typing import Any, ClassVar, Mapping
 
@@ -47,6 +47,17 @@ SURFACE_PARAMETERS: tuple[ParameterSpec, ...] = (
          help="自动：水平面直接扎下去；斜面/起伏面从低处沿加工面切进来，并改成由低往高走刀"),
 )
 
+#: 分层粗加工与毛坯的公共参数：两个内置策略都带上它。
+LAYER_PARAMETERS: tuple[ParameterSpec, ...] = (
+    spec("layer_depth_mm", "每层深度 ap", K.FLOAT, 0.0, minimum=0.0, maximum=100.0,
+         step=0.5, unit="mm", group="刀路",
+         help="大于 0 时先把毛坯逐层铣掉（每层这么深，一路到加工面），最后仍走一遍沿加工面的精加工；"
+              "0 = 不分层"),
+    spec("stock_margin_mm", "毛坯顶部余量", K.FLOAT, 2.0, minimum=0.0, maximum=50.0,
+         step=0.5, unit="mm", group="刀路",
+         help="毛坯顶面比加工面最高点高出多少：分层粗加工从它开始往下，界面里的毛坯也按它画"),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PlanningContext:
@@ -56,11 +67,65 @@ class PlanningContext:
     region: RegionShape
     parameters: Mapping[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    #: 分层粗加工时当前这一层的 Z；None = 直接沿加工面走刀（精加工 / 不分层）。
+    level_z: float | None = None
 
     # -- 参数 --------------------------------------------------------------
     @property
     def feed_mm_per_min(self) -> float:
         return float(self.parameters["feed_mm_per_min"])
+
+    @property
+    def layer_depth_mm(self) -> float:
+        """每层深度；0 表示不分层。"""
+
+        return max(float(self.parameters.get("layer_depth_mm", 0.0) or 0.0), 0.0)
+
+    @property
+    def stock_margin_mm(self) -> float:
+        """毛坯顶面比加工面最高点高出的余量。"""
+
+        return max(float(self.parameters.get("stock_margin_mm", 2.0) or 0.0), 0.0)
+
+    def at_level(self, z_mm: float) -> "PlanningContext":
+        """换到"第 z 层"的上下文：加工面变成 Z = z 的水平面，刀路范围收窄到该层还有料的地方。
+
+        这样策略的其余逻辑（取 Z、安全面、下刀、连接、统计）全都不用改——分层只是把同一套
+        走法在若干个水平面上各跑一遍。
+        """
+
+        return replace(self, level_z=float(z_mm))
+
+    # -- 分层 --------------------------------------------------------------
+    @property
+    def surface_z_range(self) -> tuple[float, float]:
+        """加工面的最低 / 最高高度（分层粗加工与毛坯都要用）。
+
+        取轮廓顶点加一层 9 × 9 网格：方形 / 圆形 / 斜坡的极值都在轮廓上，网格是给将来的曲面兜底。
+        """
+
+        polygon = self.region.boundary()
+        bounds = polygon_bounds(polygon)
+        xs = np.linspace(bounds[0][0], bounds[0][1], 9)
+        ys = np.linspace(bounds[1][0], bounds[1][1], 9)
+        grid = np.array([(x, y) for x in xs for y in ys], dtype=np.float64)
+        heights = np.concatenate(
+            (self.region.height_at(polygon), self.region.height_at(grid))
+        )
+        return float(heights.min()), float(heights.max())
+
+    def layer_levels(self) -> list[float]:
+        """分层粗加工的每层 Z：从毛坯顶面往下，步进一个每层深度，最下一层仍在加工面之上。"""
+
+        depth = self.layer_depth_mm
+        if depth <= 0.0 or self.level_z is not None:
+            return []
+        low, high = self.surface_z_range
+        top = high + self.stock_margin_mm
+        if top <= low + 1e-9:
+            return []
+        count = max(int(np.ceil((top - low) / depth - 1e-9)), 1)
+        return [top - index * depth for index in range(count)]
 
     # -- 几何 --------------------------------------------------------------
     @property
@@ -74,15 +139,24 @@ class PlanningContext:
         """刀路的可取范围，形状 (N, 2)。
 
         默认与轮廓相同；斜坡"只加工斜面段"时收窄到斜面段（分界处那条边留了一个足迹半径的
-        余量，内缩之后刀路正好停在折痕上）。策略一律内缩它、而不是 region.boundary()。
+        余量，内缩之后刀路正好停在折痕上）。**在某一层上**则收窄到"这一层还有料"的范围。
+        策略一律内缩它、而不是 region.boundary()。
         """
 
-        return ensure_ccw(self.region.machining_boundary(self.tool.footprint_radius_mm))
+        footprint = self.tool.footprint_radius_mm
+        if self.level_z is not None:
+            return ensure_ccw(self.region.machining_boundary_at(self.level_z, footprint))
+        return ensure_ccw(self.region.machining_boundary(footprint))
 
     @property
     def surface_varies(self) -> bool:
-        """加工面是否随位置起伏（水平面为 False，斜面、曲面为 True）。"""
+        """加工面是否随位置起伏（水平面为 False，斜面、曲面为 True）。
 
+        分层粗加工的一层之内是水平面，所以这里是 False——下刀、连接、走刀方向都按平面处理。
+        """
+
+        if self.level_z is not None:
+            return False
         bounds = polygon_bounds(self.region.boundary())
         xs = np.linspace(bounds[0][0], bounds[0][1], 9)
         ys = np.linspace(bounds[1][0], bounds[1][1], 9)
@@ -132,11 +206,15 @@ class PlanningContext:
     def to_positions(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
         """把平面点 (N, 2) 抬成工件坐标下的 (N, 3)：Z 取**加工面**在该点的高度。
 
-        平面区域是 Z = 0；斜面这类分片平面的区域会先在折痕处补点，所以折线始终贴合加工面，
-        策略本身不需要知道加工面是平的还是斜的。
+        平面区域是 Z = 0，斜面这类分片平面的区域会先在折痕处补点，所以折线始终贴合加工面，
+        策略本身不需要知道加工面是平的还是斜的。**分层粗加工的某一层**是一个水平面，Z 就是层高。
         """
 
         planar = self.surface_polyline(points_xy)
+        if self.level_z is not None:
+            return np.column_stack(
+                (planar, np.full(planar.shape[0], self.level_z, dtype=np.float64))
+            )
         return np.column_stack((planar, self.region.height_at(planar)))
 
     def surface_polyline(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:

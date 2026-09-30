@@ -372,8 +372,6 @@ export class Viewport {
     // 轮廓画的是"刀路覆盖的范围"：斜坡只加工斜面段时它比工件轮廓窄。
     this.contourGroup.add(this._contour(region.machining_boundary || region.boundary));
     this._rebuildGrid(span, thickness, surfaceZ);
-    // 毛坯正显示着的话，跟着当前区域重新生成（改区域参数时毛坯一起变，顶部余量保持不变）。
-    if (this.blankRegion) this.setBlank(region, this.blankTopMarginMm);
 
     const groups = { cut: [], link: [], rapid: [] };
     for (const move of payload.toolpath.moves) {

@@ -96,6 +96,17 @@ class RegionShape:
         planar = self.machining_boundary(footprint_mm)
         return np.column_stack((planar, self.height_at(planar)))
 
+    def machining_boundary_at(
+        self, z_mm: float, footprint_mm: float
+    ) -> NDArray[np.float64]:
+        """分层粗加工时，Z = z 这一层上还有料要切的范围。
+
+        加工面不是水平面时越往下料越少：**一层里只该切"加工面低于这一层"的地方**，否则刀会切进
+        已经成形的那一侧。默认返回整块加工范围（水平面的正确行为）；斜面按自己的几何重写。
+        """
+
+        return self.machining_boundary(footprint_mm)
+
     def surface_patches(self) -> list[NDArray[np.float64]]:
         """顶面的分片（每片都是共面的凸多边形，带 Z）。
 
@@ -378,6 +389,30 @@ class RampRegion(RegionShape):
         limit = max(crease - max(float(footprint_mm), 0.0), -half)
         return np.array(
             [(limit, -half), (half, -half), (half, half), (limit, half)],
+            dtype=np.float64,
+        )
+
+    def machining_boundary_at(
+        self, z_mm: float, footprint_mm: float
+    ) -> NDArray[np.float64]:
+        """斜面的第 z 层：只有 x ≥ 边长/2 − z/斜度 的地方加工面还低于这一层（还有料）。
+
+        这条边就是该层的料边，**不再外扩**：按足迹内缩之后，刀心正好停在"刀边贴住料边"的位置，
+        既不会切进已经成形的斜面，也不会留下切不到的窄条。
+        """
+
+        base = self.machining_boundary(footprint_mm)
+        half = self.side_mm / 2.0
+        if self.slope <= _EPS:
+            return base
+        limit = half - float(z_mm) / self.slope
+        if limit <= -half:
+            return base  # 这一层在整块之上：整个加工范围都要切
+        if limit >= half:
+            return np.empty((0, 2), dtype=np.float64)  # 已经在加工面之下：没有料
+        x_low = max(limit, float(base[:, 0].min()))
+        return np.array(
+            [(x_low, -half), (half, -half), (half, half), (x_low, half)],
             dtype=np.float64,
         )
 

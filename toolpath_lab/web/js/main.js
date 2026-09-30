@@ -15,7 +15,6 @@ const dom = {
   banner: document.getElementById("banner"),
   generate: document.getElementById("btn-generate"),
   blankButton: document.getElementById("btn-blank"),
-  blankMargin: document.getElementById("blank-margin"),
   exportButton: document.getElementById("btn-export"),
   play: document.getElementById("btn-play"),
   stop: document.getElementById("btn-stop"),
@@ -140,11 +139,6 @@ function wireAppearanceToolbar() {
 function wireButtons() {
   dom.generate.addEventListener("click", () => regenerate());
   dom.blankButton.addEventListener("click", toggleBlank);
-  dom.blankMargin.addEventListener("input", () => {
-    if (!viewport.blankVisible || !lastResult) return;
-    viewport.setBlank(lastResult.region, blankTopMargin());
-    viewport.render();
-  });
   dom.exportButton.addEventListener("click", exportGcode);
   dom.play.addEventListener("click", () => playback.toggle());
   dom.stop.addEventListener("click", () => playback.stop());
@@ -176,6 +170,8 @@ async function regenerate() {
     lastResult = result;
     viewport.setResult(result);
     viewport.setTool(result.tool);
+    // 毛坯显示着的话跟着新区域（与新余量）重画：后端刚算的就是这块料。
+    if (viewport.blankVisible) viewport.setBlank(result.region, stockTopMargin(result));
     playback.load(result.timeline);
     renderStats(result);
     if (result.warnings && result.warnings.length) showBanner(result.warnings.join("；"));
@@ -193,10 +189,14 @@ async function regenerate() {
 }
 
 // ------------------------------------------------------------------ 毛坯
-// 毛坯按"当前区域"生成：竖直面贴紧区域（不留余量），顶面留「顶部余量」那么多料（默认 2 mm），
-// 底面与工件齐平。方形与斜坡是长方体，圆形是竖直圆柱；区域参数改了就跟着重新生成。
-function blankTopMargin() {
-  return Math.max(Number(dom.blankMargin.value) || 0, 0);
+// 毛坯按"当前区域"生成：竖直面贴紧区域（不留余量），顶面留「毛坯顶部余量」那么多料，
+// 底面与工件齐平。余量是**刀路参数**（面板里可设），后端的分层粗加工也用同一个值——
+// 所以界面上的毛坯和刀路算的是同一块料，不会各说各话。
+function stockTopMargin(result) {
+  const value = Number(result && result.request && result.request.planner
+    && result.request.planner.parameters
+    && result.request.planner.parameters.stock_margin_mm);
+  return Number.isFinite(value) ? Math.max(value, 0) : 2;
 }
 
 function toggleBlank() {
@@ -205,7 +205,7 @@ function toggleBlank() {
     return;
   }
   const show = !viewport.blankVisible;
-  viewport.setBlank(show ? lastResult.region : null, blankTopMargin());
+  viewport.setBlank(show ? lastResult.region : null, stockTopMargin(lastResult));
   viewport.render();
   dom.blankButton.textContent = show ? "隐藏毛坯" : "生成毛坯";
   dom.blankButton.classList.toggle("active", show);
