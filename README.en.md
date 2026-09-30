@@ -26,9 +26,13 @@ by parameters, and the parameter panel is generated from the backend's parameter
   A corner radius of half the short side yields a stadium shape.
 - **Workpiece**: the workpiece solid is extruded straight from the region contour, so the stock
   always matches the toolpath for any shape.
-- **Toolpaths**: two raster modes
-  - **zigzag** - every other pass runs in the opposite direction and consecutive passes are linked;
-  - **one-way** - all passes run in the same direction, retracting to the safe plane between passes.
+- **Toolpaths**:
+  - **raster** - two parallel scanline modes
+    - **zigzag** - every other pass runs in the opposite direction and consecutive passes are linked;
+    - **one-way** - all passes run in the same direction, retracting to the safe plane between passes.
+  - **spiral** - one continuous path that shrinks inward from the region contour, with a single plunge
+    and a single retract. Selectable CCW / CW winding, an optional leftover pill in the centre, and
+    feed rate that can ramp linearly with radius to keep the radial depth of cut constant.
 - **Parameters**: stepover, pass direction and feed rate. Safe height, rapid feed and boundary
   handling are constants (see "Configuration constants").
 - **3D view**: workpiece, region contour, toolpath (cut / link / rapid colour coded), cutter solid,
