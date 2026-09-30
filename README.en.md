@@ -21,7 +21,11 @@ by parameters, and the parameter panel is generated from the backend's parameter
 
 - **Tool**: flat end mill with diameter and length. Its footprint radius on the machining plane
   defines how far the toolpath is offset from the region contour.
-- **Region**: square (side) and circle (diameter), centred at the origin, machined on the XY plane.
+- **Region**: square (side), circle (diameter), ellipse (semi-major / semi-minor) and rounded
+  rectangle (width / height / corner radius), centred at the origin, machined on the XY plane.
+  A corner radius of half the short side yields a stadium shape.
+- **Workpiece**: the workpiece solid is extruded straight from the region contour, so the stock
+  always matches the toolpath for any shape.
 - **Toolpaths**: two raster modes
   - **zigzag** - every other pass runs in the opposite direction and consecutive passes are linked;
   - **one-way** - all passes run in the same direction, retracting to the safe plane between passes.
