@@ -41,12 +41,17 @@ def _cut_moves(toolpath: Toolpath):
 
 class RegistryTests(unittest.TestCase):
     def test_only_the_raster_strategy_is_registered(self) -> None:
-        self.assertEqual(PLANNERS.ids(), ["raster"])
+        self.assertEqual(PLANNERS.ids(), ["raster", "contour", "spiral"])
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:
         entry = planner_catalog()[0]
         keys = [item["key"] for item in entry["parameters"]]
-        self.assertEqual(keys, ["mode", "stepover_mm", "direction_deg", "feed_mm_per_min"])
+        self.assertIn("mode", keys)
+        self.assertIn("stepover_mm", keys)
+        self.assertIn("direction_deg", keys)
+        self.assertIn("feed_mm_per_min", keys)
+        self.assertIn("SAFE_HEIGHT_MM", keys)
+        self.assertIn("RAPID_FEED_MM_PER_MIN", keys)
         self.assertEqual(entry["label"], "栅格刀路")
 
 

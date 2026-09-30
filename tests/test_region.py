@@ -1,4 +1,4 @@
-"""区域形状：方形与圆形。"""
+"""区域形状：方形、圆形与椭圆。"""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
 
 
 class RegionCatalogTests(unittest.TestCase):
-    def test_only_square_and_circle_are_registered(self) -> None:
-        self.assertEqual(sorted(REGION_SHAPES.ids()), ["circle", "square"])
+    def test_square_circle_and_ellipse_are_registered(self) -> None:
+        self.assertEqual(sorted(REGION_SHAPES.ids()), ["circle", "ellipse", "square"])
 
     def test_catalog_publishes_labels_and_parameters(self) -> None:
         entries = {entry["id"]: entry for entry in region_catalog()}

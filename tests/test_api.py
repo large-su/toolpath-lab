@@ -100,14 +100,17 @@ class CatalogTests(ApiTestCase):
         status, body, _ = self.get("/api/catalog")
         payload = json.loads(body)
         self.assertEqual(status, 200)
-        self.assertEqual([item["id"] for item in payload["planners"]["list"]], ["raster"])
         self.assertEqual(
-            sorted(item["id"] for item in payload["regions"]["shapes"]), ["circle", "square"]
+            [item["id"] for item in payload["planners"]["list"]],
+            ["raster", "contour", "spiral"],
+        )
+        self.assertEqual(
+            sorted(item["id"] for item in payload["regions"]["shapes"]), ["circle", "ellipse", "square"]
         )
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
         self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
-                         ["kind", "diameter_mm", "length_mm"])
+                         ["kind", "diameter_mm", "length_mm", "corner_radius_mm"])
 
     def test_catalog_reports_the_fixed_settings(self) -> None:
         _, body, _ = self.get("/api/catalog")
@@ -115,10 +118,10 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(fixed["safe_height_mm"], 5.0)
         self.assertEqual(fixed["rapid_feed_mm_per_min"], 5000.0)
 
-    def test_disabled_tool_kinds_are_published(self) -> None:
+    def test_all_tool_kinds_are_available(self) -> None:
         _, body, _ = self.get("/api/catalog")
         kinds = json.loads(body)["tool"]["parameters"][0]["choices"]
-        self.assertEqual([item["disabled"] for item in kinds], [False, True, True])
+        self.assertEqual([item["disabled"] for item in kinds], [False, False, False])
 
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -163,10 +166,24 @@ class PlanTests(ApiTestCase):
         self.assertEqual(parameters["mode"], "zigzag")
         self.assertEqual(parameters["feed_mm_per_min"], 600.0)
 
-    def test_unknown_planner_is_a_bad_request(self) -> None:
+    def test_spiral_planner_is_supported(self) -> None:
         status, payload, _ = self.plan({"planner": {"id": "spiral"}})
-        self.assertEqual(status, 400)
-        self.assertIn("spiral", payload["error"])
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertGreater(len(payload["toolpath"]["moves"]), 0)
+
+    def test_ellipse_region_is_supported(self) -> None:
+        status, payload, _ = self.plan(
+            {
+                "region": {
+                    "shape": "ellipse",
+                    "parameters": {"semi_major_mm": 60.0, "semi_minor_mm": 40.0},
+                }
+            }
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["region"]["boundary"])
 
     def test_unknown_region_shape_is_a_bad_request(self) -> None:
         status, payload, _ = self.plan({"region": {"shape": "hexagon"}})
@@ -210,7 +227,14 @@ class ExportTests(ApiTestCase):
         text = body.decode("utf-8")
         self.assertIn("G21", text)
         self.assertIn("M30", text)
-
+    def test_txt_download(self) -> None:
+        status, body, headers = self.post("/api/export/txt", {})
+        self.assertEqual(status, 200)
+        self.assertIn("attachment", headers["Content-Disposition"])
+        self.assertTrue(headers["Content-Disposition"].endswith('.txt\"'))
+        text = body.decode("utf-8")
+        self.assertIn("Toolpath", text)
+        self.assertIn("Move", text)
     def test_other_formats_are_gone(self) -> None:
         for kind in ("csv", "json", "step"):
             with self.subTest(kind=kind):
