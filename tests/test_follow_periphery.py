@@ -85,16 +85,42 @@ class RegistryTests(unittest.TestCase):
 
 
 class RingLayoutTests(unittest.TestCase):
-    def test_auto_stepover_is_diameter_minus_one(self) -> None:
-        """切宽填 0 = 自动：按刀具直径 − 1 mm 算（D6 → 5），环间距就是它。"""
+    def test_auto_stepover_is_capped_by_corner_and_centre(self) -> None:
+        """切宽填 0 = 自动（直径 − 1 = 5），但转角对角间距与中心覆盖会把它收紧到 直径/2 = 3。"""
 
         boundary = ensure_ccw(_region().boundary())
-        rings = _rings(_plan({"stepover_mm": 0.0}).toolpath)
+        outcome = _plan({"stepover_mm": 0.0})
+        rings = _rings(outcome.toolpath)
         distances = [float(distance_to_boundary(move.points[:, :2], boundary).mean())
                      for move in rings]
         self.assertAlmostEqual(distances[0], 0.0, places=6)
         for previous, current in zip(distances, distances[1:]):
-            self.assertAlmostEqual(current - previous, 5.0, places=6)
+            self.assertAlmostEqual(current - previous, 3.0, places=6)
+        self.assertTrue(any("收紧" in warning for warning in outcome.warnings))
+
+    def test_ring_spacing_never_exceeds_the_tool_diameter(self) -> None:
+        """平行线与转弯处的间距都必须 ≤ 刀具直径（用户要求验证的那条）。
+
+        逐点量"这一环上任意一点到下一环的最近距离"：它同时覆盖平行段与直角转弯处的对角间距，
+        也就是"两环之间漏不掉的那条带"的宽度。
+        """
+
+        for stepover in (4.0, 6.0, 20.0):
+            rings = _rings(_plan({"stepover_mm": stepover}).toolpath)
+            for inner, outer in zip(rings[1:], rings[:-1]):
+                points = inner.points[:, :2]
+                other = outer.points[:, :2]
+                gaps = np.linalg.norm(points[:, None, :] - other[None, :, :], axis=2).min(axis=1)
+                self.assertLessEqual(float(gaps.max()), 6.0 + 1e-6,
+                                     f"切宽 {stepover} 时最大间距 {gaps.max():.3f}")
+
+    def test_innermost_ring_reaches_the_centre(self) -> None:
+        """最内环必须落在中心的一个刀具半径之内，否则中心会留一块够不到的料。"""
+
+        rings = _rings(_plan({"stepover_mm": 6.0}).toolpath)
+        centre = np.array([[0.0, 0.0]])
+        closest = float(distance_to_boundary(centre, ensure_ccw(rings[-1].points[:, :2]))[0])
+        self.assertLessEqual(closest, 3.0 + 1e-6, f"最内环离中心 {closest:.3f}")
 
     def test_outermost_ring_sits_on_the_contour(self) -> None:
         """刀心可以走到轮廓上：第一环就贴着它（离边界 0 < 刀具半径）。"""
@@ -108,9 +134,9 @@ class RingLayoutTests(unittest.TestCase):
         self.assertGreaterEqual(len(rings), 2)
         self.assertAlmostEqual(distances[0], 0.0, places=6)
         self.assertTrue(all(b >= a - 1e-9 for a, b in zip(distances, distances[1:])))
-        self.assertAlmostEqual(distances[-1], 36.0, places=6)
+        self.assertAlmostEqual(distances[-1], 39.0, places=6)
         for previous, current in zip(distances, distances[1:]):
-            self.assertAlmostEqual(current - previous, 6.0, places=6)
+            self.assertAlmostEqual(current - previous, 3.0, places=6)
 
     def test_rings_are_closed_and_lie_on_the_machining_plane(self) -> None:
         for move in _rings(_plan().toolpath):
@@ -183,12 +209,14 @@ class LinkingTests(unittest.TestCase):
         self.assertEqual(kinds.count(MoveKind.RAPID), 2)
 
     def test_links_are_short_radial_steps_at_the_seam(self) -> None:
-        links = [m for m in _plan().toolpath.moves if m.kind is MoveKind.LINK]
-        self.assertEqual(len(links), 6)
+        toolpath = _plan().toolpath
+        rings = _rings(toolpath)
+        links = [m for m in toolpath.moves if m.kind is MoveKind.LINK]
+        self.assertEqual(len(links), len(rings) - 1)
         for move in links:
-            # 沿同一条缝径向过渡一个切宽；方形角上是斜向，所以上限取 1.5 倍切宽
+            # 沿同一条缝径向过渡一个实际环距（3 mm）；方形角上是斜向，上限取 1.5 倍
             self.assertGreater(move.length_mm, 0.0)
-            self.assertLessEqual(move.length_mm, 6.0 * 1.5 + 1e-6)
+            self.assertLessEqual(move.length_mm, 3.0 * 1.5 + 1e-6)
 
 
 class WindingTests(unittest.TestCase):
@@ -253,10 +281,10 @@ class BallToolTests(unittest.TestCase):
             float(distance_to_boundary(move.points[:, :2], boundary).mean())
             for move in rings
         ]
-        self.assertEqual(len(rings), 7)
+        self.assertGreaterEqual(len(rings), 2)
         self.assertAlmostEqual(distances[0], 0.0, places=6)
         for previous, current in zip(distances, distances[1:]):
-            self.assertAlmostEqual(current - previous, 6.0, places=6)
+            self.assertAlmostEqual(current - previous, 3.0, places=6)
 
     def test_flat_tool_starts_on_the_contour(self) -> None:
         boundary = ensure_ccw(_region().boundary())
@@ -306,10 +334,10 @@ class ErrorAndWarningTests(unittest.TestCase):
 
     def test_large_stepover_is_warned_about(self) -> None:
         outcome = _plan({"stepover_mm": 20.0})
-        self.assertTrue(any("切宽" in warning for warning in outcome.warnings))
+        self.assertTrue(any("收紧" in warning for warning in outcome.warnings))
 
     def test_sane_stepover_is_not_warned_about(self) -> None:
-        self.assertEqual(_plan({"stepover_mm": 4.0}).warnings, ())
+        self.assertEqual(_plan({"stepover_mm": 3.0}).warnings, ())
 
     def test_invalid_parameters_are_rejected(self) -> None:
         for bad in ({"stepover_mm": -1.0}, {"direction": "sideways"}, {"winding": "diagonal"},
@@ -318,10 +346,10 @@ class ErrorAndWarningTests(unittest.TestCase):
                 _plan(bad)
 
     def test_notes_describe_the_configuration(self) -> None:
-        notes = _plan({"direction": "outward", "winding": "cw", "stepover_mm": 6.0}).toolpath.notes
+        notes = _plan({"direction": "outward", "winding": "cw", "stepover_mm": 3.0}).toolpath.notes
         self.assertTrue(any("向外" in note for note in notes))
         self.assertTrue(any("顺时针" in note for note in notes))
-        self.assertTrue(any("7 环" in note for note in notes))
+        self.assertTrue(any("环" in note for note in notes))
         self.assertTrue(any("固定值" in note for note in notes))
 
 

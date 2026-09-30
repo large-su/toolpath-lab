@@ -57,6 +57,46 @@ _DIRECTION_LABELS = {"inward": "向内（由外向内）", "outward": "向外（
 _WINDING_LABELS = {"ccw": "逆时针", "cw": "顺时针"}
 
 
+def min_sin_half_angle(polygon: NDArray[np.float64]) -> float:
+    """多边形所有内角里最小的 sin(内角/2)。
+
+    等距偏置时，转角处相邻两环沿**对角线**的距离 = 环距 / sin(内角/2)：直角（90°）就是 环距 × √2。
+    要让转弯处不漏料，环距必须 ≤ 刀具直径 × sin(内角/2)，这个函数就是那个系数
+    （直角给 0.707；圆周上离散出来的接近 180° 的角给接近 1，不会白白收紧）。
+    """
+
+    points = np.asarray(polygon, dtype=np.float64)
+    count = points.shape[0]
+    if count < 3:
+        return 1.0
+    smallest = 1.0
+    for index in range(count):
+        before = points[(index - 1) % count] - points[index]
+        after = points[(index + 1) % count] - points[index]
+        lengths = float(np.linalg.norm(before) * np.linalg.norm(after))
+        if lengths <= 1e-12:
+            continue
+        cosine = float(np.clip(np.dot(before, after) / lengths, -1.0, 1.0))
+        smallest = min(smallest, float(np.sin(np.arccos(cosine) / 2.0)))
+    return max(smallest, 1e-3)
+
+
+def effective_stepover(context: PlanningContext, stepover: float) -> tuple[float, float]:
+    """跟随周边的实际环距：并行间距、转弯处对角间距、中心覆盖三条都要满足。
+
+    - **转弯处**：相邻两环沿对角线的距离 = 环距 / sin(内角/2)，要求 ≤ 刀具直径
+      → 环距 ≤ 直径 × sin(内角/2)（直角即 0.707 × 直径）；
+    - **最中心**：环距若大于刀具半径，最内环与中心之间会留一小块够不到
+      → 环距 ≤ 直径 / 2，保证最内环落在中心的一个半径之内。
+
+    返回（实际环距，上限）；用户填的值被收紧时由调用方给出提醒。
+    """
+
+    coefficient = min_sin_half_angle(context.toolpath_boundary)
+    limit = min(context.tool.diameter_mm * coefficient, context.tool.diameter_mm / 2.0)
+    return min(stepover, limit), limit
+
+
 @PLANNERS.register
 class FollowPeripheryPlanner(Planner):
     """沿区域轮廓逐圈等距偏置，直到区域切满。"""
@@ -126,7 +166,12 @@ class FollowPeripheryPlanner(Planner):
 
         direction = str(context.parameters["direction"])
         winding = str(context.parameters["winding"])
-        stepover = resolve_stepover(context.parameters, context.tool)
+        wanted = resolve_stepover(context.parameters, context.tool)
+        stepover, limit = effective_stepover(context, wanted)
+        if stepover < wanted - 1e-9 and context.level_z is None:
+            context.warn(
+                f"转角对角间距与中心覆盖要求环距 ≤ {limit:g} mm，已从 {wanted:g} mm 收紧"
+            )
         sample_step = self.require_positive(
             float(context.parameters["sample_step_mm"]), "采样步长 sample_step_mm"
         )
@@ -199,11 +244,14 @@ class FollowPeripheryPlanner(Planner):
     ) -> tuple[str, ...]:
         direction = str(context.parameters["direction"])
         winding = str(context.parameters["winding"])
-        stepover = resolve_stepover(context.parameters, context.tool)
+        stepover, _ = effective_stepover(
+            context, resolve_stepover(context.parameters, context.tool)
+        )
         sample_step = float(context.parameters["sample_step_mm"])
         notes = [
             f"{_DIRECTION_LABELS[direction]}走刀，{_WINDING_LABELS[winding]}绕行，"
-            f"共 {ring_count} 环，切宽 {stepover:g} mm，采样步长 {sample_step:g} mm",
+            f"共 {ring_count} 环，实际环距 {stepover:g} mm（转角与中心覆盖已校核），"
+            f"采样步长 {sample_step:g} mm",
             f"刀心可走到区域边界（零件边界外扩一个足迹半径再内缩，本刀 "
             f"{context.tool.footprint_radius_mm:g} mm），安全高度 5 mm、快移 5000 mm/min 为固定值",
         ]
