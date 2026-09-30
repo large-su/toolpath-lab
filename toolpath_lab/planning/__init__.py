@@ -15,7 +15,8 @@ from toolpath_lab.planning.service import PlanningOutcome, get_planner, run_plan
 
 # 导入顺序 = 界面上策略的排列顺序，这一行就是"注册"。
 from toolpath_lab.planning import raster as _raster  # noqa: F401
-
+from toolpath_lab.planning import contour_planner as _contour  # noqa: F401
+from toolpath_lab.planning import SpiralPlanner as _spiral  # noqa: F401
 __all__ = [
     "PLANNERS",
     "RAPID_FEED_MM_PER_MIN",

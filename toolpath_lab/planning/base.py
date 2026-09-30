@@ -80,23 +80,39 @@ class PlanningContext:
             label="刀间连接",
         )
 
-    def rapid_between(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> Move:
-        return retract_move(start, end, SAFE_HEIGHT_MM, RAPID_FEED_MM_PER_MIN)
+    def rapid_between(self, start, end):
+        safe_height = float(
+            self.parameters.get("SAFE_HEIGHT_MM", self.parameters.get("safe_height_mm", SAFE_HEIGHT_MM))
+        )
+        rapid_feed = float(
+            self.parameters.get("RAPID_FEED_MM_PER_MIN", self.parameters.get("rapid_feed_mm_per_min", RAPID_FEED_MM_PER_MIN))
+        )
+        return retract_move(start, end, safe_height, rapid_feed)
 
     def approach_move_down(self, point: NDArray[np.float64]) -> Move:
         """从安全高度下刀到该点。"""
-
+        safe_height = float(
+            self.parameters.get("SAFE_HEIGHT_MM", self.parameters.get("safe_height_mm", SAFE_HEIGHT_MM))
+        )
+        rapid_feed = float(
+            self.parameters.get("RAPID_FEED_MM_PER_MIN", self.parameters.get("rapid_feed_mm_per_min", RAPID_FEED_MM_PER_MIN))
+        )
         target = np.asarray(point, dtype=np.float64).reshape(3)
-        start = np.array([target[0], target[1], SAFE_HEIGHT_MM], dtype=np.float64)
-        return Move(MoveKind.RAPID, np.vstack([start, target]), RAPID_FEED_MM_PER_MIN,
+        start = np.array([target[0], target[1], safe_height], dtype=np.float64)
+        return Move(MoveKind.RAPID, np.vstack([start, target]), rapid_feed,
                     label="下刀")
 
     def retract_move_up(self, point: NDArray[np.float64]) -> Move:
         """从该点抬刀到安全高度。"""
-
+        safe_height = float(
+            self.parameters.get("SAFE_HEIGHT_MM", self.parameters.get("safe_height_mm", SAFE_HEIGHT_MM))
+        )
+        rapid_feed = float(
+            self.parameters.get("RAPID_FEED_MM_PER_MIN", self.parameters.get("rapid_feed_mm_per_min", RAPID_FEED_MM_PER_MIN))
+        )
         start = np.asarray(point, dtype=np.float64).reshape(3)
-        end = np.array([start[0], start[1], SAFE_HEIGHT_MM], dtype=np.float64)
-        return Move(MoveKind.RAPID, np.vstack([start, end]), RAPID_FEED_MM_PER_MIN,
+        end = np.array([start[0], start[1], safe_height], dtype=np.float64)
+        return Move(MoveKind.RAPID, np.vstack([start, end]), rapid_feed,
                     label="抬刀")
 
 
