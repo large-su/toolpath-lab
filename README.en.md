@@ -51,6 +51,10 @@ by parameters, and the parameter panel is generated from the backend's parameter
   - **follow-periphery** - constant offset loops that march inwards from the region contour until the
     region is cleared; the **cut order** is either inwards (contour first) or outwards (centre first)
     and the **winding** counter-clockwise or clockwise (seen from above), the same for every loop.
+      The loop spacing is tightened automatically by two geometric constraints, with a warning: the
+      **diagonal spacing** between neighbouring loops at a right-angle corner must stay within the tool
+      diameter (the diagonal distance there is the spacing × √2), and the innermost loop must reach
+      within one tool radius of the centre (otherwise a small island is left behind).
 - **Layered roughing**: set "depth per layer" (ap) above 0 and the stock is milled away layer by layer -
   starting at the "stock top margin" (2 mm by default) and stepping down by ap, with **each layer only
   cutting where that height still has material** (on a slope the area shrinks as you go down, and the
@@ -201,7 +205,7 @@ the window - so the planning code runs headless. See [docs/architecture.md](docs
 | Safe height | 5 mm above the highest point of the machining surface the rapid travels over | `toolpath_lab/planning/base.py` |
 | Rapid feed | 5000 mm/min | `toolpath_lab/planning/base.py` |
 | Lead-in length | 5 mm (a slope entry cuts in from outside the part, along the surface) | `toolpath_lab/planning/base.py` |
-| Boundary handling | inset the **machining area** by the tool footprint radius (slope-only ramps push the crease edge out by one footprint first) | `planning/raster.py`, `planning/follow_periphery.py` |
+| Boundary handling | **the cutter centre may reach the region boundary** (the part outline is expanded by one footprint radius, then inset again); slope-only ramps push the crease edge out by one footprint first | `planning/raster.py`, `planning/follow_periphery.py` |
 | Pass sampling | two end points on a flat region; one extra vertex at the ramp crease | `toolpath_lab/planning/base.py` |
 | Loop linking | every loop runs in the same winding; loops are linked by a radial step-over at the seam, at feed, without retracting | `toolpath_lab/planning/follow_periphery.py` |
 | Default ramp Z cap | 80 mm (a region parameter, 1–1000; the slope turns into the flat top there) | `toolpath_lab/core/region.py` |
