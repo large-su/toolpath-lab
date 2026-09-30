@@ -75,10 +75,12 @@ The left side is the parameter panel; the right side holds the 3D view, statisti
 | Middle wheel | Zoom |
 | Right drag | Pan |
 
-- **Top bar buttons**: "Generate toolpath", "Generate stock", "Export NC". **Generate stock** wraps the
-  current region - a **box for square and ramp, a vertical cylinder for circle** - with a 2 mm margin
-  on the sides and the top and a bottom flush with the workpiece, so the stock is always a step bigger
-  than the part. It is drawn as a translucent violet volume with brighter edges, clearly apart from the
+- **Top bar buttons**: "Generate toolpath", "Generate stock", "Export NC", with a **top margin** input
+  next to the stock button. **Generate stock** builds the blank for the current region - a **box for
+  square and ramp, a vertical cylinder for circle** - with its **vertical faces flush against the
+  region** (no XY margin) and its bottom flush with the workpiece; only the **top** carries the
+  "top margin" (2 mm by default, editable 0–50), and changing it redraws the blank immediately without
+  re-planning. It is drawn as a translucent violet volume with brighter edges, clearly apart from the
   workpiece and the paths; it follows region parameter changes and toggles away on a second click (the
   label switches between "Generate stock" and "Hide stock").
 - **View toolbar** (top centre): fit / front / back / left / right / top / bottom; clicking the active
@@ -196,7 +198,7 @@ the window - so the planning code runs headless. See [docs/architecture.md](docs
 | Loop linking | every loop runs in the same winding; loops are linked by a radial step-over at the seam, at feed, without retracting | `toolpath_lab/planning/follow_periphery.py` |
 | Default ramp Z cap | 80 mm (a region parameter, 1–1000; the slope turns into the flat top there) | `toolpath_lab/core/region.py` |
 | Default part thickness | 20 mm (a region parameter, 1–500); when a payload omits it the front-end falls back to 9% of the span, clamped to 4–24 mm | `toolpath_lab/core/region.py`, `toolpath_lab/web/js/viewport.js` |
-| Stock margin | 2 mm on the sides and the top (the bottom is flush with the workpiece) | `toolpath_lab/web/js/viewport.js` |
+| Default stock top margin | 2 mm (editable 0–50 in the top bar; vertical faces are flush with the region and the bottom with the workpiece) | `toolpath_lab/web/js/viewport.js` |
 
 To expose them as adjustable parameters, see [docs/extending.md](docs/extending.md).
 

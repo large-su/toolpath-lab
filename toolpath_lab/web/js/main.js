@@ -15,6 +15,7 @@ const dom = {
   banner: document.getElementById("banner"),
   generate: document.getElementById("btn-generate"),
   blankButton: document.getElementById("btn-blank"),
+  blankMargin: document.getElementById("blank-margin"),
   exportButton: document.getElementById("btn-export"),
   play: document.getElementById("btn-play"),
   stop: document.getElementById("btn-stop"),
@@ -139,6 +140,11 @@ function wireAppearanceToolbar() {
 function wireButtons() {
   dom.generate.addEventListener("click", () => regenerate());
   dom.blankButton.addEventListener("click", toggleBlank);
+  dom.blankMargin.addEventListener("input", () => {
+    if (!viewport.blankVisible || !lastResult) return;
+    viewport.setBlank(lastResult.region, blankTopMargin());
+    viewport.render();
+  });
   dom.exportButton.addEventListener("click", exportGcode);
   dom.play.addEventListener("click", () => playback.toggle());
   dom.stop.addEventListener("click", () => playback.stop());
@@ -187,15 +193,19 @@ async function regenerate() {
 }
 
 // ------------------------------------------------------------------ 毛坯
-// 毛坯按"当前区域"生成：方形与斜坡是长方体，圆形是竖直圆柱，四周与顶面各留一点余量，
-// 所以一定把工件整个包住。区域参数改了就跟着重新生成，直到再点一次收起。
+// 毛坯按"当前区域"生成：竖直面贴紧区域（不留余量），顶面留「顶部余量」那么多料（默认 2 mm），
+// 底面与工件齐平。方形与斜坡是长方体，圆形是竖直圆柱；区域参数改了就跟着重新生成。
+function blankTopMargin() {
+  return Math.max(Number(dom.blankMargin.value) || 0, 0);
+}
+
 function toggleBlank() {
   if (!lastResult) {
     showBanner("先点「生成刀路」，毛坯按当前区域计算", "info");
     return;
   }
   const show = !viewport.blankVisible;
-  viewport.setBlank(show ? lastResult.region : null);
+  viewport.setBlank(show ? lastResult.region : null, blankTopMargin());
   viewport.render();
   dom.blankButton.textContent = show ? "隐藏毛坯" : "生成毛坯";
   dom.blankButton.classList.toggle("active", show);

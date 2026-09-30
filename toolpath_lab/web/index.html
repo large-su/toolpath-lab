@@ -23,7 +23,12 @@
       </div>
       <div class="topbar-actions">
         <button id="btn-generate" class="button primary" type="button">生成刀路</button>
-        <button id="btn-blank" class="button" type="button" title="生成包裹当前区域的毛坯（长方体 / 竖直圆柱）">生成毛坯</button>
+        <button id="btn-blank" class="button" type="button" title="生成贴紧区域的毛坯（长方体 / 竖直圆柱），顶面留顶部余量">生成毛坯</button>
+        <label class="field-inline" for="blank-margin">
+          <span>顶部余量</span>
+          <input id="blank-margin" type="number" min="0" max="50" step="0.5" value="2" />
+          <span>mm</span>
+        </label>
         <button id="btn-export" class="button" type="button">导出 NC</button>
       </div>
     </header>

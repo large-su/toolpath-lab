@@ -28,8 +28,8 @@ const COLORS = {
 //: 刀路画在工件上表面之上一点点，避免与上表面 z-fighting。
 const PATH_LIFT_MM = 0.05;
 
-//: 毛坯相对工件在四周与顶面各留的余量（mm）：毛坯因此一定比工件大一圈。
-const BLANK_MARGIN_MM = 2.0;
+//: 毛坯顶面在工件之上留的余量默认值（mm）；竖直面不留余量，毛坯贴紧区域。
+const BLANK_TOP_MARGIN_MM = 2.0;
 
 //: 视图工具条上的按钮，按常用顺序排列。
 export const VIEW_BUTTONS = [
@@ -199,31 +199,33 @@ export function buildToolParts(tool) {
   return parts;
 }
 
-// 毛坯的外形：把区域整个包进去，四周与顶面各留 BLANK_MARGIN_MM 余量；底面与工件底面齐平
-// （料是从下面那块基体一直长到顶面之上的，所以毛坯一定比工件大一圈）。
-export function blankSize(region, marginMm = BLANK_MARGIN_MM) {
+// 毛坯的外形：竖直面**贴紧区域**（XY 不留余量），顶面在工件之上留 topMarginMm 余量，
+// 底面与工件底面齐平——料是从下面那块基体一直长到顶面之上的。
+export function blankSize(region, topMarginMm = BLANK_TOP_MARGIN_MM) {
   const [xRange, yRange] = region.bounds_mm;
   const surface = region.surface || {};
   const baseZ = Number(surface.base_z_mm || 0);
   const topZ = Number(surface.top_z_mm != null ? surface.top_z_mm : baseZ);
   const thickness = Number(region.thickness_mm) > 0 ? Number(region.thickness_mm) : 0;
-  const width = (xRange[1] - xRange[0]) + 2 * marginMm;
-  const depth = (yRange[1] - yRange[0]) + 2 * marginMm;
+  const margin = Math.max(Number(topMarginMm) || 0, 0);
+  const width = xRange[1] - xRange[0];
+  const depth = yRange[1] - yRange[0];
   return {
     width,
     depth,
     diameter: width,
-    height: topZ - (baseZ - thickness) + marginMm,
+    height: topZ - (baseZ - thickness) + margin,
     bottom: baseZ - thickness,
-    top: topZ + marginMm,
+    top: topZ + margin,
+    topMarginMm: margin,
     centreX: (xRange[0] + xRange[1]) / 2,
     centreY: (yRange[0] + yRange[1]) / 2,
   };
 }
 
 // 毛坯实体：方形与斜坡用长方体，圆形用竖直圆柱；半透明 + 棱线，与工件颜色明显区分。
-export function buildBlankMesh(region, marginMm = BLANK_MARGIN_MM) {
-  const size = blankSize(region, marginMm);
+export function buildBlankMesh(region, topMarginMm = BLANK_TOP_MARGIN_MM) {
+  const size = blankSize(region, topMarginMm);
   const cylindrical = region.id === "circle";
   const geometry = cylindrical
     ? new THREE.CylinderGeometry(size.diameter / 2, size.diameter / 2, size.height, 96)
@@ -370,8 +372,8 @@ export class Viewport {
     // 轮廓画的是"刀路覆盖的范围"：斜坡只加工斜面段时它比工件轮廓窄。
     this.contourGroup.add(this._contour(region.machining_boundary || region.boundary));
     this._rebuildGrid(span, thickness, surfaceZ);
-    // 毛坯正显示着的话，跟着当前区域重新生成（改区域参数时毛坯一起变）。
-    if (this.blankRegion) this.setBlank(region);
+    // 毛坯正显示着的话，跟着当前区域重新生成（改区域参数时毛坯一起变，顶部余量保持不变）。
+    if (this.blankRegion) this.setBlank(region, this.blankTopMarginMm);
 
     const groups = { cut: [], link: [], rapid: [] };
     for (const move of payload.toolpath.moves) {
@@ -411,14 +413,18 @@ export class Viewport {
     this._autoFrame();
   }
 
-  /** 毛坯：把区域整个包住的长方体（方形、斜坡）或竖直圆柱（圆形）；传 null 收起。
-   *
-   *  只换几何、不负责重绘——调用方按本文件的习惯自己 render()。
+  /** 毛坯：竖直面贴紧区域的长方体（方形、斜坡）或竖直圆柱（圆形），顶面留 topMarginMm 余量；
+   *  传 null 收起。只换几何、不负责重绘——调用方按本文件的习惯自己 render()。
    */
-  setBlank(region) {
+  setBlank(region, topMarginMm = BLANK_TOP_MARGIN_MM) {
     this.blankRegion = region || null;
+    this.blankTopMarginMm = this.blankRegion
+      ? Math.max(Number(topMarginMm) || 0, 0)
+      : BLANK_TOP_MARGIN_MM;
     this._clear(this.blankGroup);
-    if (this.blankRegion) this.blankGroup.add(buildBlankMesh(this.blankRegion));
+    if (this.blankRegion) {
+      this.blankGroup.add(buildBlankMesh(this.blankRegion, this.blankTopMarginMm));
+    }
     return this.blankRegion !== null;
   }
 
