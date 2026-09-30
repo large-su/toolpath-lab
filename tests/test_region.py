@@ -30,10 +30,12 @@ class RegionCatalogTests(unittest.TestCase):
         self.assertEqual(entries["square"]["label"], "方形")
         self.assertEqual(entries["ramp"]["label"], "斜坡")
         self.assertEqual(
-            [item["key"] for item in entries["square"]["parameters"]], ["side_mm"]
+            [item["key"] for item in entries["square"]["parameters"]],
+            ["side_mm", "height_mm"],
         )
         self.assertEqual(
-            [item["key"] for item in entries["circle"]["parameters"]], ["diameter_mm"]
+            [item["key"] for item in entries["circle"]["parameters"]],
+            ["diameter_mm", "height_mm"],
         )
         self.assertEqual(
             [item["key"] for item in entries["ramp"]["parameters"]],
@@ -47,6 +49,56 @@ class RegionCatalogTests(unittest.TestCase):
     def test_unknown_shape_raises(self) -> None:
         with self.assertRaises(RegistryError):
             build_region("hexagon", {})
+
+
+class PlanarHeightTests(unittest.TestCase):
+    """平面区域（方形 / 圆形）可以设置加工面高度；斜坡暂时没有这个参数。"""
+
+    def _region(self, shape: str, height: float):
+        key = "side_mm" if shape == "square" else "diameter_mm"
+        return build_region(shape, {key: 80.0, "height_mm": height})
+
+    def test_default_height_is_zero(self) -> None:
+        for shape in ("square", "circle"):
+            region = self._region(shape, 0.0)
+            self.assertEqual(region.height_mm, 0.0)
+            self.assertTrue(np.allclose(region.height_at(region.boundary()), 0.0))
+            self.assertEqual(region.surface_payload()["base_z_mm"], 0.0)
+
+    def test_height_lifts_the_whole_surface(self) -> None:
+        for shape in ("square", "circle"):
+            region = self._region(shape, 20.0)
+            self.assertTrue(np.allclose(region.height_at(region.boundary()), 20.0))
+            outline = region.boundary_3d()
+            self.assertTrue(np.allclose(outline[:, 2], 20.0))
+            payload = region.surface_payload()
+            self.assertEqual(payload["kind"], "flat")
+            self.assertEqual(payload["base_z_mm"], 20.0)
+            self.assertEqual(payload["top_z_mm"], 20.0)
+
+    def test_height_can_be_negative(self) -> None:
+        region = self._region("square", -5.0)
+        self.assertTrue(np.allclose(region.height_at(region.boundary()), -5.0))
+
+    def test_height_is_published_with_its_range(self) -> None:
+        entries = {entry["id"]: entry for entry in region_catalog()}
+        for shape in ("square", "circle"):
+            height = [item for item in entries[shape]["parameters"]
+                      if item["key"] == "height_mm"][0]
+            self.assertEqual(height["default"], 0.0)
+            self.assertEqual(height["min"], -100.0)
+            self.assertEqual(height["max"], 100.0)
+
+    def test_height_out_of_range_is_rejected(self) -> None:
+        for shape in ("square", "circle"):
+            with self.assertRaises(ParameterError):
+                self._region(shape, 1000.0)
+
+    def test_ramp_does_not_expose_a_height_parameter(self) -> None:
+        keys = [item["key"] for item in
+                {entry["id"]: entry for entry in region_catalog()}["ramp"]["parameters"]]
+        self.assertNotIn("height_mm", keys)
+        self.assertFalse(hasattr(build_region("ramp", {}), "height_mm"))
 
 
 class SquareRegionTests(unittest.TestCase):

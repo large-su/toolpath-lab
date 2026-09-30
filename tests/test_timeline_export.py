@@ -113,6 +113,17 @@ class GcodeTests(unittest.TestCase):
         self.assertIn("Z80.000", text)   # 平顶上的切削
         self.assertIn("Z85.000", text)   # 平顶之上 5 mm 的安全面
 
+    def test_region_height_travels_into_the_gcode(self) -> None:
+        toolpath = run_plan(
+            planner_id="raster",
+            tool=Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=30.0),
+            region=build_region("square", {"side_mm": 80.0, "height_mm": 20.0}),
+            parameters={"mode": "one_way", "stepover_mm": 20.0, "feed_mm_per_min": 600.0},
+        ).toolpath
+        text = toolpath_to_gcode(toolpath, program_name="RAISED")
+        self.assertIn("Z20.000", text)  # 加工面高度
+        self.assertIn("Z25.000", text)  # 它之上 5 mm 的安全面
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -132,6 +132,30 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(parameters["corner_radius_mm"]["visible_if"], {"kind": "bull"})
         self.assertEqual(parameters["corner_radius_mm"]["default"], 1.0)
 
+    def test_planar_regions_publish_a_height_but_the_ramp_does_not(self) -> None:
+        _, body, _ = self.get("/api/catalog")
+        keyed = {item["id"]: [parameter["key"] for parameter in item["parameters"]]
+                 for item in json.loads(body)["regions"]["shapes"]}
+        self.assertEqual(keyed["square"], ["side_mm", "height_mm"])
+        self.assertEqual(keyed["circle"], ["diameter_mm", "height_mm"])
+        self.assertNotIn("height_mm", keyed["ramp"])
+
+    def test_region_height_lifts_the_toolpath(self) -> None:
+        status, payload, _ = self.plan(
+            {
+                "region": {"shape": "square",
+                           "parameters": {"side_mm": 80.0, "height_mm": 20.0}},
+                "planner": {"id": "raster", "parameters": {"stepover_mm": 20.0}},
+            }
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["region"]["surface"]["top_z_mm"], 20.0)
+        self.assertEqual(payload["region"]["parameters"]["height_mm"], 20.0)
+        cuts = [move for move in payload["toolpath"]["moves"] if move["kind"] == "cut"]
+        self.assertTrue(cuts)
+        for move in cuts:
+            self.assertTrue(all(point[2] == 20.0 for point in move["points"]))
+
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.get("/api/nope")

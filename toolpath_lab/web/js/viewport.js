@@ -87,7 +87,8 @@ function polylineGeometry(polylines, dashed = false) {
 export function buildSurfaceGeometry(region, thickness) {
   const outline = region.boundary || [];
   const patches = region.top_patches || [];
-  const bottomZ = -thickness;
+  // 工件挂在加工面最低处之下：斜面是低边（0），水平面区域就是它的高度。
+  const bottomZ = Number(((region.surface || {}).base_z_mm) || 0) - thickness;
   const positions = [];
   const triangle = (a, b, c) => positions.push(...a, ...b, ...c);
 
@@ -301,10 +302,12 @@ export class Viewport {
     const span = Math.max(xMax - xMin, yMax - yMin);
 
     const thickness = this._thickness(span);
-    this.workpieceGroup.add(this._workpiece(region, thickness));
+    // 加工面的最低 Z：水平面区域就是它的高度（默认 0），斜面是低边（0）。
+    const surfaceZ = Number(((region.surface || {}).base_z_mm) || 0);
+    this.workpieceGroup.add(this._workpiece(region, thickness, surfaceZ));
     // 轮廓画的是"刀路覆盖的范围"：斜坡只加工斜面段时它比工件轮廓窄。
     this.contourGroup.add(this._contour(region.machining_boundary || region.boundary));
-    this._rebuildGrid(span, thickness);
+    this._rebuildGrid(span, thickness, surfaceZ);
 
     const groups = { cut: [], link: [], rapid: [] };
     for (const move of payload.toolpath.moves) {
@@ -456,7 +459,7 @@ export class Viewport {
     return Math.min(Math.max(span * 0.09, 4), 24);
   }
 
-  _workpiece(region, thickness) {
+  _workpiece(region, thickness, surfaceZ) {
     const material = new THREE.MeshStandardMaterial({
       color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
     });
@@ -467,17 +470,18 @@ export class Viewport {
       mesh.receiveShadow = true;
       return mesh;
     }
+    // 水平面区域：实体顶面落在加工面高度上（surfaceZ），基体挂在它下面。
     if (region.id === "circle") {
       const radius = (region.bounds_mm[0][1] - region.bounds_mm[0][0]) / 2;
       const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, thickness, 128), material);
       mesh.rotation.x = Math.PI / 2;
-      mesh.position.z = -thickness / 2;
+      mesh.position.z = surfaceZ - thickness / 2;
       mesh.receiveShadow = true;
       return mesh;
     }
     const side = region.bounds_mm[0][1] - region.bounds_mm[0][0];
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(side, side, thickness), material);
-    mesh.position.z = -thickness / 2;
+    mesh.position.z = surfaceZ - thickness / 2;
     mesh.receiveShadow = true;
     return mesh;
   }
@@ -509,13 +513,14 @@ export class Viewport {
     return line;
   }
 
-  _rebuildGrid(span, thickness) {
+  _rebuildGrid(span, thickness, surfaceZ = 0) {
     this._clear(this.gridGroup);
     const size = Math.max(Math.ceil((span * 3) / 20) * 20, 100);
     const grid = new THREE.GridHelper(size, Math.max(4, Math.round(size / 10)), 0x2d6c69, 0x173331);
     grid.rotation.x = Math.PI / 2;
-    // 网格是"地面"：铺在工件底面，而不是穿过工件。
-    grid.position.z = -thickness - 0.1;
+    // 网格是"地面"：铺在基准面 Z = 0 与工件底面里更低的那一处——抬高的工件因此明显悬在它之上，
+    // 而默认（顶面在 Z = 0）时它仍旧贴着工件底面、不穿过工件。
+    grid.position.z = Math.min(surfaceZ - thickness, 0) - 0.1;
     grid.material.transparent = true;
     grid.material.opacity = 0.7;
     this.gridGroup.add(grid);

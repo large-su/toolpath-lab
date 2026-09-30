@@ -98,9 +98,34 @@ for (let index = 0; index < position.count; index += 3) {
   else inward += 1;
 }
 check("三角形法向全部朝外", inward === 0, `朝外 ${outward} / 朝内 ${inward}`);
+const rampBox = new THREE.Box3().setFromBufferAttribute(position);
 check("包围盒覆盖平顶与低边",
-  Math.abs(new THREE.Box3().setFromBufferAttribute(position).min.z + 7.2) < 1e-6
-  && Math.abs(new THREE.Box3().setFromBufferAttribute(position).max.z - 80) < 1e-6);
+  Math.abs(rampBox.min.z + 7.2) < 1e-6 && Math.abs(rampBox.max.z - 80) < 1e-6);
+
+// 4. 平面区域的高度：实体顶面落在加工面高度上，地面网格不穿过工件 ----------
+console.log("加工面高度：");
+const boxRegion = (height) => ({
+  id: "square",
+  bounds_mm: [[-40, 40], [-40, 40]],
+  surface: { kind: "flat", base_z_mm: height, top_z_mm: height },
+});
+const raised = viewport.Viewport.prototype._workpiece(boxRegion(20), 7.2, 20);
+raised.updateMatrixWorld(true);
+const raisedBox = new THREE.Box3().setFromObject(raised);
+check("高度 20：实体顶面在 Z = 20", Math.abs(raisedBox.max.z - 20) < 1e-6,
+  `顶面 ${raisedBox.max.z.toFixed(3)}`);
+check("基体挂在顶面之下 7.2", Math.abs(raisedBox.min.z - 12.8) < 1e-6,
+  `底面 ${raisedBox.min.z.toFixed(3)}`);
+
+const gridHost = { gridGroup: new THREE.Group(), _clear() {} };
+viewport.Viewport.prototype._rebuildGrid.call(gridHost, 80, 7.2, 20);
+check("抬高的工件悬在地面网格之上", gridHost.gridGroup.children[0].position.z < 12.8,
+  `网格 Z ${gridHost.gridGroup.children[0].position.z.toFixed(2)}`);
+const flatHost = { gridGroup: new THREE.Group(), _clear() {} };
+viewport.Viewport.prototype._rebuildGrid.call(flatHost, 80, 7.2, 0);
+check("默认高度时网格仍贴着工件底面（不穿工件）",
+  Math.abs(flatHost.gridGroup.children[0].position.z + 7.3) < 1e-6,
+  `网格 Z ${flatHost.gridGroup.children[0].position.z.toFixed(2)}`);
 
 console.log(failed === 0 ? "\n全部通过" : `\n有 ${failed} 项不通过`);
 process.exit(failed === 0 ? 0 : 1);

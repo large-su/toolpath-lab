@@ -119,7 +119,7 @@ class EllipseRegion(RegionShape):
 
 | 方法 | 作用 |
 | --- | --- |
-| `height_at(points_xy)` | 每个 (x, y) 处的 Z；刀路、G-code、时间轴都读它 |
+| `height_at(points_xy)` | 每个 (x, y) 处的 Z；刀路、G-code、时间轴都读它。方形与圆形把它做成一个参数（加工面高度），斜坡返回被截断的斜面 |
 | `surface_breaks(start, end)` | 分片平面的折角位置（斜坡在"斜面转平顶"的折痕处返回一点），折线在那里补点后才真正贴合加工面 |
 | `machining_boundary(footprint_mm)` | 刀路可取范围；默认就是轮廓。加工面在区域**内部**转折时（斜坡只加工斜面段）收窄到要加工的那一段，并把分界处的边外扩一个足迹，好让内缩之后刀路正好停在那里 |
 | `surface_patches()` | 顶面分片（每片共面且凸），前端据此拼工件实体；默认就是轮廓本身一片 |

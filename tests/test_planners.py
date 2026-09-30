@@ -309,6 +309,48 @@ class SlopedSurfaceTests(unittest.TestCase):
         )
 
 
+class RegionHeightTests(unittest.TestCase):
+    """平面区域设了高度，刀路整条跟着抬：Z、安全面都相对它算。"""
+
+    def _lifted(self, height: float, shape: str = "square", **overrides):
+        options = {"mode": "one_way", "stepover_mm": 20.0, "direction_deg": 0.0,
+                   "feed_mm_per_min": 600.0}
+        options.update(overrides)
+        key = "side_mm" if shape == "square" else "diameter_mm"
+        return run_plan(
+            planner_id="raster",
+            tool=_tool(),
+            region=build_region(shape, {key: 80.0, "height_mm": height}),
+            parameters=options,
+        )
+
+    def test_passes_sit_on_the_chosen_height(self) -> None:
+        for shape in ("square", "circle"):
+            outcome = self._lifted(20.0, shape)
+            for move in _cut_moves(outcome.toolpath):
+                self.assertTrue(np.allclose(move.points[:, 2], 20.0, atol=1e-9))
+
+    def test_safe_height_follows_the_region_height(self) -> None:
+        outcome = self._lifted(20.0)
+        rapids = [m for m in outcome.toolpath.moves if m.kind is MoveKind.RAPID]
+        self.assertTrue(rapids)
+        for move in rapids:
+            self.assertLessEqual(float(move.points[:, 2].max()), 25.0 + 1e-9)
+        self.assertAlmostEqual(
+            max(float(move.points[:, 2].max()) for move in rapids), 25.0, places=6
+        )
+
+    def test_negative_height_stays_below_the_datum(self) -> None:
+        outcome = self._lifted(-6.0)
+        for move in _cut_moves(outcome.toolpath):
+            self.assertTrue(np.allclose(move.points[:, 2], -6.0, atol=1e-9))
+
+    def test_flat_regions_still_retract_between_passes(self) -> None:
+        # 高度不改变"平面沿用抬刀连接"的判断（加工面仍然是水平的）
+        outcome = self._lifted(20.0)
+        self.assertFalse([m for m in outcome.toolpath.moves if m.kind is MoveKind.LINK])
+
+
 class BullToolTests(unittest.TestCase):
     """圆鼻刀：足迹半径 = 半径 − 刀尖圆角，内缩量介于平底刀与球头刀之间。"""
 

@@ -27,13 +27,16 @@ by parameters, and the parameter panel is generated from the backend's parameter
 
 ![the three tool tips: flat R, ball nose point contact, bull nose R - Rc](docs/images/tool-tips.png)
 - **Region**: three shapes centred at the origin
-  - **square** (side) and **circle** (diameter), machined on the XY plane;
+  - **square** (side) and **circle** (diameter): the machining surface is a horizontal plane with a
+    **settable height** (relative to the Z = 0 datum, default 0, positive or negative). Toolpath Z,
+    safe height and G-code all follow it; in the 3D view the solid sits at that height while the
+    ground grid stays on the datum, so a raised region is obvious at a glance;
   - **ramp**: the XY projection is still a square (80 × 80 by default) while the machining surface
     rises from the outermost **+X edge** (Z = 0) towards -X at an adjustable angle (up to 80°),
     turning into a flat top once it reaches Z = 80 mm; the same base thickness sits below the
     surface. **Only the slope is machined by default** - the toolpath stops right at the crease and
     never runs onto the flat top (left for another operation); tick the region parameter
-    "machine plateau" to cover both.
+    "machine plateau" to cover both. (A height setting is not offered for the ramp yet.)
 - **Toolpaths**: two strategies
   - **raster** - parallel scan lines with two modes: **zigzag** (every other pass runs in the opposite
     direction and consecutive passes are linked) and **one-way** (all passes run in the same
@@ -45,8 +48,9 @@ by parameters, and the parameter panel is generated from the backend's parameter
   through the "entry" parameter): passes run **uphill**, the tool enters **along the surface** from
   outside the part instead of plunging into the slope, and one-way passes are **linked along the
   surface** instead of lifting to the safe plane every time.
-- **Parameters**: stepover, pass direction, mode, entry, linking, cut order and feed rate. Safe height,
-  rapid feed, lead-in length and boundary handling are constants (see "Configuration constants").
+- **Parameters**: stepover, pass direction, mode, entry, linking, cut order and feed rate; the region
+  side adds side / diameter, machining height, angle and "machine plateau". Safe height, rapid feed,
+  lead-in length and boundary handling are constants (see "Configuration constants").
 - **3D view**: workpiece, region contour, toolpath (cut / link / rapid colour coded), cutter solid,
   traversed path and live shadows.
 - **Playback**: time is parameterised by each move's own feed rate; play / pause, scrubbing, cutting

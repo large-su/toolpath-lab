@@ -148,26 +148,38 @@ def polygon_bounds(polygon: NDArray[np.float64]) -> list[list[float]]:
     ]
 
 
+#: 平面区域共用的"加工面高度"参数：加工面（连同它下面的基体）整体抬到该高度。
+PLANAR_HEIGHT_SPEC = spec(
+    "height_mm", "加工面高度", K.FLOAT, 0.0, minimum=-100.0, maximum=100.0,
+    step=1.0, unit="mm", group="区域",
+    help="加工面相对基准面 Z = 0 的高度；刀路 Z、安全面与 G-code 都跟着它走",
+)
+
+
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class SquareRegion(RegionShape):
-    """以原点为中心的方形区域。"""
+    """以原点为中心的方形区域，加工面是可以设高度的水平面。"""
 
     side_mm: float = 80.0
+    height_mm: float = 0.0
 
     id: ClassVar[str] = "square"
     label: ClassVar[str] = "方形"
-    description: ClassVar[str] = "面铣最常见的形状，用来对比往复与单向"
+    description: ClassVar[str] = "面铣最常见的形状，用来对比往复与单向；加工面高度可设"
     parameters: ClassVar[ParameterSet] = ParameterSet(
         (
             spec("side_mm", "边长", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
                  step=5.0, unit="mm", group="区域"),
+            PLANAR_HEIGHT_SPEC,
         )
     )
 
     def __post_init__(self) -> None:
         if self.side_mm <= 0:
             raise ParameterError("方形边长必须为正")
+        if not isfinite(self.height_mm):
+            raise ParameterError("方形加工面高度必须是有限数")
 
     def boundary(self) -> NDArray[np.float64]:
         half = self.side_mm / 2.0
@@ -176,32 +188,44 @@ class SquareRegion(RegionShape):
             dtype=np.float64,
         )
 
+    def height_at(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
+        planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
+        return np.full(planar.shape[0], self.height_mm, dtype=np.float64)
+
 
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class CircleRegion(RegionShape):
-    """以原点为中心的圆形区域。"""
+    """以原点为中心的圆形区域，加工面是可以设高度的水平面。"""
 
     diameter_mm: float = 80.0
+    height_mm: float = 0.0
 
     id: ClassVar[str] = "circle"
     label: ClassVar[str] = "圆形"
-    description: ClassVar[str] = "圆形端面，用来观察刀路在曲线边界上的收放"
+    description: ClassVar[str] = "圆形端面，用来观察刀路在曲线边界上的收放；加工面高度可设"
     parameters: ClassVar[ParameterSet] = ParameterSet(
         (
             spec("diameter_mm", "直径 D", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
                  step=5.0, unit="mm", group="区域"),
+            PLANAR_HEIGHT_SPEC,
         )
     )
 
     def __post_init__(self) -> None:
         if self.diameter_mm <= 0:
             raise ParameterError("圆形直径必须为正")
+        if not isfinite(self.height_mm):
+            raise ParameterError("圆形加工面高度必须是有限数")
 
     def boundary(self) -> NDArray[np.float64]:
         radius = self.diameter_mm / 2.0
         angles = np.linspace(0.0, 2.0 * pi, CIRCLE_SEGMENTS, endpoint=False)
         return np.column_stack((radius * np.cos(angles), radius * np.sin(angles)))
+
+    def height_at(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
+        planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
+        return np.full(planar.shape[0], self.height_mm, dtype=np.float64)
 
 
 @REGION_SHAPES.register
