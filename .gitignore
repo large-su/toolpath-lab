@@ -14,3 +14,6 @@ examples/toolpath_demo.csv
 
 # Electron 壳（package-lock.json 需要提交，保证 Electron 版本可复现）
 node_modules/
+# 交付文档（Word/PPT 与交付材料不放仓库，单独放在下载文件夹）
+*.docx
+*.pptx
