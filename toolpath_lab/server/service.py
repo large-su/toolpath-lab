@@ -39,6 +39,10 @@ class PlanResult:
                 **region.describe(),
                 # 轮廓带上加工面高度：斜面区域的轮廓是一条三维曲线。
                 "boundary": [_point(point) for point in region.boundary_3d()],
+                # 刀路实际覆盖的范围（只在斜坡"只加工斜面段"时与轮廓不同），界面用它画加工范围。
+                "machining_boundary": [
+                    _point(point) for point in region.machining_boundary_3d(0.0)
+                ],
                 # 顶面分片（每片共面且凸）供前端拼工件实体，前端不需要懂斜面数学。
                 "top_patches": [
                     [_point(point) for point in patch] for patch in region.surface_patches()

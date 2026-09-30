@@ -66,7 +66,8 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(entry["label"], "跟随周边")
         self.assertEqual(
             [item["key"] for item in entry["parameters"]],
-            ["direction", "winding", "stepover_mm", "sample_step_mm", "feed_mm_per_min"],
+            ["direction", "winding", "stepover_mm", "sample_step_mm", "feed_mm_per_min",
+             "entry"],
         )
 
     def test_catalog_publishes_both_choices(self) -> None:
@@ -283,42 +284,6 @@ class SlopedSurfaceTests(unittest.TestCase):
     def test_flat_square_still_has_no_extra_vertices(self) -> None:
         flat = _rings(_plan().toolpath)[0]
         self.assertTrue(np.allclose(flat.points[:, 2], 0.0))
-
-
-class CurvedSurfaceTests(unittest.TestCase):
-    """柱面：环上每个刀点都落在曲面上，安全面跟着拱顶抬高。"""
-
-    def _crown_plan(self, crown: float = 30.0):
-        return run_plan(
-            planner_id="follow_periphery",
-            tool=_tool(kind=ToolKind.BALL),
-            region=build_region("cylinder", {"side_mm": 80.0, "crown_mm": crown}),
-            parameters={"direction": "inward", "winding": "ccw", "stepover_mm": 6.0,
-                        "sample_step_mm": 1.0, "feed_mm_per_min": 600.0},
-        )
-
-    def test_rings_follow_the_crown(self) -> None:
-        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
-        for move in _rings(self._crown_plan().toolpath):
-            self.assertTrue(
-                np.allclose(move.points[:, 2], region.height_at(move.points[:, :2]), atol=1e-9)
-            )
-
-    def test_the_inner_ring_gets_close_to_the_crown(self) -> None:
-        rings = _rings(self._crown_plan().toolpath)
-        self.assertGreater(float(rings[-1].points[:, 2].max()), 25.0)
-
-    def test_approach_and_retract_clear_the_crown(self) -> None:
-        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
-        toolpath = self._crown_plan().toolpath
-        rapids = [move for move in toolpath.moves if move.kind is MoveKind.RAPID]
-        self.assertEqual(len(rapids), 2)  # 只有下刀与抬刀
-        for move in rapids:
-            heights = move.points[:, 2]
-            ground = region.height_at(move.points[:, :2])
-            self.assertAlmostEqual(float(heights.max() - heights.min()), SAFE_HEIGHT_MM, places=6)
-            self.assertTrue(np.allclose(heights, np.maximum(heights, ground), atol=1e-9))
-            self.assertAlmostEqual(float(heights.min()), float(ground.min()), places=9)
 
 
 class ErrorAndWarningTests(unittest.TestCase):

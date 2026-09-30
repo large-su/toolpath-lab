@@ -79,37 +79,18 @@ function polylineGeometry(polylines, dashed = false) {
   return geometry;
 }
 
-// 加工面不是平面时的工件实体：顶面要么是后端给的分片（共面凸多边形，扇形三角化），
-// 要么是一条母线沿轴扫掠成的曲面；侧壁把 XY 轮廓挤出到底面，底面封口。
+// 加工面不是平面时的工件实体：顶面按后端给的分片扇形三角化，侧壁把 XY 轮廓挤出到底面，
+// 底面封口。分片都由区域保证是共面的凸多边形，所以扇形三角化足够。
 export function buildSurfaceGeometry(region, thickness) {
   const outline = region.boundary || [];
   const patches = region.top_patches || [];
-  const surface = region.surface || {};
   const bottomZ = -thickness;
   const positions = [];
   const triangle = (a, b, c) => positions.push(...a, ...b, ...c);
 
-  const profile = surface.kind === "sweep" ? surface.profile : null;
-  if (Array.isArray(profile) && profile.length > 1) {
-    // 母线扫掠（柱面）：相邻两个母线点 + 扫掠两端 = 两个三角形。
-    // 母线按 X 递增给出、扫掠沿 +Y，所以 (a, b, c) 的法向朝上。
-    const from = Number(surface.from_mm ?? 0);
-    const to = Number(surface.to_mm ?? 0);
-    for (let index = 0; index + 1 < profile.length; index += 1) {
-      const [x0, z0] = profile[index];
-      const [x1, z1] = profile[index + 1];
-      const a = [x0, from, z0];
-      const b = [x1, from, z1];
-      const c = [x1, to, z1];
-      const d = [x0, to, z0];
-      triangle(a, b, c);
-      triangle(a, c, d);
-    }
-  } else {
-    for (const patch of patches) {
-      for (let index = 1; index + 1 < patch.length; index += 1) {
-        triangle(patch[0], patch[index], patch[index + 1]); // 俯视逆时针 → 法向朝上
-      }
+  for (const patch of patches) {
+    for (let index = 1; index + 1 < patch.length; index += 1) {
+      triangle(patch[0], patch[index], patch[index + 1]); // 俯视逆时针 → 法向朝上
     }
   }
   for (let index = 0; index < outline.length; index += 1) {
@@ -318,7 +299,8 @@ export class Viewport {
 
     const thickness = this._thickness(span);
     this.workpieceGroup.add(this._workpiece(region, thickness));
-    this.contourGroup.add(this._contour(region.boundary));
+    // 轮廓画的是"刀路覆盖的范围"：斜坡只加工斜面段时它比工件轮廓窄。
+    this.contourGroup.add(this._contour(region.machining_boundary || region.boundary));
     this._rebuildGrid(span, thickness);
 
     const groups = { cut: [], link: [], rapid: [] };

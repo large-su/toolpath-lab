@@ -38,7 +38,7 @@ from toolpath_lab.core.parameters import (
     spec,
 )
 from toolpath_lab.core.path import Move, Toolpath
-from toolpath_lab.planning.base import Planner, PlanningContext
+from toolpath_lab.planning.base import SURFACE_PARAMETERS, Planner, PlanningContext
 from toolpath_lab.planning.geometry2d import offset_polygon, resample_ring, signed_area
 from toolpath_lab.planning.registry import PLANNERS
 
@@ -74,7 +74,7 @@ class FollowPeripheryPlanner(Planner):
                  step=0.1, unit="mm", group="刀路", help="轮廓与凹角圆弧的离散精度"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
-        )
+        ) + SURFACE_PARAMETERS
     )
 
     def plan(self, context: PlanningContext) -> Toolpath:
@@ -104,7 +104,9 @@ class FollowPeripheryPlanner(Planner):
                 closed = closed[::-1]
             positions = context.to_positions(closed)
             if previous is None:
-                moves.append(context.approach_move_down(positions[0]))
+                moves.extend(
+                    context.entry_moves(closed[0], closed[1], pass_index=index)
+                )
             else:
                 moves.append(context.link_move(previous, positions[0]))
             moves.append(
@@ -123,9 +125,9 @@ class FollowPeripheryPlanner(Planner):
     # -- 内部步骤 ----------------------------------------------------------
     @staticmethod
     def _rings(context: PlanningContext, stepover: float) -> list[NDArray[np.float64]]:
-        """从轮廓内缩一个刀具半径开始，每环再推进一个切宽，直到偏置退化。"""
+        """从刀路范围（斜坡"只加工斜面段"时比轮廓窄）内缩一个足迹半径开始，每环再推进一个切宽。"""
 
-        boundary = context.boundary
+        boundary = context.machining_boundary
         rings: list[NDArray[np.float64]] = []
         distance = context.tool.footprint_radius_mm
         while len(rings) < _MAX_RINGS:

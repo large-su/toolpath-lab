@@ -3,19 +3,20 @@
 两种模式：
 
 - **往复 Zigzag**：奇数刀反向，相邻两刀在端头直接连过去，效率高；
-- **单向 One-way**：每刀都朝同一个方向，刀与刀之间抬刀到安全面再回到起点，
-  慢一些，但每一刀的切削状态一致（顺铣/逆铣方向固定）。
+- **单向 One-way**：每刀都朝同一个方向；刀与刀之间默认抬刀到安全面再回到起点，也可以改成
+  沿加工面连接（`linking`），慢一些，但每一刀的切削状态一致（顺铣/逆铣方向固定）。
 
 做法很简单，也是这个基座最值得读的一段代码：
 
-1. 把区域轮廓旋转到"走刀坐标系"：u 沿走刀方向，v 垂直于它；
+1. 把刀路范围（`machining_boundary`，斜坡"只加工斜面段"时比工件轮廓窄）旋转到
+   "走刀坐标系"：u 沿走刀方向，v 垂直于它；
 2. 在 v 方向每隔一个切宽布一条刀线；
 3. 每条刀线用扫描线求交，得到它在区域内部的区间（圆形是弦，方形是整条）；
 4. 区间两端各内缩一个刀具足迹半径，得到这一刀的起点和终点；
 5. 按模式决定方向与刀间连接，补上下刀和抬刀。
 
-一刀只有两个点，因为加工面是平面——这正是"基座"该有的样子：想加工曲面时，
-再把每条刀线按采样步长离散即可。
+加工面不是水平面时还多做两件事（都放在 `PlanningContext` 里）：走刀方向摆成"由低往高"，
+下刀改成从低处沿加工面切入。平面区域仍然是"一刀两个点、垂直下刀、刀间抬刀"。
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from toolpath_lab.core.parameters import (
     spec,
 )
 from toolpath_lab.core.path import Move, Toolpath
-from toolpath_lab.planning.base import Planner, PlanningContext
+from toolpath_lab.planning.base import ENTRY_LEAD_IN_MM, SURFACE_PARAMETERS, Planner, PlanningContext
 from toolpath_lab.planning.geometry2d import scanline_intervals
 from toolpath_lab.planning.registry import PLANNERS
 
@@ -56,13 +57,21 @@ class RasterPlanner(Planner):
                 Choice("zigzag", "往复 Zigzag"),
                 Choice("one_way", "单向 One-way"),
             )),
+            spec("linking", "刀间连接", K.CHOICE, "auto", group="刀路",
+                 choices=(
+                     Choice("auto", "自动（平面抬刀，斜面沿面连接）"),
+                     Choice("retract", "抬刀到安全面"),
+                     Choice("surface", "沿加工面连接（不抬刀）"),
+                 ),
+                 help="只对单向模式有效；沿面连接贴着加工面切过去，斜面上因此不必每次抬到安全面",
+                 visible_if={"mode": "one_way"}),
             spec("stepover_mm", "切宽 ae", K.FLOAT, 6.0, minimum=0.5, maximum=100.0,
                  step=0.5, unit="mm", group="刀路", help="相邻两条刀线的间距"),
             spec("direction_deg", "走刀方向", K.FLOAT, 0.0, minimum=0.0, maximum=180.0,
                  step=5.0, unit="°", group="刀路", help="扫描线的行进方向；切宽方向与之垂直"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
-        )
+        ) + SURFACE_PARAMETERS
     )
 
     def plan(self, context: PlanningContext) -> Toolpath:
@@ -73,8 +82,13 @@ class RasterPlanner(Planner):
         offset = context.tool.footprint_radius_mm
         self._warn_if_stepover_too_large(context, stepover)
 
-        boundary = context.boundary
+        boundary = context.machining_boundary
         u_axis = direction_2d(float(context.parameters["direction_deg"]))
+        # 加工面有起伏时改成"由低往高"：这样下刀的那一端就是低处，沿面切入不会撞上高处的材料。
+        flipped = False
+        if context.entry_along_surface and context.surface_rise(u_axis) < 0.0:
+            u_axis = -u_axis
+            flipped = True
         v_axis = np.array([-u_axis[1], u_axis[0]], dtype=np.float64)
         frame = np.column_stack((u_axis, v_axis))
         planar = boundary @ frame
@@ -94,25 +108,24 @@ class RasterPlanner(Planner):
             )
 
         moves: list[Move] = []
-        first = self._to_world(passes[0], frame, reverse=False)
-        moves.append(context.approach_move_down(context.to_positions(first)[0]))
+        first_line = self._pass_line(passes[0], frame, reverse=False)
+        moves.extend(context.entry_moves(first_line[0], first_line[1], pass_index=0))
 
         previous: np.ndarray | None = None
-        for index, (start, end, level) in enumerate(passes):
+        for index, item in enumerate(passes):
             reverse = mode == "zigzag" and index % 2 == 1
-            planar_points = np.array(
-                [[end, level], [start, level]] if reverse else [[start, level], [end, level]],
-                dtype=np.float64,
-            )
-            positions = context.to_positions(planar_points @ frame.T)
+            world = self._pass_line(item, frame, reverse=reverse)
+            positions = context.to_positions(world)
             if previous is not None:
-                moves.append(
-                    context.link_move(previous, positions[0])
-                    if mode == "zigzag"
-                    else context.rapid_between(previous, positions[0])
-                )
-            moves.append(context.cut_move(planar_points @ frame.T, pass_index=index,
-                                          label=f"第 {index + 1} 刀"))
+                if mode == "zigzag":
+                    moves.append(context.link_move(previous, positions[0]))
+                elif context.links_on_surface:
+                    moves.append(
+                        context.surface_link(previous[:2], positions[0][:2], pass_index=index)
+                    )
+                else:
+                    moves.append(context.rapid_between(previous, positions[0]))
+            moves.append(context.cut_move(world, pass_index=index, label=f"第 {index + 1} 刀"))
             previous = positions[-1]
 
         moves.append(context.retract_move_up(previous))
@@ -120,16 +133,21 @@ class RasterPlanner(Planner):
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
-            notes=self._notes(context, mode, stepover, len(passes)),
+            notes=self._notes(context, mode, stepover, len(passes), flipped),
         )
 
     # -- 内部步骤 ----------------------------------------------------------
     @staticmethod
-    def _to_world(
+    def _pass_line(
         item: tuple[float, float, float], frame: np.ndarray, *, reverse: bool
     ) -> np.ndarray:
+        """一条刀线的两个端点（工件坐标，XY）。"""
+
         start, end, level = item
-        planar = np.array([[end, level], [start, level]] if reverse else [[start, level], [end, level]])
+        planar = np.array(
+            [[end, level], [start, level]] if reverse else [[start, level], [end, level]],
+            dtype=np.float64,
+        )
         return planar @ frame.T
 
     @staticmethod
@@ -161,12 +179,29 @@ class RasterPlanner(Planner):
 
     @staticmethod
     def _notes(
-        context: PlanningContext, mode: str, stepover: float, pass_count: int
+        context: PlanningContext,
+        mode: str,
+        stepover: float,
+        pass_count: int,
+        flipped: bool,
     ) -> tuple[str, ...]:
         direction = float(context.parameters["direction_deg"])
-        return (
+        surface: list[str] = []
+        if context.entry_along_surface:
+            surface.append(f"由低往高走刀，下刀沿加工面切入 {ENTRY_LEAD_IN_MM:g} mm")
+        if mode == "one_way":
+            surface.append(
+                "刀间沿加工面连接（不抬刀）" if context.links_on_surface
+                else "刀间抬刀到安全面"
+            )
+        if flipped:
+            surface.append(f"斜面自动反向：实际走刀方向 {direction + 180.0:g}°")
+        notes = [
             f"{_MODE_LABELS[mode]}走刀，共 {pass_count} 刀，"
             f"切宽 {stepover:g} mm，走刀方向 {direction:g}°",
-            f"边界内缩一个刀具半径（本刀 R{context.tool.footprint_radius_mm:g} mm），"
+            f"边界内缩一个刀具足迹半径（本刀 {context.tool.footprint_radius_mm:g} mm），"
             "安全高度 5 mm、快移 5000 mm/min 为固定值",
-        )
+        ]
+        if surface:
+            notes.append("；".join(surface))
+        return tuple(notes)

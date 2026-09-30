@@ -17,9 +17,15 @@ import numpy as np
 from numpy.typing import NDArray
 
 from toolpath_lab.core.errors import PlanningError
-from toolpath_lab.core.parameters import ParameterSet
+from toolpath_lab.core.parameters import (
+    Choice,
+    ParameterKind as K,
+    ParameterSet,
+    ParameterSpec,
+    spec,
+)
 from toolpath_lab.core.path import Move, MoveKind, Toolpath, retract_move
-from toolpath_lab.core.region import RegionShape
+from toolpath_lab.core.region import RegionShape, polygon_bounds
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.geometry2d import ensure_ccw
 
@@ -27,8 +33,19 @@ from toolpath_lab.planning.geometry2d import ensure_ccw
 SAFE_HEIGHT_MM = 5.0
 #: 快速移动的进给速度（mm/min）。
 RAPID_FEED_MM_PER_MIN = 5000.0
-#: 计算横移安全面时沿路径的采样步长（mm）；区域自带曲面采样步长时用区域的那个。
-SAFE_SAMPLE_STEP_MM = 1.0
+#: 沿加工面进刀时的引入长度（mm）：斜面上从低处贴着加工面切进来，而不是垂直扎下去。
+ENTRY_LEAD_IN_MM = 5.0
+
+#: 与"加工面不是水平面"有关的公共参数，两个内置策略都带上它。
+SURFACE_PARAMETERS: tuple[ParameterSpec, ...] = (
+    spec("entry", "下刀方式", K.CHOICE, "auto", group="刀路",
+         choices=(
+             Choice("auto", "自动（平面垂直下刀，斜面沿面切入）"),
+             Choice("plunge", "垂直下刀"),
+             Choice("slope", "沿斜面进刀"),
+         ),
+         help="自动：水平面直接扎下去；斜面/起伏面从低处沿加工面切进来，并改成由低往高走刀"),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,48 +65,94 @@ class PlanningContext:
     # -- 几何 --------------------------------------------------------------
     @property
     def boundary(self) -> NDArray[np.float64]:
-        """逆时针的区域轮廓，形状 (N, 2)。"""
+        """逆时针的区域轮廓，形状 (N, 2)，也就是工件在 XY 上的外形。"""
 
         return ensure_ccw(self.region.boundary())
+
+    @property
+    def machining_boundary(self) -> NDArray[np.float64]:
+        """刀路的可取范围，形状 (N, 2)。
+
+        默认与轮廓相同；斜坡"只加工斜面段"时收窄到斜面段（分界处那条边留了一个足迹半径的
+        余量，内缩之后刀路正好停在折痕上）。策略一律内缩它、而不是 region.boundary()。
+        """
+
+        return ensure_ccw(self.region.machining_boundary(self.tool.footprint_radius_mm))
+
+    @property
+    def surface_varies(self) -> bool:
+        """加工面是否随位置起伏（水平面为 False，斜面、曲面为 True）。"""
+
+        bounds = polygon_bounds(self.region.boundary())
+        xs = np.linspace(bounds[0][0], bounds[0][1], 9)
+        ys = np.linspace(bounds[1][0], bounds[1][1], 9)
+        grid = np.array([(x, y) for x in xs for y in ys], dtype=np.float64)
+        heights = self.region.height_at(grid)
+        return bool(float(heights.max() - heights.min()) > 1e-9)
+
+    @property
+    def entry_along_surface(self) -> bool:
+        """下刀是否沿加工面切入（参数为"自动"时看加工面是否起伏）。"""
+
+        mode = str(self.parameters.get("entry", "auto"))
+        if mode == "plunge":
+            return False
+        if mode == "slope":
+            return True
+        return self.surface_varies
+
+    @property
+    def links_on_surface(self) -> bool:
+        """单向走刀时，刀与刀之间是否沿加工面连接（不抬刀，参数为"自动"时看加工面）。"""
+
+        mode = str(self.parameters.get("linking", "auto"))
+        if mode == "retract":
+            return False
+        if mode == "surface":
+            return True
+        return self.surface_varies
+
+    def surface_rise(self, direction: NDArray[np.float64]) -> float:
+        """沿该方向从区域一头走到另一头，加工面净升高多少（正数 = 上坡）。
+
+        斜面上用它决定走刀方向：由低往高走，下刀那一端才是低处。
+        """
+
+        planar = self.region.boundary()
+        unit = np.asarray(direction, dtype=np.float64).reshape(2)
+        norm = float(np.linalg.norm(unit))
+        if norm <= 1e-12:
+            return 0.0
+        projection = planar @ (unit / norm)
+        low = planar[int(np.argmin(projection))]
+        high = planar[int(np.argmax(projection))]
+        heights = self.region.height_at(np.vstack([low, high]))
+        return float(heights[1] - heights[0])
 
     def to_positions(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
         """把平面点 (N, 2) 抬成工件坐标下的 (N, 3)：Z 取**加工面**在该点的高度。
 
-        平面区域是 Z = 0，斜面这类分片平面的区域会先在折痕处补点，曲面区域会按采样步长
-        加密，所以折线始终贴合加工面——策略不需要知道加工面是平的、斜的还是弯的。
+        平面区域是 Z = 0；斜面这类分片平面的区域会先在折痕处补点，所以折线始终贴合加工面，
+        策略本身不需要知道加工面是平的还是斜的。
         """
 
         planar = self.surface_polyline(points_xy)
         return np.column_stack((planar, self.region.height_at(planar)))
 
     def surface_polyline(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
-        """把折线补成贴合加工面的折线：折角处插点，曲面按采样步长加密。
-
-        平面区域原样返回，所以"一刀两个点"的约定不受影响；分片平面只在折痕处补点就已经
-        精确，曲面则沿折线每 ``surface_sample_step_mm`` 取一个点。
-        """
+        """在加工面的折角处给折线补点；平面区域原样返回（"一刀两个点"因此不变）。"""
 
         planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
         if planar.shape[0] < 2:
             return planar
-        step = self.region.surface_sample_step_mm
         result: list[NDArray[np.float64]] = [planar[0]]
         for start, end in zip(planar, planar[1:]):
-            direction = end - start
-            length = float(np.linalg.norm(direction))
-            if length <= 1e-12:
-                continue
-            fractions: list[float] = []
             breaks = np.asarray(
                 self.region.surface_breaks(start, end), dtype=np.float64
             ).reshape(-1, 2)
             for point in breaks:
-                fractions.append(float(np.dot(point - start, direction) / (length * length)))
-            if step:
-                count = int(np.ceil(length / step))
-                fractions.extend(index / count for index in range(1, count))
-            for fraction in sorted(value for value in fractions if 1e-9 < value < 1.0 - 1e-9):
-                result.append(start + fraction * direction)
+                if float(np.linalg.norm(point - result[-1])) > 1e-9:
+                    result.append(point)
             if float(np.linalg.norm(end - result[-1])) > 1e-9:
                 result.append(end)
         return np.array(result, dtype=np.float64)
@@ -123,25 +186,15 @@ class PlanningContext:
             start, end, self.safe_height_above(start, end), RAPID_FEED_MM_PER_MIN
         )
 
-    def safe_height_above(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> float:
-        """横移用的安全高度：抬到这段路径**经过的加工面最高点**之上 SAFE_HEIGHT_MM。
+    @staticmethod
+    def safe_height_above(*points: NDArray[np.float64]) -> float:
+        """安全高度：在给定点里最高的那个之上再抬 SAFE_HEIGHT_MM。
 
-        只看两个端点是不够的——柱面的拱顶通常落在刀路中间，两端的横移若不抬到拱顶之上
-        就会撞进工件。平面区域仍然退化成原来的绝对安全面 Z = SAFE_HEIGHT_MM。
+        平面区域退化成原来的绝对安全面 Z = SAFE_HEIGHT_MM；斜面这种有高度的加工面则跟着
+        工件走，横移时不会一头扎进高处的材料里。
         """
 
-        first = np.asarray(start, dtype=np.float64).reshape(3)
-        last = np.asarray(end, dtype=np.float64).reshape(3)
-        surface_max = self.region.surface_max_along(first[:2], last[:2])
-        if surface_max is None:
-            step = self.region.surface_sample_step_mm or SAFE_SAMPLE_STEP_MM
-            span = float(np.linalg.norm(last - first))
-            count = int(np.clip(np.ceil(span / step), 2, 512))
-            fractions = np.linspace(0.0, 1.0, count + 1)
-            planar = first[:2] + fractions[:, None] * (last[:2] - first[:2])
-            surface_max = float(self.region.height_at(planar).max())
-        highest = max(float(first[2]), float(last[2]), float(surface_max))
-        return highest + SAFE_HEIGHT_MM
+        return max(float(np.asarray(point).reshape(3)[2]) for point in points) + SAFE_HEIGHT_MM
 
     def approach_move_down(self, point: NDArray[np.float64]) -> Move:
         """从安全高度下刀到该点。"""
@@ -150,6 +203,56 @@ class PlanningContext:
         start = np.array([target[0], target[1], target[2] + SAFE_HEIGHT_MM], dtype=np.float64)
         return Move(MoveKind.RAPID, np.vstack([start, target]), RAPID_FEED_MM_PER_MIN,
                     label="下刀")
+
+    def entry_moves(
+        self,
+        first_xy: NDArray[np.float64],
+        second_xy: NDArray[np.float64],
+        *,
+        pass_index: int | None = None,
+    ) -> list[Move]:
+        """下刀动作：水平面垂直下刀；斜面从低处沿加工面切入。
+
+        沿面切入＝沿刀路的反方向退 ``ENTRY_LEAD_IN_MM``，再沿加工面切进来。引入点通常落在
+        刀路范围之外（那里没有材料），所以可以一路放到加工面高度——比垂直扎进斜面干净，
+        也不会一上来就满宽切削。走刀方向由策略负责摆成"由低往高"。
+        """
+
+        first = np.asarray(first_xy, dtype=np.float64).reshape(2)
+        target = self.to_positions(first.reshape(1, 2))[0]
+        if not self.entry_along_surface:
+            return [self.approach_move_down(target)]
+        step = first - np.asarray(second_xy, dtype=np.float64).reshape(2)
+        length = float(np.linalg.norm(step))
+        if length <= 1e-9:
+            return [self.approach_move_down(target)]
+        lead_xy = first + step / length * ENTRY_LEAD_IN_MM
+        lead = self.to_positions(lead_xy.reshape(1, 2))[0]
+        return [
+            self.approach_move_down(lead),
+            self.cut_move(np.vstack([lead_xy, first]), pass_index=pass_index, label="沿面切入"),
+        ]
+
+    def surface_link(
+        self,
+        start_xy: NDArray[np.float64],
+        end_xy: NDArray[np.float64],
+        *,
+        pass_index: int | None = None,
+    ) -> Move:
+        """沿加工面连接两点：XY 上直连，Z 跟着加工面（斜面上就是贴着斜面切过去）。"""
+
+        planar = np.vstack([
+            np.asarray(start_xy, dtype=np.float64).reshape(2),
+            np.asarray(end_xy, dtype=np.float64).reshape(2),
+        ])
+        return Move(
+            MoveKind.LINK,
+            self.to_positions(planar),
+            self.feed_mm_per_min,
+            pass_index=pass_index,
+            label="刀间连接（沿面）",
+        )
 
     def retract_move_up(self, point: NDArray[np.float64]) -> Move:
         """从该点抬刀到安全高度。"""

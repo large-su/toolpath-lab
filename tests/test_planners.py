@@ -50,7 +50,10 @@ class RegistryTests(unittest.TestCase):
     def test_catalog_exposes_the_expected_parameters(self) -> None:
         entry = planner_catalog()[0]
         keys = [item["key"] for item in entry["parameters"]]
-        self.assertEqual(keys, ["mode", "stepover_mm", "direction_deg", "feed_mm_per_min"])
+        self.assertEqual(
+            keys,
+            ["mode", "linking", "stepover_mm", "direction_deg", "feed_mm_per_min", "entry"],
+        )
         self.assertEqual(entry["label"], "栅格刀路")
 
 
@@ -157,45 +160,127 @@ class BallToolTests(unittest.TestCase):
         self.assertTrue(all(gap <= 6.0 + 1e-6 for gap in np.diff(levels)))
 
 
-def _ramp_plan(parameters=None, *, angle: float = 30.0, kind: ToolKind = ToolKind.FLAT):
+def _ramp_plan(parameters=None, *, angle: float = 30.0, kind: ToolKind = ToolKind.FLAT,
+               plateau: bool = False):
     options = {"mode": "one_way", "stepover_mm": 6.0, "direction_deg": 0.0,
                "feed_mm_per_min": 600.0}
     options.update(parameters or {})
     return run_plan(
         planner_id="raster",
         tool=_tool(kind=kind),
-        region=build_region("ramp", {"side_mm": 80.0, "angle_deg": angle}),
+        region=build_region("ramp", {"side_mm": 80.0, "angle_deg": angle,
+                                     "include_plateau": plateau}),
         parameters=options,
     )
 
 
+def _pass_cuts(toolpath: Toolpath):
+    """真正的刀线（排除"沿面切入"那段下刀）。"""
+
+    return [move for move in _cut_moves(toolpath) if move.label != "沿面切入"]
+
+
+def _lead_ins(toolpath: Toolpath):
+    return [move for move in _cut_moves(toolpath) if move.label == "沿面切入"]
+
+
 class SlopedSurfaceTests(unittest.TestCase):
-    """斜面区域：XY 投影不变，Z 跟着加工面走。"""
+    """斜面区域：XY 投影不变，Z 跟着加工面走；由低往高走刀，下刀沿面切入。"""
 
     def test_pass_levels_ignore_the_slope(self) -> None:
         flat = _pass_levels(_plan())
         sloped = _pass_levels(_ramp_plan())
-        self.assertEqual(flat, sloped)
+        # 斜面会自动反向（由低往高走刀），把 y 取反之后两边的布刀完全一致
+        self.assertEqual(flat, sorted(-level for level in sloped))
 
     def test_passes_follow_the_surface_height(self) -> None:
         slope = np.tan(np.radians(30.0))
-        move = _cut_moves(_ramp_plan().toolpath)[0]
+        move = _pass_cuts(_ramp_plan().toolpath)[0]
         self.assertEqual(move.points.shape, (2, 3))
-        # 低边在 +X，所以 x 越大 Z 越低
         for point in move.points:
             self.assertAlmostEqual(float(point[2]), (40.0 - float(point[0])) * slope, places=6)
-        self.assertAlmostEqual(float(move.points[0][2]), 77.0 * slope, places=6)
-        self.assertAlmostEqual(float(move.points[-1][2]), 3.0 * slope, places=6)
 
-    def test_crease_gets_its_own_vertex(self) -> None:
-        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
-        move = _cut_moves(_ramp_plan(angle=60.0).toolpath)[0]
+    def test_passes_run_uphill_from_the_low_edge(self) -> None:
+        slope = np.tan(np.radians(30.0))
+        move = _pass_cuts(_ramp_plan(kind=ToolKind.BALL).toolpath)[0]
+        self.assertAlmostEqual(float(move.points[0][0]), 40.0, places=6)
+        self.assertAlmostEqual(float(move.points[0][2]), 0.0, places=6)
+        self.assertAlmostEqual(float(move.points[-1][0]), -40.0, places=6)
+        self.assertAlmostEqual(float(move.points[-1][2]), 80.0 * slope, places=6)
+
+    def test_entry_mode_plunge_keeps_the_vertical_approach(self) -> None:
+        toolpath = _ramp_plan({"entry": "plunge"}, kind=ToolKind.BALL).toolpath
+        self.assertEqual(_lead_ins(toolpath), [])
+        first = toolpath.moves[0]
+        self.assertIs(first.kind, MoveKind.RAPID)
+        # 垂直下刀：XY 不变、只降 Z；方向也不自动反向，所以第一刀从高边（−X）起刀
+        self.assertAlmostEqual(float(first.points[0][0]), float(first.points[-1][0]), places=9)
+        self.assertAlmostEqual(float(first.points[0][1]), float(first.points[-1][1]), places=9)
+        self.assertAlmostEqual(float(first.points[-1][0]), -40.0, places=6)
+
+    def test_lead_in_comes_from_outside_at_the_surface_height(self) -> None:
+        slope = np.tan(np.radians(30.0))
+        toolpath = _ramp_plan(kind=ToolKind.BALL).toolpath
+        lead = _lead_ins(toolpath)
+        self.assertEqual(len(lead), 1)
+        self.assertAlmostEqual(float(lead[0].points[0][0]), 45.0, places=6)  # 40 + 引入 5
+        self.assertAlmostEqual(float(lead[0].points[0][2]), 0.0, places=6)
+        self.assertAlmostEqual(float(lead[0].points[-1][0]), 40.0, places=6)
+        self.assertAlmostEqual(float(lead[0].points[-1][2]), 0.0, places=6)
+        # 引入段之后紧跟着第一刀
+        self.assertIs(toolpath.moves[2].kind, MoveKind.CUT)
+
+    def test_one_way_links_on_the_surface(self) -> None:
+        toolpath = _ramp_plan().toolpath
+        rapids = [move for move in toolpath.moves if move.kind is MoveKind.RAPID]
+        links = [move for move in toolpath.moves if move.kind is MoveKind.LINK]
+        self.assertEqual(len(rapids), 2)  # 只剩"沿面切入"前的下刀与最后一次抬刀
+        self.assertEqual(len(links), _ramp_plan().toolpath.pass_count - 1)
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 30.0})
+        for move in links:
+            self.assertTrue(
+                np.allclose(move.points[:, 2], region.height_at(move.points[:, :2]), atol=1e-9)
+            )
+
+    def test_linking_can_still_retract(self) -> None:
+        toolpath = _ramp_plan({"linking": "retract"}).toolpath
+        rapids = [move for move in toolpath.moves if move.kind is MoveKind.RAPID]
+        self.assertGreater(len(rapids), 2)
+
+    def test_flat_regions_keep_the_old_behaviour(self) -> None:
+        toolpath = _plan({"mode": "one_way"}).toolpath
+        self.assertEqual(_lead_ins(toolpath), [])
+        rapids = [move for move in toolpath.moves if move.kind is MoveKind.RAPID]
+        self.assertGreater(len(rapids), 2)  # 平面仍然刀间抬刀
+        self.assertFalse([move for move in toolpath.moves if move.kind is MoveKind.LINK])
+
+    def test_crease_gets_its_own_vertex_when_the_plateau_is_machined(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0,
+                                       "include_plateau": True})
+        move = _pass_cuts(_ramp_plan(angle=60.0, plateau=True).toolpath)[0]
         self.assertEqual(move.points.shape, (3, 3))
         self.assertAlmostEqual(float(move.points[1][0]), region.crease_x_mm, places=6)
         self.assertAlmostEqual(float(move.points[1][2]), 80.0, places=6)
-        # 起点在平顶（−X 侧），终点回到斜面（+X 侧）
-        self.assertAlmostEqual(float(move.points[0][2]), 80.0, places=6)
-        self.assertLess(float(move.points[-1][2]), 80.0)
+
+    def test_only_the_slope_is_machined_by_default(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
+        toolpath = _ramp_plan(angle=60.0).toolpath
+        self.assertIsNotNone(region.crease_x_mm)
+        for move in _pass_cuts(toolpath):
+            self.assertGreaterEqual(float(move.points[:, 0].min()),
+                                    region.crease_x_mm - 1e-9)
+        # 刀路正好停在折痕上（分界处那条边留了一个足迹半径再内缩）
+        self.assertAlmostEqual(float(_pass_cuts(toolpath)[0].points[:, 0].min()),
+                               region.crease_x_mm, places=6)
+        for move in _pass_cuts(toolpath):
+            self.assertTrue(np.allclose(move.points[:, 2],
+                                        region.height_at(move.points[:, :2]), atol=1e-9))
+
+    def test_plateau_is_machined_when_asked(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
+        toolpath = _ramp_plan(angle=60.0, plateau=True).toolpath
+        lowest = min(float(move.points[:, 0].min()) for move in _pass_cuts(toolpath))
+        self.assertLess(lowest, float(region.crease_x_mm) - 1.0)
 
     def test_safe_height_is_measured_from_the_surface(self) -> None:
         for angle in (30.0, 60.0):
@@ -205,14 +290,6 @@ class SlopedSurfaceTests(unittest.TestCase):
             highest_cut = max(float(m.points[:, 2].max()) for m in cuts)
             highest_rapid = max(float(m.points[:, 2].max()) for m in rapids)
             self.assertAlmostEqual(highest_rapid, highest_cut + SAFE_HEIGHT_MM, places=6)
-
-    def test_ball_tool_runs_from_the_low_edge_to_the_top(self) -> None:
-        slope = np.tan(np.radians(30.0))
-        move = _cut_moves(_ramp_plan(kind=ToolKind.BALL).toolpath)[0]
-        self.assertAlmostEqual(float(move.points[0][0]), -40.0, places=6)
-        self.assertAlmostEqual(float(move.points[0][2]), 80.0 * slope, places=6)
-        self.assertAlmostEqual(float(move.points[-1][0]), 40.0, places=6)
-        self.assertAlmostEqual(float(move.points[-1][2]), 0.0, places=6)
 
     def test_cutting_length_grows_with_the_slope(self) -> None:
         flat = _plan({"mode": "one_way"}).toolpath.cut_length_mm
@@ -264,81 +341,6 @@ class BullToolTests(unittest.TestCase):
         levels = _pass_levels(self._bull_plan(5.0, stepover=20.0))
         self.assertAlmostEqual(levels[0], -40.0, places=6)
         self.assertAlmostEqual(levels[-1], 40.0, places=6)
-
-
-def _crown_plan(parameters=None, *, crown: float = 30.0, kind: ToolKind = ToolKind.FLAT):
-    options = {"mode": "one_way", "stepover_mm": 6.0, "direction_deg": 0.0,
-               "feed_mm_per_min": 600.0}
-    options.update(parameters or {})
-    return run_plan(
-        planner_id="raster",
-        tool=_tool(kind=kind),
-        region=build_region("cylinder", {"side_mm": 80.0, "crown_mm": crown}),
-        parameters=options,
-    )
-
-
-class CurvedSurfaceTests(unittest.TestCase):
-    """柱面：折线按采样步长加密，逐点落在圆弧上；平面与斜面不受影响。"""
-
-    def test_passes_are_densified_along_the_surface(self) -> None:
-        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
-        move = _cut_moves(_crown_plan().toolpath)[0]
-        self.assertGreater(move.points.shape[0], 60)  # 而不是两个端点
-        self.assertTrue(
-            np.allclose(move.points[:, 2], region.height_at(move.points[:, :2]), atol=1e-9)
-        )
-
-    def test_densified_points_stay_on_the_arc(self) -> None:
-        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
-        radius = region.crown_radius_mm
-        move = _cut_moves(_crown_plan().toolpath)[0]
-        centre_z = 30.0 - radius
-        distances = np.sqrt(move.points[:, 0] ** 2 + (move.points[:, 2] - centre_z) ** 2)
-        self.assertTrue(np.allclose(distances, radius, atol=1e-9))
-
-    def test_chord_error_stays_small(self) -> None:
-        # 1 mm 步长在半径 41.7 mm 的弧上：最陡处弦高误差 ≈ |z''|·h²/8 ≈ 0.03 mm
-        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
-        move = _cut_moves(_crown_plan().toolpath)[0]
-        samples = np.linspace(-37.0, 37.0, 400)
-        exact = region.height_at(np.column_stack((samples, np.zeros_like(samples))))
-        interpolated = np.interp(samples, move.points[:, 0], move.points[:, 2])
-        self.assertLess(float(np.abs(exact - interpolated).max()), 0.05)
-
-    def test_pass_levels_and_inset_are_unchanged(self) -> None:
-        levels = _pass_levels(_crown_plan())
-        self.assertAlmostEqual(levels[0], -37.0, places=6)
-        self.assertAlmostEqual(levels[-1], 37.0, places=6)
-
-    def test_safe_height_clears_the_crown(self) -> None:
-        toolpath = _crown_plan().toolpath
-        cuts = _cut_moves(toolpath)
-        rapids = [m for m in toolpath.moves if m.kind is MoveKind.RAPID]
-        highest_cut = max(float(m.points[:, 2].max()) for m in cuts)
-        highest_rapid = max(float(m.points[:, 2].max()) for m in rapids)
-        # 单向走刀的横移会横扫整个拱顶，所以安全面必须按"路径经过的最高点"算
-        self.assertAlmostEqual(highest_rapid, highest_cut + SAFE_HEIGHT_MM, places=6)
-
-    def test_rapids_never_dip_below_the_surface(self) -> None:
-        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
-        for move in _crown_plan().toolpath.moves:
-            if move.kind is not MoveKind.RAPID:
-                continue
-            for start, end in zip(move.points, move.points[1:]):
-                along = np.linspace(0.0, 1.0, 40)[:, None]
-                path = start + along * (end - start)
-                clearance = path[:, 2] - region.height_at(path[:, :2])
-                self.assertGreaterEqual(float(clearance.min()), -1e-9)
-
-    def test_cutting_length_grows_with_the_crown(self) -> None:
-        flat = _plan({"mode": "one_way"}).toolpath.cut_length_mm
-        self.assertGreater(_crown_plan().toolpath.cut_length_mm, flat)
-
-    def test_flat_and_ramp_keep_their_two_point_passes(self) -> None:
-        self.assertEqual(_cut_moves(_plan({"mode": "one_way"}).toolpath)[0].points.shape, (2, 3))
-        self.assertEqual(_cut_moves(_ramp_plan(angle=30.0).toolpath)[0].points.shape, (2, 3))
-        self.assertEqual(_cut_moves(_ramp_plan(angle=60.0).toolpath)[0].points.shape, (3, 3))
 
 
 class CircleRegionTests(unittest.TestCase):

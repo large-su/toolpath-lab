@@ -26,23 +26,27 @@ by parameters, and the parameter panel is generated from the backend's parameter
   is what offsets the toolpath from the region contour.
 
 ![the three tool tips: flat R, ball nose point contact, bull nose R - Rc](docs/images/tool-tips.png)
-- **Region**: four shapes centred at the origin
+- **Region**: three shapes centred at the origin
   - **square** (side) and **circle** (diameter), machined on the XY plane;
   - **ramp**: the XY projection is still a square (80 × 80 by default) while the machining surface
     rises from the outermost **+X edge** (Z = 0) towards -X at an adjustable angle (up to 80°),
-    turning into a flat top once it reaches Z = 80 mm; the same base thickness sits below the surface;
-  - **cylinder**: the XY projection is a square too, while the machining surface is a cylindrical
-    crown swept along Y with an adjustable height (0 is flat, the maximum is half the side = a
-    half-cylinder); toolpaths are densified along the curve automatically.
+    turning into a flat top once it reaches Z = 80 mm; the same base thickness sits below the
+    surface. **Only the slope is machined by default** - the toolpath stops right at the crease and
+    never runs onto the flat top (left for another operation); tick the region parameter
+    "machine plateau" to cover both.
 - **Toolpaths**: two strategies
   - **raster** - parallel scan lines with two modes: **zigzag** (every other pass runs in the opposite
     direction and consecutive passes are linked) and **one-way** (all passes run in the same
-    direction, retracting to the safe plane between passes);
+    direction, retracting to the safe plane between passes or linking along the surface);
   - **follow-periphery** - constant offset loops that march inwards from the region contour until the
     region is cleared; the **cut order** is either inwards (contour first) or outwards (centre first)
     and the **winding** counter-clockwise or clockwise (seen from above), the same for every loop.
-- **Parameters**: stepover, pass direction, cut order and feed rate. Safe height, rapid feed and
-  boundary handling are constants (see "Configuration constants").
+- **Cutting on a slope** (automatic whenever the machining surface is not horizontal, and switchable
+  through the "entry" parameter): passes run **uphill**, the tool enters **along the surface** from
+  outside the part instead of plunging into the slope, and one-way passes are **linked along the
+  surface** instead of lifting to the safe plane every time.
+- **Parameters**: stepover, pass direction, mode, entry, linking, cut order and feed rate. Safe height,
+  rapid feed, lead-in length and boundary handling are constants (see "Configuration constants").
 - **3D view**: workpiece, region contour, toolpath (cut / link / rapid colour coded), cutter solid,
   traversed path and live shadows.
 - **Playback**: time is parameterised by each move's own feed rate; play / pause, scrubbing, cutting
@@ -166,10 +170,11 @@ the window - so the planning code runs headless. See [docs/architecture.md](docs
 
 | Constant | Value | Location |
 | --- | --- | --- |
-| Safe height | 5 mm, measured above the highest point of the machining surface **the rapid travels over** | `toolpath_lab/planning/base.py` |
+| Safe height | 5 mm above the highest point of the machining surface the rapid travels over | `toolpath_lab/planning/base.py` |
 | Rapid feed | 5000 mm/min | `toolpath_lab/planning/base.py` |
-| Boundary handling | inset the contour by the tool footprint radius | `planning/raster.py`, `planning/follow_periphery.py` |
-| Pass sampling | two end points on a flat region; one extra vertex at the ramp crease; every 1 mm along a cylinder | `toolpath_lab/core/region.py`, `toolpath_lab/planning/base.py` |
+| Lead-in length | 5 mm (a slope entry cuts in from outside the part, along the surface) | `toolpath_lab/planning/base.py` |
+| Boundary handling | inset the **machining area** by the tool footprint radius (slope-only ramps push the crease edge out by one footprint first) | `planning/raster.py`, `planning/follow_periphery.py` |
+| Pass sampling | two end points on a flat region; one extra vertex at the ramp crease | `toolpath_lab/planning/base.py` |
 | Loop linking | every loop runs in the same winding; loops are linked by a radial step-over at the seam, at feed, without retracting | `toolpath_lab/planning/follow_periphery.py` |
 | Ramp Z cap | 80 mm (anything higher becomes the flat top) | `toolpath_lab/core/region.py` |
 | Base thickness | 9% of the region span, clamped to 4–24 mm (7.2 mm for an 80 mm square) | `toolpath_lab/web/js/viewport.js` |

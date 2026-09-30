@@ -22,14 +22,13 @@ from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
 
 
 class RegionCatalogTests(unittest.TestCase):
-    def test_four_shapes_are_registered(self) -> None:
-        self.assertEqual(sorted(REGION_SHAPES.ids()), ["circle", "cylinder", "ramp", "square"])
+    def test_three_shapes_are_registered(self) -> None:
+        self.assertEqual(sorted(REGION_SHAPES.ids()), ["circle", "ramp", "square"])
 
     def test_catalog_publishes_labels_and_parameters(self) -> None:
         entries = {entry["id"]: entry for entry in region_catalog()}
         self.assertEqual(entries["square"]["label"], "方形")
         self.assertEqual(entries["ramp"]["label"], "斜坡")
-        self.assertEqual(entries["cylinder"]["label"], "柱面")
         self.assertEqual(
             [item["key"] for item in entries["square"]["parameters"]], ["side_mm"]
         )
@@ -37,11 +36,8 @@ class RegionCatalogTests(unittest.TestCase):
             [item["key"] for item in entries["circle"]["parameters"]], ["diameter_mm"]
         )
         self.assertEqual(
-            [item["key"] for item in entries["ramp"]["parameters"]], ["side_mm", "angle_deg"]
-        )
-        self.assertEqual(
-            [item["key"] for item in entries["cylinder"]["parameters"]],
-            ["side_mm", "crown_mm"],
+            [item["key"] for item in entries["ramp"]["parameters"]],
+            ["side_mm", "angle_deg", "include_plateau"],
         )
 
     def test_flat_shapes_publish_a_flat_surface(self) -> None:
@@ -202,81 +198,45 @@ class RampRegionTests(unittest.TestCase):
         with self.assertRaises(ParameterError):
             self._ramp(30.0, side=1.0)
 
+    def test_plateau_is_not_machined_by_default(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
+        self.assertFalse(region.include_plateau)
+        polygon = ensure_ccw(region.machining_boundary(0.0))
+        # 范围收到斜面段：靠平顶的那条边正是折痕
+        self.assertAlmostEqual(polygon[:, 0].min(), region.crease_x_mm, places=9)
+        self.assertAlmostEqual(polygon[:, 0].max(), 40.0, places=9)
+        self.assertAlmostEqual(signed_area(polygon),
+                               80.0 * (40.0 - region.crease_x_mm), places=6)
 
-class CylinderRegionTests(unittest.TestCase):
-    """柱面：XY 投影 80 × 80，加工面是沿 Y 轴拱起的圆弧（拱高 0 即平面，最大半圆柱）。"""
-
-    def _crown(self, crown: float, side: float = 80.0):
-        return build_region("cylinder", {"side_mm": side, "crown_mm": crown})
-
-    def test_zero_crown_is_a_flat_square(self) -> None:
-        region = self._crown(0.0)
-        samples = np.array([[-40.0, 0.0], [0.0, 0.0], [40.0, 0.0]])
-        self.assertTrue(np.allclose(region.height_at(samples), 0.0))
-        self.assertEqual(region.crown_radius_mm, float("inf"))
-        self.assertIsNone(region.surface_payload()["crown_radius_mm"])
-
-    def test_crown_radius_follows_the_chord_and_sagitta(self) -> None:
-        self.assertAlmostEqual(self._crown(20.0).crown_radius_mm, 50.0, places=9)
-        self.assertAlmostEqual(self._crown(40.0).crown_radius_mm, 40.0, places=9)
-
-    def test_height_is_zero_at_the_edges_and_the_crown_in_the_middle(self) -> None:
-        region = self._crown(30.0)
-        heights = region.height_at(
-            np.array([[-40.0, 0.0], [-20.0, 0.0], [0.0, 0.0], [20.0, 0.0], [40.0, 0.0]])
+    def test_machining_boundary_leaves_a_footprint_at_the_crease(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
+        # 内缩一个足迹半径之后刀路正好停在折痕上，所以这里先往外让出一个足迹
+        self.assertAlmostEqual(
+            float(region.machining_boundary(3.0)[:, 0].min()),
+            region.crease_x_mm - 3.0,
+            places=9,
         )
-        self.assertAlmostEqual(float(heights[0]), 0.0, places=12)
-        self.assertAlmostEqual(float(heights[2]), 30.0, places=12)
-        self.assertAlmostEqual(float(heights[4]), 0.0, places=12)
-        self.assertAlmostEqual(float(heights[1]), float(heights[3]), places=9)
-        self.assertGreater(float(heights[2]), float(heights[1]))
-        self.assertGreater(float(heights[1]), float(heights[0]))
 
-    def test_surface_points_sit_on_the_arc(self) -> None:
-        region = self._crown(30.0)
-        radius = region.crown_radius_mm
-        xs = np.linspace(-40.0, 40.0, 33)
-        heights = region.height_at(np.column_stack((xs, np.zeros_like(xs))))
-        distances = np.sqrt(xs ** 2 + (heights - (30.0 - radius)) ** 2)
-        self.assertTrue(np.allclose(distances, radius, atol=1e-9))
-
-    def test_boundary_is_the_densified_square(self) -> None:
-        region = self._crown(20.0)
-        polygon = ensure_ccw(region.boundary())
-        self.assertEqual(polygon.shape[0], 162)  # 沿 X 每 1 mm 一点，上下两条边
+    def test_machining_boundary_is_the_whole_square_without_a_plateau(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 30.0})
+        self.assertIsNone(region.crease_x_mm)
+        polygon = ensure_ccw(region.machining_boundary(3.0))
+        self.assertEqual(polygon.shape, (4, 2))
         self.assertAlmostEqual(signed_area(polygon), 6400.0)
-        self.assertEqual(polygon_bounds(polygon), [[-40.0, 40.0], [-40.0, 40.0]])
-        outline = region.boundary_3d()
-        self.assertAlmostEqual(float(outline[:, 2].min()), 0.0, places=12)
-        self.assertAlmostEqual(float(outline[:, 2].max()), 20.0, places=12)
 
-    def test_curved_surface_has_no_flat_patches(self) -> None:
-        self.assertEqual(self._crown(20.0).surface_patches(), [])
+    def test_machining_boundary_is_the_whole_square_when_the_plateau_is_included(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0,
+                                       "include_plateau": True})
+        polygon = ensure_ccw(region.machining_boundary(3.0))
+        self.assertAlmostEqual(signed_area(polygon), 6400.0)
+        self.assertAlmostEqual(float(polygon[:, 0].min()), -40.0, places=9)
 
-    def test_surface_payload_describes_the_sweep(self) -> None:
-        payload = self._crown(30.0).surface_payload()
-        self.assertEqual(payload["kind"], "sweep")
-        self.assertEqual(payload["axis"], "y")
-        self.assertEqual(payload["crown_mm"], 30.0)
-        self.assertAlmostEqual(payload["crown_radius_mm"], 41.6666667, places=6)
-        profile = payload["profile"]
-        self.assertEqual(len(profile), 81)
-        self.assertAlmostEqual(profile[0][0], -40.0)
-        self.assertAlmostEqual(profile[0][1], 0.0, places=12)
-        self.assertAlmostEqual(profile[len(profile) // 2][1], 30.0, places=12)
-        self.assertAlmostEqual(payload["top_z_mm"], 30.0, places=12)
-
-    def test_sampling_step_is_declared_only_by_curved_shapes(self) -> None:
-        self.assertEqual(self._crown(20.0).surface_sample_step_mm, 1.0)
-        self.assertIsNone(build_region("square", {}).surface_sample_step_mm)
-        self.assertIsNone(build_region("ramp", {}).surface_sample_step_mm)
-
-    def test_crown_larger_than_half_the_side_is_rejected(self) -> None:
-        self._crown(40.0)  # 半圆柱仍然合法
-        with self.assertRaises(ParameterError):
-            self._crown(40.5)
-        with self.assertRaises(ParameterError):
-            self._crown(-1.0)
+    def test_machining_outline_carries_the_surface_height(self) -> None:
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
+        outline = region.machining_boundary_3d(0.0)
+        self.assertTrue(
+            np.allclose(outline[:, 2], region.height_at(outline[:, :2]), atol=1e-9)
+        )
 
 
 if __name__ == "__main__":
