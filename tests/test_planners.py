@@ -232,6 +232,40 @@ class SlopedSurfaceTests(unittest.TestCase):
         )
 
 
+class BullToolTests(unittest.TestCase):
+    """圆鼻刀：足迹半径 = 半径 − 刀尖圆角，内缩量介于平底刀与球头刀之间。"""
+
+    def _bull_plan(self, corner: float, stepover: float = 15.0):
+        return run_plan(
+            planner_id="raster",
+            tool=Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=30.0,
+                      corner_radius_mm=corner),
+            region=build_region("square", {"side_mm": 80.0}),
+            parameters={"mode": "one_way", "stepover_mm": stepover,
+                        "feed_mm_per_min": 600.0},
+        )
+
+    def test_passes_are_inset_by_radius_minus_corner(self) -> None:
+        levels = _pass_levels(self._bull_plan(1.5))
+        self.assertAlmostEqual(levels[0], -(40.0 - 3.5), places=6)
+        self.assertAlmostEqual(levels[-1], 40.0 - 3.5, places=6)
+
+    def test_a_bigger_corner_insets_less(self) -> None:
+        small_corner = _pass_levels(self._bull_plan(0.5, stepover=10.0))
+        big_corner = _pass_levels(self._bull_plan(4.0, stepover=10.0))
+        self.assertLess(abs(small_corner[0]), abs(big_corner[0]))
+
+    def test_zero_corner_behaves_like_a_flat_tool(self) -> None:
+        levels = _pass_levels(self._bull_plan(0.0, stepover=10.0))
+        self.assertAlmostEqual(levels[0], -35.0, places=6)
+        self.assertAlmostEqual(levels[-1], 35.0, places=6)
+
+    def test_full_corner_behaves_like_a_ball_tool(self) -> None:
+        levels = _pass_levels(self._bull_plan(5.0, stepover=20.0))
+        self.assertAlmostEqual(levels[0], -40.0, places=6)
+        self.assertAlmostEqual(levels[-1], 40.0, places=6)
+
+
 class CircleRegionTests(unittest.TestCase):
     def test_circle_passes_are_shorter_than_the_square(self) -> None:
         circle = run_plan(

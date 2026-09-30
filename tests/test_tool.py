@@ -1,4 +1,4 @@
-"""刀具几何：足迹半径、参数构造与校验。"""
+"""刀具几何：足迹半径、刀尖圆角、参数构造与校验。"""
 
 from __future__ import annotations
 
@@ -13,25 +13,45 @@ class ToolGeometryTests(unittest.TestCase):
         tool = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0)
         self.assertAlmostEqual(tool.radius_mm, 3.0)
         self.assertAlmostEqual(tool.footprint_radius_mm, 3.0)
-        self.assertAlmostEqual(tool.corner_radius_mm, 0.0)
+        self.assertAlmostEqual(tool.effective_corner_radius_mm, 0.0)
 
     def test_ball_tool_touches_with_its_tip(self) -> None:
         """球头刀只有刀尖接触，所以足迹半径为 0（刀路可以贴到轮廓上）。"""
 
         tool = Tool(ToolKind.BALL, diameter_mm=8.0, length_mm=40.0)
         self.assertAlmostEqual(tool.footprint_radius_mm, 0.0)
-        self.assertAlmostEqual(tool.corner_radius_mm, 4.0)
+        self.assertAlmostEqual(tool.effective_corner_radius_mm, 4.0)
 
-    def test_bull_tool_uses_its_flat_bottom(self) -> None:
-        tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0)
-        self.assertAlmostEqual(tool.corner_radius_mm, 0.0)
+    def test_bull_tool_footprint_is_radius_minus_corner(self) -> None:
+        tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, corner_radius_mm=1.5)
+        self.assertAlmostEqual(tool.effective_corner_radius_mm, 1.5)
+        self.assertAlmostEqual(tool.footprint_radius_mm, 3.5)
+
+    def test_bull_tool_degenerates_to_flat_at_zero_corner(self) -> None:
+        tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, corner_radius_mm=0.0)
         self.assertAlmostEqual(tool.footprint_radius_mm, 5.0)
+
+    def test_bull_tool_degenerates_to_ball_at_full_corner(self) -> None:
+        tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, corner_radius_mm=5.0)
+        self.assertAlmostEqual(tool.footprint_radius_mm, 0.0)
+
+    def test_corner_radius_is_ignored_by_flat_and_ball(self) -> None:
+        flat = Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=40.0, corner_radius_mm=3.0)
+        ball = Tool(ToolKind.BALL, diameter_mm=10.0, length_mm=40.0, corner_radius_mm=3.0)
+        self.assertAlmostEqual(flat.footprint_radius_mm, 5.0)
+        self.assertAlmostEqual(ball.footprint_radius_mm, 0.0)
 
     def test_invalid_geometry_is_rejected(self) -> None:
         with self.assertRaises(ParameterError):
             Tool(ToolKind.FLAT, diameter_mm=0.0, length_mm=30.0)
         with self.assertRaises(ParameterError):
             Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=-1.0)
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.BULL, diameter_mm=6.0, length_mm=30.0, corner_radius_mm=-0.5)
+
+    def test_corner_radius_larger_than_radius_is_rejected(self) -> None:
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.BULL, diameter_mm=6.0, length_mm=30.0, corner_radius_mm=3.5)
 
 
 class ToolParameterTests(unittest.TestCase):
@@ -41,18 +61,33 @@ class ToolParameterTests(unittest.TestCase):
         self.assertEqual(tool.diameter_mm, 6.0)
         self.assertEqual(tool.length_mm, 30.0)
 
-    def test_only_the_bull_kind_is_still_disabled(self) -> None:
+    def test_all_kinds_are_selectable(self) -> None:
         disabled = {choice.value: choice.disabled for choice in TOOL_KINDS}
-        self.assertFalse(disabled["flat"])
-        self.assertFalse(disabled["ball"])
-        self.assertTrue(disabled["bull"])
+        self.assertEqual(disabled, {"flat": False, "ball": False, "bull": False})
 
     def test_parameter_choices_are_published_in_the_catalog(self) -> None:
         kind_spec = tool_parameters().spec("kind")
         self.assertEqual(len(kind_spec.choices), 3)
-        disabled = [choice["disabled"] for choice in kind_spec.to_dict()["choices"]]
-        self.assertEqual(disabled, [False, False, True])
-        self.assertEqual(kind_spec.to_dict()["choices"][1]["label"], "球头刀 Ball nose")
+        payload = kind_spec.to_dict()
+        self.assertEqual(
+            [choice["disabled"] for choice in payload["choices"]], [False, False, False]
+        )
+        self.assertEqual(payload["choices"][1]["label"], "球头刀 Ball nose")
+        self.assertEqual(payload["choices"][2]["label"], "圆鼻刀 Bull nose")
+
+    def test_corner_radius_is_only_visible_for_the_bull_kind(self) -> None:
+        corner = tool_parameters().spec("corner_radius_mm")
+        self.assertEqual(corner.to_dict()["visible_if"], {"kind": "bull"})
+        self.assertEqual(corner.default, 1.0)
+        self.assertEqual(corner.minimum, 0.0)
+
+    def test_corner_radius_travels_through_the_parameter_set(self) -> None:
+        tool = Tool.from_parameters(
+            tool_parameters().coerce({"kind": "bull", "diameter_mm": 8.0,
+                                      "length_mm": 40.0, "corner_radius_mm": 1.0})
+        )
+        self.assertIs(tool.kind, ToolKind.BULL)
+        self.assertAlmostEqual(tool.footprint_radius_mm, 3.0)
 
     def test_describe_exposes_the_geometry(self) -> None:
         payload = Tool.from_parameters(
@@ -61,6 +96,7 @@ class ToolParameterTests(unittest.TestCase):
         self.assertEqual(payload["diameter_mm"], 10.0)
         self.assertEqual(payload["radius_mm"], 5.0)
         self.assertEqual(payload["footprint_radius_mm"], 5.0)
+        self.assertEqual(payload["corner_radius_mm"], 0.0)
         self.assertEqual(payload["length_mm"], 45.0)
         self.assertIn("kind_label", payload)
 
@@ -71,6 +107,17 @@ class ToolParameterTests(unittest.TestCase):
         self.assertIs(tool.kind, ToolKind.BALL)
         self.assertEqual(tool.describe()["footprint_radius_mm"], 0.0)
         self.assertEqual(tool.describe()["kind_label"], "球头刀 Ball nose")
+        self.assertEqual(tool.describe()["corner_radius_mm"], 4.0)
+
+    def test_bull_tool_is_accepted_by_the_parameter_set(self) -> None:
+        tool = Tool.from_parameters(
+            tool_parameters().coerce({"kind": "bull", "diameter_mm": 10.0,
+                                      "length_mm": 40.0, "corner_radius_mm": 2.0})
+        )
+        described = tool.describe()
+        self.assertEqual(described["kind_label"], "圆鼻刀 Bull nose")
+        self.assertEqual(described["corner_radius_mm"], 2.0)
+        self.assertEqual(described["footprint_radius_mm"], 3.0)
 
     def test_out_of_range_diameter_is_rejected(self) -> None:
         with self.assertRaises(ParameterError):

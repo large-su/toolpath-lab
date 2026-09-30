@@ -112,6 +112,84 @@ export function buildSurfaceGeometry(region, thickness) {
   return geometry;
 }
 
+// 刀具实体：平底刀是一段圆柱；球头刀是"球的下半部分 + 同半径圆柱刃部"；圆鼻刀是
+// "平底 + 圆环过渡 + 圆柱刃部"。返回若干 mesh，局部坐标里**刀尖在 Z = 0、刀轴沿 +Z**，
+// 因此挂到刀具组后刀尖会跟着播放头走（Z = 0 就是加工面）。
+export function buildToolParts(tool) {
+  const radius = Math.max(tool.radius_mm, 0.2);
+  const length = tool.length_mm;
+  const isBall = tool.kind === "ball";
+  const corner = Math.min(Math.max(Number(tool.corner_radius_mm) || 0, 0), radius);
+  // 圆鼻刀用回转母线画（平底 + 圆角过渡）；Rc 小到 0 时就退化成平底刀。
+  const isBull = tool.kind === "bull" && corner > 0.01;
+  // 刀头本身要占掉一段高度（球头一个半径、圆鼻一个圆角），刃部至少要留出它。
+  const tipHeight = isBall ? radius : isBull ? corner : 0;
+  const flute = Math.max(Math.min(length * 0.65, radius * 6), tipHeight);
+  const holder = Math.max(length - flute, length * 0.2);
+
+  const cuttingMaterial = new THREE.MeshStandardMaterial({
+    color: COLORS.tool, metalness: 0.5, roughness: 0.34,
+  });
+  const parts = [];
+
+  if (isBull) {
+    // 圆鼻刀的轮廓是一条回转母线：从轴心沿平底走到内切圆，再以 Rc 为半径转 90° 接上圆柱。
+    // LatheGeometry 的 profile 用 (半径, 高度) 并绕 Y 轴回转，所以画完再绕 X 转 90° 对齐 Z 轴。
+    const flatRadius = Math.max(radius - corner, 0);
+    const profile = [];
+    if (flatRadius > 1e-6) profile.push(new THREE.Vector2(0, 0));
+    const arcSegments = 16;
+    for (let step = 0; step <= arcSegments; step += 1) {
+      const angle = -Math.PI / 2 + (Math.PI / 2) * (step / arcSegments);
+      profile.push(
+        new THREE.Vector2(
+          flatRadius + corner * Math.cos(angle),
+          corner + corner * Math.sin(angle)
+        )
+      );
+    }
+    profile.push(new THREE.Vector2(radius, flute));
+    const body = new THREE.Mesh(new THREE.LatheGeometry(profile, 64), cuttingMaterial);
+    body.rotation.x = Math.PI / 2;
+    parts.push(body);
+  } else if (isBall) {
+    // 刀头是球的下半部分：极点朝下、球赤道朝上。先把"上半球"绕 X 反转 90°（极点落到
+    // Z = -R、赤道落到 Z = 0），再整体抬高一个半径，于是球心在 Z = R、刀尖（极点）正好
+    // 落在加工面 Z = 0 上，赤道圆在 Z = R 与刃部相切。
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 64, 32, 0, Math.PI * 2, 0, Math.PI / 2),
+      cuttingMaterial
+    );
+    head.rotation.x = -Math.PI / 2;
+    head.position.z = radius;
+    parts.push(head);
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius, radius, flute - radius, 48), cuttingMaterial
+    );
+    body.rotation.x = Math.PI / 2;
+    body.position.z = radius + (flute - radius) / 2;
+    parts.push(body);
+  } else {
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius, radius, flute, 64), cuttingMaterial
+    );
+    body.rotation.x = Math.PI / 2;
+    body.position.z = flute / 2;
+    parts.push(body);
+  }
+
+  const shank = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
+    new THREE.MeshStandardMaterial({
+      color: COLORS.holder, metalness: 0.92, roughness: 0.24,
+    })
+  );
+  shank.rotation.x = Math.PI / 2;
+  shank.position.z = flute + holder / 2;
+  parts.push(shank);
+  return parts;
+}
+
 export class Viewport {
   constructor(container) {
     this.container = container;
@@ -280,57 +358,8 @@ export class Viewport {
   setTool(tool) {
     this.tool = tool;
     this._clear(this.toolGroup);
-    const radius = Math.max(tool.radius_mm, 0.2);
-    const length = tool.length_mm;
-    const isBall = tool.kind === "ball";
-    // 球头刀的刀头本身就占掉一个半径的高度，刃部至少要留出它。
-    const flute = Math.max(Math.min(length * 0.65, radius * 6), isBall ? radius : 0);
-    const holder = Math.max(length - flute, length * 0.2);
-
-    // 黄色切削段对齐 UGNX 的刀具配色：平底刀是一整段圆柱，
-    // 球头刀是"半球刀头 + 圆柱刃部"，刀尖都落在局部坐标 Z = 0（= 加工面）上。
-    const cuttingMaterial = new THREE.MeshStandardMaterial({
-      color: COLORS.tool, metalness: 0.5, roughness: 0.34,
-    });
-    const cutting = [];
-    if (isBall) {
-      // 刀头是球的下半部分：极点朝下、球赤道朝上。
-      // 先把"上半球"绕 X 反转 90°（极点落到 Z = -R、赤道落到 Z = 0），再整体抬高一个半径，
-      // 于是球心在 Z = R、刀尖（极点）正好落在加工面 Z = 0 上，赤道圆在 Z = R 与刃部相接。
-      const head = new THREE.Mesh(
-        new THREE.SphereGeometry(radius, 64, 32, 0, Math.PI * 2, 0, Math.PI / 2),
-        cuttingMaterial
-      );
-      head.rotation.x = -Math.PI / 2;
-      head.position.z = radius;
-      cutting.push(head);
-      // 刃部从球赤道往上接：半径与球相同，所以在 Z = R 处相切（看起来就是"球头 + 立柄"）。
-      const body = new THREE.Mesh(
-        new THREE.CylinderGeometry(radius, radius, flute - radius, 48), cuttingMaterial
-      );
-      body.rotation.x = Math.PI / 2;
-      body.position.z = radius + (flute - radius) / 2;
-      cutting.push(body);
-    } else {
-      const body = new THREE.Mesh(
-        new THREE.CylinderGeometry(radius, radius, flute, 64), cuttingMaterial
-      );
-      body.rotation.x = Math.PI / 2;
-      body.position.z = flute / 2;
-      cutting.push(body);
-    }
-
-    const shank = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.holder, metalness: 0.92, roughness: 0.24,
-      })
-    );
-    shank.rotation.x = Math.PI / 2;
-    shank.position.z = flute + holder / 2;
-
-    // 各段都是封闭回转体（球头刀的半球底面贴着加工面，看不到缺口）。
-    for (const mesh of [...cutting, shank]) {
+    // 球头刀的半球底面贴着加工面、圆鼻刀回转母线的顶部开口被刀柄盖住，所以都看不到缺口。
+    for (const mesh of buildToolParts(tool)) {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.toolGroup.add(mesh);

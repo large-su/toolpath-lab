@@ -19,10 +19,13 @@ by parameters, and the parameter panel is generated from the backend's parameter
 
 ## Features
 
-- **Tool**: flat and ball nose end mills with diameter and length. The **footprint radius** on the
-  machining plane defines how far the toolpath is offset from the region contour: `R` for a flat end
-  mill, `0` for a ball nose (only the tip touches, so its path may run right up to the contour).
-  Bull nose tools are still marked "to be extended" in the parameter catalogue.
+- **Tool**: flat, ball nose and bull nose end mills with diameter and length; the bull nose also takes a
+  corner radius `Rc` (the control appears only for that kind). All three share one formula for the
+  **footprint radius** - **radius minus corner radius**: `R` for flat, `0` for ball nose, `R - Rc` for
+  bull nose; `Rc = 0` degenerates to a flat end mill and `Rc = R` to a ball nose. The footprint radius
+  is what offsets the toolpath from the region contour.
+
+![the three tool tips: flat R, ball nose point contact, bull nose R - Rc](docs/images/tool-tips.png)
 - **Region**: three shapes centred at the origin
   - **square** (side) and **circle** (diameter), machined on the XY plane;
   - **ramp**: the XY projection is still a square (80 × 80 by default) while the machining surface

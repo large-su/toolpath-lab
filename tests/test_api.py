@@ -112,7 +112,7 @@ class CatalogTests(ApiTestCase):
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
         self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
-                         ["kind", "diameter_mm", "length_mm"])
+                         ["kind", "diameter_mm", "length_mm", "corner_radius_mm"])
 
     def test_catalog_reports_the_fixed_settings(self) -> None:
         _, body, _ = self.get("/api/catalog")
@@ -120,11 +120,17 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(fixed["safe_height_mm"], 5.0)
         self.assertEqual(fixed["rapid_feed_mm_per_min"], 5000.0)
 
-    def test_disabled_tool_kinds_are_published(self) -> None:
+    def test_every_tool_kind_is_selectable(self) -> None:
         _, body, _ = self.get("/api/catalog")
         kinds = json.loads(body)["tool"]["parameters"][0]["choices"]
-        # 平底刀与球头刀可选，圆鼻刀仍是"待拓展"
-        self.assertEqual([item["disabled"] for item in kinds], [False, False, True])
+        self.assertEqual([item["disabled"] for item in kinds], [False, False, False])
+        self.assertEqual([item["value"] for item in kinds], ["flat", "ball", "bull"])
+
+    def test_corner_radius_is_only_shown_for_the_bull_kind(self) -> None:
+        _, body, _ = self.get("/api/catalog")
+        parameters = {item["key"]: item for item in json.loads(body)["tool"]["parameters"]}
+        self.assertEqual(parameters["corner_radius_mm"]["visible_if"], {"kind": "bull"})
+        self.assertEqual(parameters["corner_radius_mm"]["default"], 1.0)
 
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -220,6 +226,25 @@ class PlanTests(ApiTestCase):
         _, payload, _ = self.plan({})
         self.assertEqual(payload["region"]["surface"]["kind"], "flat")
         self.assertTrue(all(point[2] == 0.0 for point in payload["region"]["boundary"]))
+
+    def test_bull_tool_request_is_accepted(self) -> None:
+        status, payload, _ = self.plan(
+            {"tool": {"kind": "bull", "diameter_mm": 10.0, "length_mm": 40.0,
+                      "corner_radius_mm": 1.5}}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["tool"]["kind"], "bull")
+        self.assertEqual(payload["tool"]["corner_radius_mm"], 1.5)
+        self.assertEqual(payload["tool"]["footprint_radius_mm"], 3.5)
+        self.assertGreater(payload["toolpath"]["statistics"]["pass_count"], 0)
+
+    def test_corner_radius_larger_than_the_radius_is_a_bad_request(self) -> None:
+        status, payload, _ = self.plan(
+            {"tool": {"kind": "bull", "diameter_mm": 6.0, "length_mm": 30.0,
+                      "corner_radius_mm": 4.0}}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("圆角", payload["error"])
 
     def test_parameters_are_echoed_back_normalised(self) -> None:
         _, payload, _ = self.plan({"planner": {"parameters": {"stepover_mm": 8}}})
