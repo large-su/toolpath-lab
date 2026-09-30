@@ -119,6 +119,9 @@
             <input id="speed" class="speed-slider" type="range" min="1" max="64" step="1" value="1" />
             <output id="speed-value" class="speed-value" for="speed">1×</output>
           </label>
+          <!-- 退出切削仿真：仿真余料连数据带网格一起删掉，回到"生成刀路"环节 -->
+          <button id="btn-sim-reset" class="button" type="button" hidden
+                  title="退出切削仿真：删除仿真余料，刀路重新显示，可改参数后再次生成">重置</button>
         </footer>
       </section>
     </main>

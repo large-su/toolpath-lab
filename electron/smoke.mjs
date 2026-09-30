@@ -359,6 +359,52 @@ async function driveCamFlow(window, base) {
     return { ok: false, steps, reason: "生成刀路后旧仿真未作废：" + JSON.stringify(invalidated) };
   }
 
+  // 8d. 播放条「重置」按钮：仿真看完不满意时的出口。造一份"仿真在场"的状态
+  //     （第 8 步的网格，第 8c 步刚被生成刀路作废掉），把刀路/毛坯两个显示开关
+  //     拧到仿真当时的 false，再走**真实的按钮点击**，断言：余料连数据带网格没了、
+  //     两个显示重新点亮（刀路与毛坯重新可见）、按钮回到灰态、进度条复位。
+  const resetFlow = await window.webContents.executeJavaScript(`(async () => {
+    const app = window.toolpathLab;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const body = ${JSON.stringify({
+      grid: simulateBody.grid,
+      lastHeight: simulateBody.frames[simulateBody.frames.length - 1].height,
+    })};
+    app.cam.simulation = { grid: body.grid, frames: [{ height: body.lastHeight }] };
+    app.viewport.setSimulationMesh(body.grid, body.lastHeight);
+    app.camPanel.syncDisplay("showPath", false);
+    app.camPanel.syncDisplay("showStock", false);
+    app.syncSimulationControls();
+    const button = document.getElementById("btn-sim-reset");
+    const before = { hidden: button.hidden, disabled: button.disabled };
+    button.click();
+    await wait(80);
+    return {
+      before,
+      simulation: Boolean(app.cam.simulation),
+      simChildren: app.viewport.simulationGroup.children.length,
+      showPath: app.camPanel.state.display.showPath,
+      showStock: app.camPanel.state.display.showStock,
+      pathVisible: app.viewport.pathGroup.visible,
+      stockVisible: app.viewport.stockGroup.visible,
+      disabled: button.disabled,
+      scrub: document.getElementById("scrub").value,
+      playText: document.getElementById("btn-play").textContent,
+      banner: (document.querySelector("#banner") || {}).textContent || "",
+    };
+  })()`);
+  steps.simReset = resetFlow;
+  if (!resetFlow || resetFlow.before.hidden || resetFlow.before.disabled) {
+    return { ok: false, steps, reason: "仿真在场时「重置」按钮却不可点：" + JSON.stringify(resetFlow) };
+  }
+  if (resetFlow.simulation || resetFlow.simChildren !== 0
+      || !resetFlow.showPath || !resetFlow.showStock
+      || !resetFlow.pathVisible || !resetFlow.stockVisible
+      || !resetFlow.disabled || resetFlow.scrub !== "0"
+      || resetFlow.playText !== "▶" || !resetFlow.banner.includes("已退出切削仿真")) {
+    return { ok: false, steps, reason: "点「重置」后没有回到生成刀路环节：" + JSON.stringify(resetFlow) };
+  }
+
   // 9. 导出 NC
   const ncResponse = await request(new URL("api/export/nc", base).href, {
     method: "POST", headers: { "Content-Type": "application/json" },

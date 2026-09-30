@@ -78,6 +78,7 @@ const dom = {
   speedValue: document.getElementById("speed-value"),
   scrub: document.getElementById("scrub"),
   time: document.getElementById("time"),
+  simReset: document.getElementById("btn-sim-reset"),
   opAdd: document.getElementById("btn-op-add"),
   opGenerate: document.getElementById("btn-op-generate"),
   opUp: document.getElementById("btn-op-up"),
@@ -217,6 +218,9 @@ async function boot() {
   window.toolpathLab = {
     viewport, panel, camPanel, tree, playback, regenerate, cam, modal,
     refreshTools, openToolLibraryDialog, selectToolForOperation, refreshOperations,
+    // 自检（electron/smoke.mjs）用：它直接改 cam.simulation 造一份"仿真在场"的状态，
+    // 绕开了 runSimulation，需要手动补一次按钮状态同步才能点到「重置」。
+    syncSimulationControls,
   };
 
   // 刀具库是全局的：启动就拉一次，之后面板一直可用
@@ -352,6 +356,8 @@ function wireButtons() {
     if (mode === "cam") seekSimulation(cam.simulationFrame + 1);
     else playback.stepForward();
   });
+  // 退出切削仿真：余料删掉、显示回到生成刀路环节，改参数后接着生成
+  dom.simReset.addEventListener("click", () => resetSimulation());
   // 速度是滑条（1×–64×）：input 拖动过程中就换倍速并刷新读数，change 兜底。
   const syncSpeed = () => {
     playback.speed = Number(dom.speed.value) || 1;
@@ -404,6 +410,7 @@ function setMode(next) {
   if (dom.toolsButton) dom.toolsButton.hidden = !isCam;
   if (isCam) syncStockButton();
   dom.simulateButton.hidden = !isCam;
+  syncSimulationControls();
   dom.projectButton.hidden = !isCam;
   dom.sidebar.classList.toggle("cam-mode", isCam);
   // 两套内容互斥显示，避免实验台的规则工件与导入的零件叠在一起。
@@ -663,6 +670,8 @@ async function refreshModel({ frame = false } = {}) {
   cam.simulationFrame = 0;
   cam.selectedFaces = [];
   cam.activeOperationId = null;
+  // 仿真没了，播放条「重置」按钮要跟着回到灰态
+  syncSimulationControls();
   // 面板上的刀具引用也要清掉：新工程的第一道工序不该沿用上一个零件选过的刀
   camPanel.resetOperation();
   viewport.clearToolpath();
@@ -829,14 +838,34 @@ async function drawOperationToolpath(operation) {
 }
 
 /**
+ * 同步播放条「重置」按钮的显示与可点状态。
+ *
+ * 按钮只在 CAM 模式出现，而且**只有真有一份切削仿真可退**时才可点：没跑过仿真
+ * 就没有余料可删，与其点下去弹一句"没有仿真"，不如直接灰着。
+ *
+ * 仿真状态的改动集中在两处——`runSimulation`（建）与 `invalidateSimulation`（销）；
+ * 换工程 / 关工程会直接把 `cam.simulation` 清掉，所以那两处也要补一句同步。
+ */
+function syncSimulationControls() {
+  dom.simReset.hidden = mode !== "cam";
+  dom.simReset.disabled = mode !== "cam" || !cam.simulation;
+}
+
+/**
  * 作废上一次的切削仿真：刀路变了（重新生成 / 换工序 / 新增工序）就调用。
  *
  * 仿真结果是按**旧刀路**算的——还留在视口里会与新刀路叠在一起、影响观察；
  * 播放头、进度条、统计面板也全是旧数据。这里连数据带视口一起清干净：
  * 统计随 renderStats 回到刀路本身，再点「切削仿真」就是对新刀路的全新计算。
- * 原始毛坯**不受影响**：它由工具栏按钮与面板勾选显隐，与仿真余料是两回事。
+ *
+ * 被删掉的只有**仿真余料**：原始毛坯的网格不动，它与刀路的显隐本就由工具栏按钮
+ * 与面板勾选控制。仿真期间被自动关掉的那两个开关在这里一并还原——关它们是为了
+ * 给余料腾地方，仿真一没就该回到"零件 + 毛坯 + 刀路"的默认外观（播放条「重置」
+ * 要的正是这个效果）。只在**确有一份仿真被作废**时才还原：没有仿真时的开关是
+ * 用户自己调的，与仿真无关。
  */
 function invalidateSimulation() {
+  const hadSimulation = Boolean(cam.simulation);
   cam.simulation = null;
   cam.simulationFrame = 0;
   cam.playing = false;
@@ -847,12 +876,38 @@ function invalidateSimulation() {
   dom.play.textContent = "▶";
   dom.scrub.value = "0";
   dom.time.textContent = "0.00 / 0.00 s";
+  if (hadSimulation) {
+    camPanel.syncDisplay("showPath", true);
+    camPanel.syncDisplay("showStock", true);
+  }
+  syncSimulationControls();
+}
+
+/**
+ * 退出切削仿真，回到"生成刀路"环节（播放条「重置」按钮）。
+ *
+ * 仿真看完效果不理想时的出口：余料连数据带网格一起删掉（`invalidateSimulation`），
+ * 刀路与毛坯的显示重新点亮，统计回到刀路本身，进度条与播放头复位——
+ * 参数面板随即可以随便改，再点「生成刀路」就是对新参数的新结果。
+ */
+function resetSimulation() {
+  if (!cam.simulation) {
+    showBanner("当前没有切削仿真：先点顶栏「切削仿真」", "info");
+    return;
+  }
+  invalidateSimulation();
+  if (cam.lastResult) renderStats(cam.lastResult);
+  else renderStatsForMode();
+  showBanner("已退出切削仿真：仿真余料已删除，可改参数后重新生成刀路", "info");
 }
 
 /** 把一道 CAM 工序的结果画进视口（只在 CAM 模式下调用）。 */
 function applyCamResult(result) {
   // 画新刀路 = 上一次仿真作废（旧余料叠着新刀路会干扰观察）
   invalidateSimulation();
+  // 点「生成刀路」就是要看刀路：仿真期间它被自动关掉过、或用户手动隐藏过，
+  // 这里一律重新点亮——"点了生成却什么都看不见"最容易被当成按钮没反应。
+  camPanel.syncDisplay("showPath", true);
   cam.lastResult = result;
   viewport.setTool(result.tool);
   viewport.setPathOnly(result.toolpath);
@@ -1247,6 +1302,7 @@ async function runSimulation() {
     cam.simulation = result;
     cam.simulationFrame = 0;
     cam.playing = false;
+    syncSimulationControls();
     playback.load(null);
     simPath = buildSimPath(result.toolpath);
     simClock = 0;
@@ -1348,6 +1404,7 @@ async function openProjectDialog() {
       cam.operations = [];
       cam.simulation = null;
       cam.activeOperationId = null;
+      syncSimulationControls();
       tree.setOperations({ operations: [], templates: [] });
       viewport.clearToolpath();
       viewport.clearSimulation();
