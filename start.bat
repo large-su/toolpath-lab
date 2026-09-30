@@ -45,6 +45,8 @@ call :probe_numpy "%USERPROFILE%\miniconda3\python.exe"
 if defined PYTHON goto :python_ready
 call :probe_numpy "%USERPROFILE%\anaconda3\python.exe"
 if defined PYTHON goto :python_ready
+call :probe_numpy "D:\Softwares\anaconda3\envs\py311\python.exe"
+if defined PYTHON goto :python_ready
 for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python3*") do call :probe_numpy "%%D\python.exe"
 if defined PYTHON goto :python_ready
 call :probe_numpy "%ProgramData%\miniconda3\python.exe"
@@ -75,6 +77,16 @@ set "TOOLPATH_LAB_PYTHON=%PYTHON%"
 set "TOOLPATH_LAB_TIMING_LOG=%LAUNCH_LOG%"
 del "%LAUNCH_LOG%" >nul 2>nul
 echo [1/2] Python: %PYTHON%
+
+rem -- 1b. CAM geometry stack (OCP / pyclipper / opencamlib) -----------------
+rem Missing pieces do not block startup (the bench mode still works), but model
+rem import will fail, so warn once here instead of failing later.
+"%PYTHON%" -c "import OCP, pyclipper, opencamlib" >nul 2>nul
+if errorlevel 1 (
+  echo [info] CAM geometry libraries are missing ^(OCP / pyclipper / opencamlib^).
+  echo        Importing a model will not work. Install with:
+  echo            "%PYTHON%" -m pip install -r requirements.txt
+)
 
 rem -- 5. Electron ----------------------------------------------------------
 if exist "node_modules\electron\dist\electron.exe" goto :launch

@@ -25,6 +25,9 @@ class ParameterKind(str, Enum):
     INT = "int"
     BOOL = "bool"
     CHOICE = "choice"
+    #: 自由文本（例如刀具库里选中的刀具 id）。前端渲染成文本框，不做取值约束——
+    #: 取值是否合法由业务层校验（刀具 id 要真的存在），参数声明管不了这件事。
+    STRING = "string"
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +93,8 @@ class ParameterSpec:
             return self._coerce_bool(raw)
         if self.kind is ParameterKind.CHOICE:
             return self._coerce_choice(raw)
+        if self.kind is ParameterKind.STRING:
+            return self._coerce_string(raw)
         if self.kind is ParameterKind.INT:
             value = self._coerce_number(raw)
             if abs(value - round(value)) > 1e-9:
@@ -116,6 +121,13 @@ class ParameterSpec:
             options = ", ".join(sorted(allowed))
             raise ParameterError(f"参数 {self.key!r} 只能是 [{options}] 之一（收到 {value!r}）")
         return value
+
+    def _coerce_string(self, raw: Any) -> str:
+        if raw is None:
+            return ""
+        if isinstance(raw, bool) or isinstance(raw, (Mapping, list, tuple, set)):
+            raise ParameterError(f"参数 {self.key!r} 必须是文本（收到 {raw!r}）")
+        return str(raw).strip()
 
     def _coerce_number(self, raw: Any) -> float:
         if isinstance(raw, bool):

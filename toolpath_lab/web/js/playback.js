@@ -23,6 +23,8 @@ export class Playback {
     this.sampleCount = 0;
     this.kindNames = { 0: "cut", 1: "link", 2: "rapid" };
     this.onStateChange = null;
+    //: 播放倍速（由界面上的速度下拉框设置；仿真与实验台共用）
+    this.speed = 1;
   }
 
   load(timeline) {
@@ -94,6 +96,18 @@ export class Playback {
   stop() {
     this.playing = false;
     this.time = 0;
+    this._notify();
+  }
+
+  /** 单步前进：跳到下一个采样点（用于逐段检查刀路）。 */
+  stepForward() {
+    if (!this.timeline || this.sampleCount === 0) return;
+    const state = this.state();
+    const times = this.timeline.times;
+    let index = Math.min(state.index + 1, this.sampleCount - 1);
+    if (this.time >= this.duration) index = 0;
+    this.playing = false;
+    this.time = times[index];
     this._notify();
   }
 
