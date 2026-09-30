@@ -41,16 +41,42 @@ class ToolParameterTests(unittest.TestCase):
         self.assertEqual(tool.diameter_mm, 6.0)
         self.assertEqual(tool.length_mm, 30.0)
 
-    def test_only_the_flat_kind_is_selectable(self) -> None:
+    def test_all_tool_kinds_are_selectable(self) -> None:
         disabled = {choice.value: choice.disabled for choice in TOOL_KINDS}
         self.assertFalse(disabled["flat"])
-        self.assertTrue(disabled["ball"])
-        self.assertTrue(disabled["bull"])
+        self.assertFalse(disabled["ball"])
+        self.assertFalse(disabled["bull"])
 
     def test_parameter_choices_are_published_in_the_catalog(self) -> None:
         kind_spec = tool_parameters().spec("kind")
         self.assertEqual(len(kind_spec.choices), 3)
-        self.assertTrue(kind_spec.to_dict()["choices"][1]["disabled"])
+        self.assertFalse(kind_spec.to_dict()["choices"][1]["disabled"])
+        self.assertFalse(kind_spec.to_dict()["choices"][2]["disabled"])
+
+    def test_bull_tool_corner_controls_the_footprint(self) -> None:
+        """圆鼻刀的名义圆角 Rc 决定底面半径，进而决定刀路偏置量。"""
+
+        tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, corner_mm=2.0)
+        self.assertAlmostEqual(tool.corner_radius_mm, 2.0)
+        self.assertAlmostEqual(tool.footprint_radius_mm, 3.0)  # 5 - 2
+
+    def test_bull_tool_without_corner_behaves_like_flat(self) -> None:
+        tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, corner_mm=0.0)
+        self.assertAlmostEqual(tool.corner_radius_mm, 0.0)
+        self.assertAlmostEqual(tool.footprint_radius_mm, 5.0)
+
+    def test_corner_must_be_nonnegative_and_smaller_than_radius(self) -> None:
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, corner_mm=5.0)
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, corner_mm=-1.0)
+
+    def test_describe_exposes_the_corner_radius(self) -> None:
+        payload = Tool.from_parameters(
+            {"kind": "bull", "diameter_mm": 10.0, "length_mm": 45.0, "corner_mm": 2.0}
+        ).describe()
+        self.assertEqual(payload["corner_radius_mm"], 2.0)
+        self.assertEqual(payload["footprint_radius_mm"], 3.0)
 
     def test_describe_exposes_the_geometry(self) -> None:
         payload = Tool.from_parameters(

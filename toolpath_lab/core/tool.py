@@ -11,8 +11,8 @@ ball         -                   R                  0
 bull         R - Rc              Rc                 R - Rc
 ===========  ==================  =================  =======================
 
-当前对外只开放平底刀：其余两种在参数目录里标记为"待拓展"（Choice.disabled），
-想启用它们只需去掉那个标记，并补上对应的三维显示。
+三种刀具类型（平底刀 / 球头刀 / 圆鼻刀）均已开放：平底刀与球头刀为常见基准形态，
+圆鼻刀可通过"刀尖圆角半径 Rc"参数自由调节刀尖圆角，用于不同的加工残留高度控制。
 """
 
 from __future__ import annotations
@@ -39,11 +39,11 @@ class ToolKind(str, Enum):
     BULL = "bull"
 
 
-#: 参数目录里的刀具类型选项；disabled 的项在界面上不可选。
+#: 参数目录里的刀具类型选项。
 TOOL_KINDS: tuple[Choice, ...] = (
     Choice(ToolKind.FLAT.value, "平底刀 Flat end mill"),
-    Choice(ToolKind.BALL.value, "球头刀 Ball nose（待拓展）", disabled=True),
-    Choice(ToolKind.BULL.value, "圆鼻刀 Bull nose（待拓展）", disabled=True),
+    Choice(ToolKind.BALL.value, "球头刀 Ball nose"),
+    Choice(ToolKind.BULL.value, "圆鼻刀 Bull nose"),
 )
 
 TOOL_KIND_LABELS: dict[str, str] = {choice.value: choice.label for choice in TOOL_KINDS}
@@ -55,9 +55,11 @@ def tool_parameters() -> ParameterSet:
     return ParameterSet(
         (
             spec("kind", "刀具类型", K.CHOICE, ToolKind.FLAT.value, group="刀具",
-                 choices=TOOL_KINDS, help="球头刀与圆鼻刀留作拓展，启用方式见 docs/extending.md"),
+                 choices=TOOL_KINDS, help="平底刀 / 球头刀 / 圆鼻刀三种刀具类型"),
             spec("diameter_mm", "刀具直径 D", K.FLOAT, 6.0, minimum=1.0, maximum=100.0,
                  step=0.5, unit="mm", group="刀具"),
+            spec("corner_mm", "刀尖圆角半径 Rc", K.FLOAT, 0.0, minimum=0.0, maximum=50.0,
+                 step=0.5, unit="mm", group="刀具", help="仅圆鼻刀生效；球头刀的圆角恒等于刀具半径"),
             spec("length_mm", "刀具长度 L", K.FLOAT, 30.0, minimum=2.0, maximum=300.0,
                  step=1.0, unit="mm", group="刀具", help="参与三维显示，也是将来做碰撞检查的输入"),
         )
@@ -71,12 +73,17 @@ class Tool:
     kind: ToolKind = ToolKind.FLAT
     diameter_mm: float = 6.0
     length_mm: float = 30.0
+    corner_mm: float = 0.0
 
     def __post_init__(self) -> None:
         if not isfinite(self.diameter_mm) or self.diameter_mm <= 0:
             raise ParameterError("刀具直径必须是有限正数")
         if not isfinite(self.length_mm) or self.length_mm <= 0:
             raise ParameterError("刀具长度必须是有限正数")
+        if not isfinite(self.corner_mm) or self.corner_mm < 0:
+            raise ParameterError("刀具圆角半径必须是有限非负数")
+        if self.corner_mm >= self.radius_mm:
+            raise ParameterError("刀具圆角半径必须小于刀具半径")
 
     @classmethod
     def from_parameters(cls, params: Mapping[str, Any]) -> "Tool":
@@ -86,6 +93,7 @@ class Tool:
             kind=ToolKind(str(params["kind"])),
             diameter_mm=float(params["diameter_mm"]),
             length_mm=float(params["length_mm"]),
+            corner_mm=float(params.get("corner_mm", 0.0)),
         )
 
     @property
@@ -94,10 +102,12 @@ class Tool:
 
     @property
     def corner_radius_mm(self) -> float:
-        """刀尖圆角半径（平底刀为 0，球头刀等于半径）。"""
+        """刀尖圆角半径（平底刀为 0，球头刀等于半径，圆鼻刀取名义圆角 Rc）。"""
 
         if self.kind is ToolKind.BALL:
             return self.radius_mm
+        if self.kind is ToolKind.BULL:
+            return self.corner_mm
         return 0.0
 
     @property
@@ -107,7 +117,7 @@ class Tool:
         if self.kind is ToolKind.BALL:
             return 0.0
         if self.kind is ToolKind.BULL:
-            return max(0.0, self.radius_mm - self.corner_radius_mm)
+            return max(0.0, self.radius_mm - self.corner_mm)
         return self.radius_mm
 
     def describe(self) -> dict[str, Any]:
@@ -118,6 +128,7 @@ class Tool:
             "kind_label": TOOL_KIND_LABELS[self.kind.value],
             "diameter_mm": self.diameter_mm,
             "radius_mm": self.radius_mm,
+            "corner_radius_mm": self.corner_radius_mm,
             "length_mm": self.length_mm,
             "footprint_radius_mm": self.footprint_radius_mm,
         }

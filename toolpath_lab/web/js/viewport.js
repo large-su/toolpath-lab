@@ -252,27 +252,67 @@ export class Viewport {
     const flute = Math.min(length * 0.65, radius * 6);
     const holder = Math.max(length - flute, length * 0.2);
 
-    // 两段都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
-    // 黄色切削段对齐 UGNX 的刀具配色。
-    const cutting = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, flute, 64),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.tool, metalness: 0.5, roughness: 0.34,
-      })
-    );
+    const toolMaterial = () => new THREE.MeshStandardMaterial({
+      color: COLORS.tool, metalness: 0.5, roughness: 0.34,
+    });
+
+    // 按刀具类型拼切削段（统一沿 Z 轴竖放，z=0 为加工面）：
+    //   平底刀 flat —— 整段圆柱 [0, flute]；
+    //   球头刀 ball —— 半球刀头 [0, radius] + 上方圆柱 [radius, flute]；
+    //   圆鼻刀 bull —— 圆柱刀体 [0, flute] + 底面外缘的圆角环。
+    const cuttingParts = [];
+    if (tool.kind === "ball") {
+      const body = new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, Math.max(flute - radius, 0.2), 64),
+        toolMaterial()
+      );
+      body.position.z = radius + body.geometry.parameters.height / 2;
+      const tip = new THREE.Mesh(
+        new THREE.SphereGeometry(radius, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
+        toolMaterial()
+      );
+      tip.position.z = radius; // 球心在 z=radius，刀尖正好落在 z=0 加工面
+      cuttingParts.push(body, tip);
+    } else if (tool.kind === "bull") {
+      const body = new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, flute, 64),
+        toolMaterial()
+      );
+      body.position.z = flute / 2;
+      cuttingParts.push(body);
+      const corner = Math.max(Number(tool.corner_radius_mm) || 0, 0);
+      if (corner > 0.001) {
+        const fillet = new THREE.Mesh(
+          new THREE.TorusGeometry(Math.max(radius - corner, 0.001), corner, 16, 64),
+          toolMaterial()
+        );
+        fillet.position.z = corner;
+        cuttingParts.push(fillet);
+      }
+    } else {
+      const body = new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, flute, 64),
+        toolMaterial()
+      );
+      body.position.z = flute / 2;
+      cuttingParts.push(body);
+    }
+
     const shank = new THREE.Mesh(
       new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
       new THREE.MeshStandardMaterial({
         color: COLORS.holder, metalness: 0.92, roughness: 0.24,
       })
     );
-    for (const mesh of [cutting, shank]) {
+    for (const mesh of [...cuttingParts, shank]) {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.toolGroup.add(mesh);
     }
-    cutting.rotation.x = Math.PI / 2;
-    cutting.position.z = flute / 2;
+    // 沿 Z 轴竖放：切削段顶端统一在 z=flute，刀柄底端贴住它向上延伸。
+    for (const mesh of cuttingParts) {
+      mesh.rotation.x = Math.PI / 2;
+    }
     shank.rotation.x = Math.PI / 2;
     shank.position.z = flute + holder / 2;
     this.toolMesh = this.toolGroup;
