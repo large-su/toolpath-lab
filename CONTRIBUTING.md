@@ -23,15 +23,17 @@ python -m unittest discover -s tests        # 必须全绿
 python examples/headless_plan.py            # 库路径仍然可用
 node --check electron/main.mjs              # 桌面壳语法
 node --check toolpath_lab/web/js/main.js    # 前端语法（换成任一模块都可以）
-node tools/check_frontend_geometry.mjs      # 前端几何自检：刀路抬升、刀尖位置、工件法向
+node tools/check_frontend_geometry.mjs      # 前端几何与仿真自检（刀路抬升、刀尖、毛坯、切削高度场）
+python tools/docs/build.py                  # 改了 tools/docs/content.py 时重建 Word/PPT（需 python-docx / python-pptx / Pillow）
 ```
 
 `tools/check_frontend_geometry.mjs` 专门盯"Python 测试覆盖不到、又要肉眼才看得出"的几条不变量：
 刀路抬升必须保留真实 Z（曾经把 Z 换成固定抬升量，斜面上刀路整个横在基准平面）、三种刀具的刀尖
-都落在 Z = 0、斜面工件的三角形法向朝外。它不联网、不需要 npm install（自己把 node_modules/three
-指向仓库自带的 vendor）。
+都落在 Z = 0、斜面工件的三角形法向朝外、毛坯贴合区域、切削仿真走完刀路后内部全部到加工面。
+它不联网、不需要 npm install（自己把 node_modules/three 指向仓库自带的 vendor）。
 
-改了界面就打开窗口点一遍：参数面板能生成、视图能切、播放能拖、导出能出文件。
+改了界面就打开窗口点一遍：参数面板能生成、视图能切、播放能拖、导出能出文件；
+点「生成毛坯」再播放，看毛坯是否随刀具被削掉、走完剩下的是不是区域形状。
 
 ## 代码约定
 
@@ -43,6 +45,8 @@ node tools/check_frontend_geometry.mjs      # 前端几何自检：刀路抬升�
 - **错误类型**：ParameterError（用户输入）、PlanningError（几何不可行）、ToolpathLabError（其它）。
 - **不变式**：区域边界逆时针且不含重复点；Toolpath 至少一段运动；Move 至少两个点。
   这些在 `__post_init__` 里校验，请不要绕过。
+- **既有行为优先**：新能力默认不要改变老刀路——例如分层深度的默认值是 0（不分层），
+  改完要用"逐点一致"的测试守住这一点；同理，刀心范围、切宽与环距的收紧都要给出提醒，不能悄悄变。
 - **注释**：解释"为什么"，不要复述代码；文档字符串用英文，用户可见文案用中文。
 
 ## 新增能力的步骤

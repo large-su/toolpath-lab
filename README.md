@@ -182,7 +182,8 @@ toolpath_lab/
 electron/      桌面壳：拉起 Python 后端并承载窗口
 examples/      命令行示例与示例插件
 tests/         单元测试
-tools/         前端几何自检（node tools/check_frontend_geometry.mjs）
+tools/         校验与文档工具：前端几何自检（tools/check_frontend_geometry.mjs）、
+               开发记录文档工具链（tools/docs：内容源 + 一键重建 + 两道自检）
 docs/          架构与扩展文档
 ```
 
