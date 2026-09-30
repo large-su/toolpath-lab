@@ -107,7 +107,31 @@ class SquareRegion(RegionShape):
             [(-half, -half), (half, -half), (half, half), (-half, half)],
             dtype=np.float64,
         )
+        
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class EllipseRegion(RegionShape):
+    semi_major_mm: float = 60.0
+    semi_minor_mm: float = 40.0
 
+    id: ClassVar[str] = "ellipse"
+    label: ClassVar[str] = "椭圆"
+    description: ClassVar[str] = "长半轴 / 短半轴定义的椭圆"
+    parameters: ClassVar[ParameterSet] = ParameterSet((
+        spec("semi_major_mm", "长半轴", K.FLOAT, 60.0, minimum=1.0, maximum=500.0,
+             step=1.0, unit="mm", group="区域"),
+        spec("semi_minor_mm", "短半轴", K.FLOAT, 40.0, minimum=1.0, maximum=500.0,
+             step=1.0, unit="mm", group="区域"),
+    ))
+
+    def __post_init__(self) -> None:
+        if self.semi_major_mm <= 0 or self.semi_minor_mm <= 0:
+            raise ParameterError("椭圆的半轴长度必须为正")
+
+    def boundary(self) -> NDArray[np.float64]:
+        angles = np.linspace(0.0, 2.0 * np.pi, CIRCLE_SEGMENTS, endpoint=False)
+        return np.column_stack((self.semi_major_mm * np.cos(angles),
+                                self.semi_minor_mm * np.sin(angles)))
 
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
@@ -145,3 +169,4 @@ def build_region(shape_id: str, raw_parameters: Mapping[str, Any] | None = None)
 
 def region_catalog() -> list[dict[str, Any]]:
     return REGION_SHAPES.catalog()
+
