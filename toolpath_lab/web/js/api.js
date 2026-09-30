@@ -28,8 +28,8 @@ export async function requestPlan(payload) {
   return response.json();
 }
 
-export async function downloadGcode(payload) {
-  const response = await fetch("/api/export/gcode", {
+async function downloadExport(payload, endpoint, fallbackName) {
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
@@ -38,7 +38,7 @@ export async function downloadGcode(payload) {
   const blob = await response.blob();
   const disposition = response.headers.get("Content-Disposition") || "";
   const match = /filename="?([^"]+)"?/.exec(disposition);
-  const name = match ? match[1] : "toolpath.nc";
+  const name = match ? match[1] : fallbackName;
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -48,4 +48,12 @@ export async function downloadGcode(payload) {
   anchor.remove();
   URL.revokeObjectURL(url);
   return name;
+}
+
+export async function downloadGcode(payload) {
+  return downloadExport(payload, "/api/export/gcode", "toolpath.nc");
+}
+
+export async function downloadTxt(payload) {
+  return downloadExport(payload, "/api/export/txt", "toolpath.txt");
 }

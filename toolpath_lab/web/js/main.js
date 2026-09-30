@@ -1,6 +1,6 @@
 // 应用装配：目录 -> 参数面板 -> 规划请求 -> 视口与播放。
 
-import { downloadGcode, fetchCatalog, requestPlan } from "./api.js";
+import { downloadGcode, downloadTxt, fetchCatalog, requestPlan } from "./api.js";
 import { ParameterPanel } from "./panel.js";
 import { Playback } from "./playback.js";
 import { VIEW_BUTTONS, Viewport } from "./viewport.js";
@@ -15,6 +15,7 @@ const dom = {
   banner: document.getElementById("banner"),
   generate: document.getElementById("btn-generate"),
   exportButton: document.getElementById("btn-export"),
+  exportTxtButton: document.getElementById("btn-export-txt"),
   play: document.getElementById("btn-play"),
   stop: document.getElementById("btn-stop"),
   scrub: document.getElementById("scrub"),
@@ -138,6 +139,7 @@ function wireAppearanceToolbar() {
 function wireButtons() {
   dom.generate.addEventListener("click", () => regenerate());
   dom.exportButton.addEventListener("click", exportGcode);
+  dom.exportTxtButton.addEventListener("click", exportTxt);
   dom.play.addEventListener("click", () => playback.toggle());
   dom.stop.addEventListener("click", () => playback.stop());
   dom.scrub.addEventListener("input", () => {
@@ -187,6 +189,15 @@ async function regenerate() {
 async function exportGcode() {
   try {
     const name = await downloadGcode(panel.payload());
+    showBanner("已导出 " + name, "info");
+  } catch (error) {
+    showBanner("导出失败：" + error.message);
+  }
+}
+
+async function exportTxt() {
+  try {
+    const name = await downloadTxt(panel.payload());
     showBanner("已导出 " + name, "info");
   } catch (error) {
     showBanner("导出失败：" + error.message);

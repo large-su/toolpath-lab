@@ -59,8 +59,13 @@ function orientation(view) {
 }
 
 // 刀路整体抬高一点点画，避免与工件上表面互相穿插（z-fighting）。
-function liftPaths(polylines) {
-  return polylines.map((points) => points.map((point) => [point[0], point[1], PATH_LIFT_MM]));
+// 刀路贴近工件表面时略微抬高；保留快速移动的真实 Z 高度。
+function liftPaths(polylines, preserveHeight = false) {
+  return polylines.map((points) => points.map((point) => [
+    point[0],
+    point[1],
+    preserveHeight ? point[2] + PATH_LIFT_MM : PATH_LIFT_MM,
+  ]));
 }
 
 function polylineGeometry(polylines, dashed = false) {
@@ -195,14 +200,16 @@ export class Viewport {
     for (const move of payload.toolpath.moves) {
       (groups[move.kind] || groups.cut).push(move.points);
     }
-    for (const kind of Object.keys(groups)) groups[kind] = liftPaths(groups[kind]);
+    groups.cut = liftPaths(groups.cut);
+    groups.link = liftPaths(groups.link);
+    groups.rapid = liftPaths(groups.rapid, true);
     this.pathGroup.add(this._line(groups.cut, COLORS.cut, 1));
     this.pathGroup.add(this._line(groups.link, COLORS.link, 1));
     this.rapidLine = this._line(groups.rapid, COLORS.rapid, 0.75, true);
     this.pathGroup.add(this.rapidLine);
 
     if (payload.timeline && payload.timeline.positions) {
-      const geometry = polylineGeometry([liftPaths([payload.timeline.positions])[0]]);
+      const geometry = polylineGeometry([liftPaths([payload.timeline.positions], true)[0]]);
       this.traceLine = new THREE.LineSegments(
         geometry,
         new THREE.LineBasicMaterial({ color: COLORS.trace, transparent: true, opacity: 0.95 })
@@ -252,10 +259,41 @@ export class Viewport {
     const flute = Math.min(length * 0.65, radius * 6);
     const holder = Math.max(length - flute, length * 0.2);
 
-    // 两段都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
-    // 黄色切削段对齐 UGNX 的刀具配色。
+    let cuttingGeometry;
+    if (tool.kind === "ball") {
+      const tipHeight = Math.min(radius, flute);
+      const points = [new THREE.Vector2(0, 0)];
+      for (let index = 1; index <= 16; index += 1) {
+        const z = tipHeight * index / 16;
+        const radial = Math.sqrt(Math.max(0, radius * radius - (radius - z) ** 2));
+        points.push(new THREE.Vector2(radial, z));
+      }
+      if (tipHeight < flute) points.push(new THREE.Vector2(radius, flute));
+      points.push(new THREE.Vector2(0, flute));
+      cuttingGeometry = new THREE.LatheGeometry(points, 64);
+    } else if (tool.kind === "bull") {
+      const cornerRadius = Math.min(tool.corner_radius_mm, radius);
+      const points = [new THREE.Vector2(0, 0), new THREE.Vector2(radius - cornerRadius, 0)];
+      const endAngle = Math.min(
+        Math.PI / 2,
+        Math.asin(Math.max(-1, Math.min(1, flute / cornerRadius - 1)))
+      );
+      for (let index = 1; index <= 16; index += 1) {
+        const angle = -Math.PI / 2 + endAngle * index / 16;
+        points.push(new THREE.Vector2(
+          radius - cornerRadius + cornerRadius * Math.cos(angle),
+          cornerRadius + cornerRadius * Math.sin(angle)
+        ));
+      }
+      if (cornerRadius < flute) points.push(new THREE.Vector2(radius, flute));
+      points.push(new THREE.Vector2(0, flute));
+      cuttingGeometry = new THREE.LatheGeometry(points, 64);
+    } else {
+      cuttingGeometry = new THREE.CylinderGeometry(radius, radius, flute, 64);
+    }
+
     const cutting = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, flute, 64),
+      cuttingGeometry,
       new THREE.MeshStandardMaterial({
         color: COLORS.tool, metalness: 0.5, roughness: 0.34,
       })
@@ -272,7 +310,7 @@ export class Viewport {
       this.toolGroup.add(mesh);
     }
     cutting.rotation.x = Math.PI / 2;
-    cutting.position.z = flute / 2;
+    if (tool.kind === "flat") cutting.position.z = flute / 2;
     shank.rotation.x = Math.PI / 2;
     shank.position.z = flute + holder / 2;
     this.toolMesh = this.toolGroup;
@@ -375,9 +413,28 @@ export class Viewport {
       mesh.receiveShadow = true;
       return mesh;
     }
+    if (region.id === "ellipse") {
+      const shape = new THREE.Shape();
+      const boundary = region.boundary;
+      boundary.forEach((point, index) => {
+        const x = point[0];
+        const y = point[1];
+        if (index === 0) shape.moveTo(x, y);
+        else shape.lineTo(x, y);
+      });
+      shape.closePath();
+      const geometry = new THREE.ExtrudeGeometry(shape, {
+        depth: thickness,
+        bevelEnabled: false,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.z = -thickness ;
+      mesh.receiveShadow = true;
+      return mesh;
+    }
     const side = region.bounds_mm[0][1] - region.bounds_mm[0][0];
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(side, side, thickness), material);
-    mesh.position.z = -thickness / 2;
+    mesh.position.z = -thickness /2;
     mesh.receiveShadow = true;
     return mesh;
   }
