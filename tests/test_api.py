@@ -115,6 +115,16 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(fixed["safe_height_mm"], 5.0)
         self.assertEqual(fixed["rapid_feed_mm_per_min"], 5000.0)
 
+    def test_catalog_publishes_the_stock_group(self) -> None:
+        _, body, _ = self.get("/api/catalog")
+        stock = json.loads(body)["stock"]
+        self.assertEqual(
+            [item["key"] for item in stock["parameters"]],
+            ["depth_mm", "top_mm", "margin_mm", "resolution_mm", "frame_budget"],
+        )
+        self.assertEqual(stock["defaults"]["frame_budget"], 24)
+        self.assertGreater(stock["simulation"]["max_grid_cells"], 0)
+
     def test_disabled_tool_kinds_are_published(self) -> None:
         _, body, _ = self.get("/api/catalog")
         kinds = json.loads(body)["tool"]["parameters"][0]["choices"]
@@ -199,6 +209,55 @@ class PlanTests(ApiTestCase):
         with self.assertRaises(urllib.error.HTTPError) as context:
             urllib.request.urlopen(request, timeout=30)
         self.assertEqual(context.exception.code, 400)
+
+
+class StockSimulationTests(ApiTestCase):
+    """材料切除仿真在接口层的表现。"""
+
+    def test_plan_carries_the_carved_stock(self) -> None:
+        status, payload, _ = self.plan({})
+        self.assertEqual(status, 200)
+        stock = payload["stock"]
+        self.assertIsNotNone(stock)
+        self.assertTrue(stock["enabled"])
+        self.assertEqual(stock["columns"], stock["rows"])  # 默认方形区域
+        self.assertGreater(stock["statistics"]["cut_cells"], 0)
+        self.assertEqual(len(stock["times"]), len(stock["frames"]))
+        # 初始帧是完整毛坯，没有增量；随后的帧才带数据。
+        self.assertEqual(stock["frames"][0], [])
+        self.assertTrue(any(runs for runs in stock["frames"][1:]))
+
+    def test_stock_parameters_are_echoed_back(self) -> None:
+        _, payload, _ = self.plan(
+            {"stock": {"depth_mm": 8.0, "resolution_mm": 0.5, "frame_budget": 8}}
+        )
+        self.assertEqual(payload["request"]["stock"]["depth_mm"], 8.0)
+        self.assertEqual(payload["request"]["stock"]["resolution_mm"], 0.5)
+        self.assertEqual(payload["stock"]["statistics"]["frame_count"] - 1, 8)
+
+    def test_invalid_stock_parameter_is_a_bad_request(self) -> None:
+        status, payload, _ = self.plan({"stock": {"depth_mm": -5.0}})
+        self.assertEqual(status, 400)
+        self.assertIn("depth_mm", payload["error"])
+
+    def test_more_frames_never_lose_the_final_shape(self) -> None:
+        # 帧数不同只改变动画的中间状态，终态（最后一帧）必须一样。
+        _, sparse, _ = self.plan({"stock": {"frame_budget": 4, "resolution_mm": 1.0}})
+        _, dense, _ = self.plan({"stock": {"frame_budget": 16, "resolution_mm": 1.0}})
+        self.assertEqual(
+            sparse["stock"]["statistics"]["cut_cells"],
+            dense["stock"]["statistics"]["cut_cells"],
+        )
+        self.assertEqual(
+            sparse["stock"]["statistics"]["removed_volume_mm3"],
+            dense["stock"]["statistics"]["removed_volume_mm3"],
+        )
+        self.assertNotEqual(sparse["stock"]["times"], dense["stock"]["times"])
+
+    def test_export_does_not_waste_time_on_the_simulation(self) -> None:
+        status, body, _ = self.post("/api/export/gcode", {})
+        self.assertEqual(status, 200)
+        self.assertIn(b"M30", body)
 
 
 class ExportTests(ApiTestCase):
