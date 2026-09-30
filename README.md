@@ -22,11 +22,13 @@ ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形�
   `Rc = 0` 就退化成平底刀，`Rc = R` 就退化成球头刀。足迹半径决定刀路相对区域轮廓的偏置量。
 
 ![三种刀尖：平底刀 R、球头刀点接触、圆鼻刀 R − Rc](docs/images/tool-tips.png)
-- **区域**：以原点为中心的三种形状
+- **区域**：以原点为中心的四种形状
   - **方形**（边长）与**圆形**（直径），加工面是 XY 平面；
   - **斜坡**：XY 投影仍是方形（默认 80 × 80），以 **+X 方向最外侧边为低边**、沿 −X 方向抬起，
     斜度可调（最大 80°），最高升到 80 mm 之后转为平顶（平顶落在高的一侧）；
-    加工面以下保留与其它区域相同的基体高度。
+    加工面以下保留与其它区域相同的基体高度；
+  - **柱面**：XY 投影同样是方形，加工面是沿 Y 轴拱起的圆柱面，拱高可调
+    （0 就是平面，最大是边长的一半＝半圆柱），刀路会沿折线自动加密贴合曲面。
 - **刀路**：两种策略
   - **栅格刀路**：平行扫描线，两种模式——**往复 Zigzag**（奇数刀反向，相邻两刀在端头直接连过去）
     与**单向 One-way**（每刀同向，刀与刀之间抬刀到安全面再回到起点）；
@@ -163,10 +165,10 @@ docs/          架构与扩展文档
 
 | 常量 | 值 | 位置 |
 | --- | --- | --- |
-| 安全高度 | 5 mm（相对加工面之上） | `toolpath_lab/planning/base.py` |
+| 安全高度 | 5 mm：抬到该段快移**经过的加工面最高点**之上 | `toolpath_lab/planning/base.py` |
 | 快移速度 | 5000 mm/min | `toolpath_lab/planning/base.py` |
 | 边界处理 | 刀路相对区域轮廓内缩一个刀具足迹半径 | `planning/raster.py`、`planning/follow_periphery.py` |
-| 每刀采样 | 平面区域两个端点；斜面在平顶折痕处补一个点 | `toolpath_lab/planning/base.py` |
+| 每刀采样 | 平面区域两个端点；斜面在平顶折痕处补一点；柱面沿折线每 1 mm 取一点 | `toolpath_lab/core/region.py`、`toolpath_lab/planning/base.py` |
 | 环间连接 | 所有环同向绕行，环间沿同一条缝径向过渡一个切宽、不抬刀 | `toolpath_lab/planning/follow_periphery.py` |
 | 斜坡 Z 上限 | 80 mm（超过就转平顶） | `toolpath_lab/core/region.py` |
 | 基体厚度 | 区域跨度的 9%，限幅 4–24 mm（80 方形即 7.2 mm） | `toolpath_lab/web/js/viewport.js` |

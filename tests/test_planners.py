@@ -266,6 +266,81 @@ class BullToolTests(unittest.TestCase):
         self.assertAlmostEqual(levels[-1], 40.0, places=6)
 
 
+def _crown_plan(parameters=None, *, crown: float = 30.0, kind: ToolKind = ToolKind.FLAT):
+    options = {"mode": "one_way", "stepover_mm": 6.0, "direction_deg": 0.0,
+               "feed_mm_per_min": 600.0}
+    options.update(parameters or {})
+    return run_plan(
+        planner_id="raster",
+        tool=_tool(kind=kind),
+        region=build_region("cylinder", {"side_mm": 80.0, "crown_mm": crown}),
+        parameters=options,
+    )
+
+
+class CurvedSurfaceTests(unittest.TestCase):
+    """柱面：折线按采样步长加密，逐点落在圆弧上；平面与斜面不受影响。"""
+
+    def test_passes_are_densified_along_the_surface(self) -> None:
+        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
+        move = _cut_moves(_crown_plan().toolpath)[0]
+        self.assertGreater(move.points.shape[0], 60)  # 而不是两个端点
+        self.assertTrue(
+            np.allclose(move.points[:, 2], region.height_at(move.points[:, :2]), atol=1e-9)
+        )
+
+    def test_densified_points_stay_on_the_arc(self) -> None:
+        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
+        radius = region.crown_radius_mm
+        move = _cut_moves(_crown_plan().toolpath)[0]
+        centre_z = 30.0 - radius
+        distances = np.sqrt(move.points[:, 0] ** 2 + (move.points[:, 2] - centre_z) ** 2)
+        self.assertTrue(np.allclose(distances, radius, atol=1e-9))
+
+    def test_chord_error_stays_small(self) -> None:
+        # 1 mm 步长在半径 41.7 mm 的弧上：最陡处弦高误差 ≈ |z''|·h²/8 ≈ 0.03 mm
+        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
+        move = _cut_moves(_crown_plan().toolpath)[0]
+        samples = np.linspace(-37.0, 37.0, 400)
+        exact = region.height_at(np.column_stack((samples, np.zeros_like(samples))))
+        interpolated = np.interp(samples, move.points[:, 0], move.points[:, 2])
+        self.assertLess(float(np.abs(exact - interpolated).max()), 0.05)
+
+    def test_pass_levels_and_inset_are_unchanged(self) -> None:
+        levels = _pass_levels(_crown_plan())
+        self.assertAlmostEqual(levels[0], -37.0, places=6)
+        self.assertAlmostEqual(levels[-1], 37.0, places=6)
+
+    def test_safe_height_clears_the_crown(self) -> None:
+        toolpath = _crown_plan().toolpath
+        cuts = _cut_moves(toolpath)
+        rapids = [m for m in toolpath.moves if m.kind is MoveKind.RAPID]
+        highest_cut = max(float(m.points[:, 2].max()) for m in cuts)
+        highest_rapid = max(float(m.points[:, 2].max()) for m in rapids)
+        # 单向走刀的横移会横扫整个拱顶，所以安全面必须按"路径经过的最高点"算
+        self.assertAlmostEqual(highest_rapid, highest_cut + SAFE_HEIGHT_MM, places=6)
+
+    def test_rapids_never_dip_below_the_surface(self) -> None:
+        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
+        for move in _crown_plan().toolpath.moves:
+            if move.kind is not MoveKind.RAPID:
+                continue
+            for start, end in zip(move.points, move.points[1:]):
+                along = np.linspace(0.0, 1.0, 40)[:, None]
+                path = start + along * (end - start)
+                clearance = path[:, 2] - region.height_at(path[:, :2])
+                self.assertGreaterEqual(float(clearance.min()), -1e-9)
+
+    def test_cutting_length_grows_with_the_crown(self) -> None:
+        flat = _plan({"mode": "one_way"}).toolpath.cut_length_mm
+        self.assertGreater(_crown_plan().toolpath.cut_length_mm, flat)
+
+    def test_flat_and_ramp_keep_their_two_point_passes(self) -> None:
+        self.assertEqual(_cut_moves(_plan({"mode": "one_way"}).toolpath)[0].points.shape, (2, 3))
+        self.assertEqual(_cut_moves(_ramp_plan(angle=30.0).toolpath)[0].points.shape, (2, 3))
+        self.assertEqual(_cut_moves(_ramp_plan(angle=60.0).toolpath)[0].points.shape, (3, 3))
+
+
 class CircleRegionTests(unittest.TestCase):
     def test_circle_passes_are_shorter_than_the_square(self) -> None:
         circle = run_plan(

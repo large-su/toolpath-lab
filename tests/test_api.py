@@ -107,7 +107,7 @@ class CatalogTests(ApiTestCase):
         )
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]),
-            ["circle", "ramp", "square"],
+            ["circle", "cylinder", "ramp", "square"],
         )
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
@@ -221,6 +221,33 @@ class PlanTests(ApiTestCase):
         # 刀路的 Z 跟着斜面下降（+X 是低边）
         first_cut = [move for move in payload["toolpath"]["moves"] if move["kind"] == "cut"][0]
         self.assertLess(first_cut["points"][-1][2], first_cut["points"][0][2])
+
+    def test_cylinder_region_reports_a_swept_surface(self) -> None:
+        status, payload, _ = self.plan(
+            {
+                "region": {"shape": "cylinder",
+                           "parameters": {"side_mm": 80.0, "crown_mm": 30.0}},
+                "planner": {"id": "raster", "parameters": {"stepover_mm": 6.0}},
+            }
+        )
+        self.assertEqual(status, 200)
+        region = payload["region"]
+        self.assertEqual(region["id"], "cylinder")
+        surface = region["surface"]
+        self.assertEqual(surface["kind"], "sweep")
+        self.assertEqual(surface["axis"], "y")
+        self.assertEqual(surface["crown_mm"], 30.0)
+        self.assertAlmostEqual(surface["crown_radius_mm"], 41.6667, places=3)
+        self.assertEqual(len(surface["profile"]), 81)
+        # 轮廓沿 X 加密（162 点），Z 从边缘 0 到拱顶 30
+        self.assertEqual(len(region["boundary"]), 162)
+        self.assertAlmostEqual(max(point[2] for point in region["boundary"]), 30.0, places=9)
+        self.assertAlmostEqual(min(point[2] for point in region["boundary"]), 0.0, places=9)
+        # 曲面没有共面分片，前端改用母线扫掠
+        self.assertEqual(region["top_patches"], [])
+        # 刀路被加密：一刀远多于两个点
+        first_cut = [move for move in payload["toolpath"]["moves"] if move["kind"] == "cut"][0]
+        self.assertGreater(len(first_cut["points"]), 60)
 
     def test_flat_region_reports_a_flat_surface(self) -> None:
         _, payload, _ = self.plan({})

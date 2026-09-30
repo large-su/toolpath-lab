@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
+
 from toolpath_lab.core.path import MoveKind
 from toolpath_lab.core.region import build_region
 from toolpath_lab.core.tool import Tool, ToolKind
 from toolpath_lab.export import toolpath_to_gcode
-from toolpath_lab.planning import run_plan
+from toolpath_lab.planning import SAFE_HEIGHT_MM, run_plan
 from toolpath_lab.simulation import build_timeline
 
 
@@ -112,6 +114,19 @@ class GcodeTests(unittest.TestCase):
         text = toolpath_to_gcode(toolpath, program_name="RAMP")
         self.assertIn("Z80.000", text)   # 平顶上的切削
         self.assertIn("Z85.000", text)   # 平顶之上 5 mm 的安全面
+
+    def test_cylinder_gcode_follows_the_crown(self) -> None:
+        region = build_region("cylinder", {"side_mm": 80.0, "crown_mm": 30.0})
+        toolpath = run_plan(
+            planner_id="raster",
+            tool=Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=30.0),
+            region=region,
+            parameters={"mode": "one_way", "stepover_mm": 20.0, "feed_mm_per_min": 600.0},
+        ).toolpath
+        text = toolpath_to_gcode(toolpath, program_name="CROWN")
+        self.assertIn("Z30.000", text)  # 拱顶那一点
+        self.assertIn("Z35.000", text)  # 横移扫过拱顶，安全面 = 拱顶 + 5
+        self.assertNotIn("Z-0.000", text)  # 边缘处不该出现负零
 
 
 if __name__ == "__main__":

@@ -27,6 +27,8 @@ from toolpath_lab.planning.geometry2d import ensure_ccw
 SAFE_HEIGHT_MM = 5.0
 #: 快速移动的进给速度（mm/min）。
 RAPID_FEED_MM_PER_MIN = 5000.0
+#: 计算横移安全面时沿路径的采样步长（mm）；区域自带曲面采样步长时用区域的那个。
+SAFE_SAMPLE_STEP_MM = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,27 +55,41 @@ class PlanningContext:
     def to_positions(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
         """把平面点 (N, 2) 抬成工件坐标下的 (N, 3)：Z 取**加工面**在该点的高度。
 
-        平面区域是 Z = 0；斜面这类分片平面的区域会先在折痕处补点，所以折线始终贴合加工面，
-        策略本身不需要知道加工面是平的还是斜的。
+        平面区域是 Z = 0，斜面这类分片平面的区域会先在折痕处补点，曲面区域会按采样步长
+        加密，所以折线始终贴合加工面——策略不需要知道加工面是平的、斜的还是弯的。
         """
 
         planar = self.surface_polyline(points_xy)
         return np.column_stack((planar, self.region.height_at(planar)))
 
     def surface_polyline(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
-        """在加工面的折角处给折线补点；平面区域原样返回（"一刀两个点"因此不变）。"""
+        """把折线补成贴合加工面的折线：折角处插点，曲面按采样步长加密。
+
+        平面区域原样返回，所以"一刀两个点"的约定不受影响；分片平面只在折痕处补点就已经
+        精确，曲面则沿折线每 ``surface_sample_step_mm`` 取一个点。
+        """
 
         planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
         if planar.shape[0] < 2:
             return planar
+        step = self.region.surface_sample_step_mm
         result: list[NDArray[np.float64]] = [planar[0]]
         for start, end in zip(planar, planar[1:]):
+            direction = end - start
+            length = float(np.linalg.norm(direction))
+            if length <= 1e-12:
+                continue
+            fractions: list[float] = []
             breaks = np.asarray(
                 self.region.surface_breaks(start, end), dtype=np.float64
             ).reshape(-1, 2)
             for point in breaks:
-                if float(np.linalg.norm(point - result[-1])) > 1e-9:
-                    result.append(point)
+                fractions.append(float(np.dot(point - start, direction) / (length * length)))
+            if step:
+                count = int(np.ceil(length / step))
+                fractions.extend(index / count for index in range(1, count))
+            for fraction in sorted(value for value in fractions if 1e-9 < value < 1.0 - 1e-9):
+                result.append(start + fraction * direction)
             if float(np.linalg.norm(end - result[-1])) > 1e-9:
                 result.append(end)
         return np.array(result, dtype=np.float64)
@@ -107,15 +123,25 @@ class PlanningContext:
             start, end, self.safe_height_above(start, end), RAPID_FEED_MM_PER_MIN
         )
 
-    @staticmethod
-    def safe_height_above(*points: NDArray[np.float64]) -> float:
-        """安全高度：在给定点里最高的那个之上再抬 SAFE_HEIGHT_MM。
+    def safe_height_above(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> float:
+        """横移用的安全高度：抬到这段路径**经过的加工面最高点**之上 SAFE_HEIGHT_MM。
 
-        平面区域退化成原来的绝对安全面 Z = SAFE_HEIGHT_MM；斜面这种有高度的加工面则跟着
-        工件走，横移时不会一头扎进高处的材料里。
+        只看两个端点是不够的——柱面的拱顶通常落在刀路中间，两端的横移若不抬到拱顶之上
+        就会撞进工件。平面区域仍然退化成原来的绝对安全面 Z = SAFE_HEIGHT_MM。
         """
 
-        return max(float(np.asarray(point).reshape(3)[2]) for point in points) + SAFE_HEIGHT_MM
+        first = np.asarray(start, dtype=np.float64).reshape(3)
+        last = np.asarray(end, dtype=np.float64).reshape(3)
+        surface_max = self.region.surface_max_along(first[:2], last[:2])
+        if surface_max is None:
+            step = self.region.surface_sample_step_mm or SAFE_SAMPLE_STEP_MM
+            span = float(np.linalg.norm(last - first))
+            count = int(np.clip(np.ceil(span / step), 2, 512))
+            fractions = np.linspace(0.0, 1.0, count + 1)
+            planar = first[:2] + fractions[:, None] * (last[:2] - first[:2])
+            surface_max = float(self.region.height_at(planar).max())
+        highest = max(float(first[2]), float(last[2]), float(surface_max))
+        return highest + SAFE_HEIGHT_MM
 
     def approach_move_down(self, point: NDArray[np.float64]) -> Move:
         """从安全高度下刀到该点。"""

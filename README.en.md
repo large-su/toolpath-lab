@@ -26,11 +26,14 @@ by parameters, and the parameter panel is generated from the backend's parameter
   is what offsets the toolpath from the region contour.
 
 ![the three tool tips: flat R, ball nose point contact, bull nose R - Rc](docs/images/tool-tips.png)
-- **Region**: three shapes centred at the origin
+- **Region**: four shapes centred at the origin
   - **square** (side) and **circle** (diameter), machined on the XY plane;
   - **ramp**: the XY projection is still a square (80 × 80 by default) while the machining surface
     rises from the outermost **+X edge** (Z = 0) towards -X at an adjustable angle (up to 80°),
-    turning into a flat top once it reaches Z = 80 mm; the same base thickness sits below the surface.
+    turning into a flat top once it reaches Z = 80 mm; the same base thickness sits below the surface;
+  - **cylinder**: the XY projection is a square too, while the machining surface is a cylindrical
+    crown swept along Y with an adjustable height (0 is flat, the maximum is half the side = a
+    half-cylinder); toolpaths are densified along the curve automatically.
 - **Toolpaths**: two strategies
   - **raster** - parallel scan lines with two modes: **zigzag** (every other pass runs in the opposite
     direction and consecutive passes are linked) and **one-way** (all passes run in the same
@@ -163,10 +166,10 @@ the window - so the planning code runs headless. See [docs/architecture.md](docs
 
 | Constant | Value | Location |
 | --- | --- | --- |
-| Safe height | 5 mm (measured above the machining surface) | `toolpath_lab/planning/base.py` |
+| Safe height | 5 mm, measured above the highest point of the machining surface **the rapid travels over** | `toolpath_lab/planning/base.py` |
 | Rapid feed | 5000 mm/min | `toolpath_lab/planning/base.py` |
 | Boundary handling | inset the contour by the tool footprint radius | `planning/raster.py`, `planning/follow_periphery.py` |
-| Pass sampling | two end points on a flat region; one extra vertex at the ramp crease | `toolpath_lab/planning/base.py` |
+| Pass sampling | two end points on a flat region; one extra vertex at the ramp crease; every 1 mm along a cylinder | `toolpath_lab/core/region.py`, `toolpath_lab/planning/base.py` |
 | Loop linking | every loop runs in the same winding; loops are linked by a radial step-over at the seam, at feed, without retracting | `toolpath_lab/planning/follow_periphery.py` |
 | Ramp Z cap | 80 mm (anything higher becomes the flat top) | `toolpath_lab/core/region.py` |
 | Base thickness | 9% of the region span, clamped to 4–24 mm (7.2 mm for an 80 mm square) | `toolpath_lab/web/js/viewport.js` |
