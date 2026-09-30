@@ -192,5 +192,115 @@ check("斜坡毛坯顶面 = Z 上限 + 余量", Math.abs(rampBlank.box.max.z - 8
   `顶 ${rampBlank.box.max.z.toFixed(2)}`);
 check("斜坡毛坯也贴紧区域", Math.abs(rampBlank.box.max.x - 40) < 1e-6);
 
+// ---------------------------------------------------------------- 切削仿真（stock.js）
+const stock = await import(
+  pathToFileURL(path.join(root, "toolpath_lab", "web", "js", "stock.js")).href
+);
+
+const flatTool = { kind: "flat", diameter_mm: 6, corner_radius_mm: 0 };
+const ballTool = { kind: "ball", diameter_mm: 6, corner_radius_mm: 3 };
+const bullTool = { kind: "bull", diameter_mm: 6, corner_radius_mm: 1.5 };
+check("平底刀：整个刀盘等高",
+  [0, 1.5, 3].every((r) => Math.abs(stock.toolFaceHeight(flatTool, r, 10) - 10) < 1e-9));
+check("球头刀：只有刀尖最低、刃口高一个半径",
+  Math.abs(stock.toolFaceHeight(ballTool, 0, 10) - 10) < 1e-9
+  && Math.abs(stock.toolFaceHeight(ballTool, 3, 10) - 13) < 1e-9,
+  `r=3 处 ${stock.toolFaceHeight(ballTool, 3, 10).toFixed(3)}`);
+check("圆鼻刀：R−Rc 之内是平面，之外圆角抬到 +Rc",
+  Math.abs(stock.toolFaceHeight(bullTool, 1.5, 10) - 10) < 1e-9
+  && Math.abs(stock.toolFaceHeight(bullTool, 3, 10) - 11.5) < 1e-9,
+  `r=3 处 ${stock.toolFaceHeight(bullTool, 3, 10).toFixed(3)}`);
+
+const simRegion = {
+  id: "square",
+  bounds_mm: [[-40, 40], [-40, 40]],
+  thickness_mm: 20,
+  surface: { kind: "flat", base_z_mm: 0, top_z_mm: 0 },
+};
+const nodeAt = (sim, x, y) => {
+  const i = Math.round((x - sim.x0) / sim.dx);
+  const j = Math.round((y - sim.y0) / sim.dy);
+  return sim.heights[j * sim.nx1 + i];
+};
+const simOf = (positions, kinds, tool = flatTool, region = simRegion) =>
+  new stock.StockSimulation(region, tool, 2, { timeline: { positions }, kinds });
+
+const onePass = simOf([[-20, 0, 0], [20, 0, 0]], ["cut", "cut"]);
+onePass.syncTo(1, [20, 0, 0]);
+check("刀盘扫过的地方压到刀尖高度", Math.abs(nodeAt(onePass, 0, 0)) < 1e-6,
+  `(0,0) 高 ${nodeAt(onePass, 0, 0).toFixed(3)}`);
+check("刀盘外面不动", Math.abs(nodeAt(onePass, 0, 10) - 2) < 1e-6
+  && Math.abs(nodeAt(onePass, 35, 0) - 2) < 1e-6,
+  `(0,10) 高 ${nodeAt(onePass, 0, 10).toFixed(3)}`);
+
+// 覆盖整块区域的往复刀路（切宽 4、D6）：走完以后内部应该完全变成区域形状。
+const raster = [];
+const kinds = [];
+for (let y = -40; y <= 40 + 1e-9; y += 4) {
+  const forward = (Math.round((y + 40) / 4) % 2) === 0;
+  raster.push([forward ? -37 : 37, y, 0]);
+  raster.push([forward ? 37 : -37, y, 0]);
+  kinds.push("cut", "cut");
+}
+const full = simOf(raster, kinds);
+full.syncTo(raster.length - 1, raster[raster.length - 1]);
+full.updateGeometry();
+let interior = 0;
+let reached = 0;
+let leftover = 0;
+let leftoverOutsideBand = 0;
+for (let j = 0; j < full.ny1; j += 1) {
+  for (let i = 0; i < full.nx1; i += 1) {
+    const node = j * full.nx1 + i;
+    if (!full.active[node]) continue;
+    const x = full.x0 + i * full.dx;
+    const y = full.y0 + j * full.dy;
+    if (Math.abs(x) <= 33 && Math.abs(y) <= 33) {
+      interior += 1;
+      if (Math.abs(full.heights[node]) < 1e-6) reached += 1;
+    }
+    if (full.heights[node] > 1e-6) {
+      leftover += 1;
+      // 残留只该出现在"刀具够不到"的边界带里：距区域边界不超过一个刀半径加一格。
+      if (40 - Math.max(Math.abs(x), Math.abs(y)) > 3 + 1.5 * Math.max(full.dx, full.dy)) {
+        leftoverOutsideBand += 1;
+      }
+    }
+  }
+}
+check("走完整块区域后内部完全到加工面", reached === interior,
+  `${reached}/${interior} 个内部节点`);
+check("残留只出现在刀具够不到的边界带", leftover > 0 && leftoverOutsideBand === 0,
+  `残留 ${leftover} 个节点，越界 ${leftoverOutsideBand} 个`);
+
+const rapidOnly = simOf([[-20, 0, 0], [20, 0, 0]], ["rapid", "rapid"]);
+rapidOnly.syncTo(1, [20, 0, 0]);
+check("快移不切料", Math.abs(nodeAt(rapidOnly, 0, 0) - 2) < 1e-6,
+  `(0,0) 高 ${nodeAt(rapidOnly, 0, 0).toFixed(3)}`);
+
+const rewind = simOf([[-20, 0, 0], [20, 0, 0], [20, 20, 0]], ["cut", "cut", "cut"]);
+rewind.syncTo(2, [20, 20, 0]);
+const cut = nodeAt(rewind, 0, 0);
+rewind.syncTo(0, [-20, 0, 0]);
+check("回拖到开头会重放成未切削的毛坯",
+  Math.abs(cut - 0) < 1e-6 && Math.abs(nodeAt(rewind, 0, 0) - 2) < 1e-6,
+  `切过 ${cut.toFixed(2)} → 回拖后 ${nodeAt(rewind, 0, 0).toFixed(2)}`);
+
+const circleRegion = Object.assign({}, simRegion, { id: "circle" });
+const circle = simOf([[-20, 0, 0], [20, 0, 0]], ["cut", "cut"], flatTool, circleRegion);
+const activeAt = (sim, x, y) => {
+  const i = Math.round((x - sim.x0) / sim.dx);
+  const j = Math.round((y - sim.y0) / sim.dy);
+  return sim.active[j * sim.nx1 + i];
+};
+check("圆形毛坯是圆柱：圆内算有料、圆外不算",
+  activeAt(circle, 0, 0) === 1 && activeAt(circle, -39, -39) === 0,
+  `圆心 ${activeAt(circle, 0, 0)}，角落 ${activeAt(circle, -39, -39)}`);
+
+const meshNodes = full.geometry.attributes.position.count;
+check("可切削实体的顶点跟着高度场更新",
+  meshNodes > full.count * 0.9 && full.geometry.attributes.position.needsUpdate !== false,
+  `${meshNodes} 个顶点`);
+
 console.log(failed === 0 ? "\n全部通过" : `\n有 ${failed} 项不通过`);
 process.exit(failed === 0 ? 0 : 1);

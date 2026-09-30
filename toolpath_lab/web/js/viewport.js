@@ -9,6 +9,14 @@
 import * as THREE from "three";
 import { OrbitControls } from "../vendor/OrbitControls.js";
 import { RoomEnvironment } from "../vendor/RoomEnvironment.js";
+import {
+  BLANK_TOP_MARGIN_MM, blankSize, buildBlankMesh, buildBlankOutline,
+} from "./blank.js";
+import { StockSimulation, decodeKinds } from "./stock.js";
+
+// 毛坯外形的实现在 blank.js、切削仿真在 stock.js；这里转发一下，既有的引用
+// （包括 tools/check_frontend_geometry.mjs）不用改。
+export { BLANK_TOP_MARGIN_MM, blankSize, buildBlankMesh, buildBlankOutline } from "./blank.js";
 
 const COLORS = {
   background: 0x071014,
@@ -27,9 +35,6 @@ const COLORS = {
 
 //: 刀路画在工件上表面之上一点点，避免与上表面 z-fighting。
 const PATH_LIFT_MM = 0.05;
-
-//: 毛坯顶面在工件之上留的余量默认值（mm）；竖直面不留余量，毛坯贴紧区域。
-const BLANK_TOP_MARGIN_MM = 2.0;
 
 //: 视图工具条上的按钮，按常用顺序排列。
 export const VIEW_BUTTONS = [
@@ -199,59 +204,6 @@ export function buildToolParts(tool) {
   return parts;
 }
 
-// 毛坯的外形：竖直面**贴紧区域**（XY 不留余量），顶面在工件之上留 topMarginMm 余量，
-// 底面与工件底面齐平——料是从下面那块基体一直长到顶面之上的。
-export function blankSize(region, topMarginMm = BLANK_TOP_MARGIN_MM) {
-  const [xRange, yRange] = region.bounds_mm;
-  const surface = region.surface || {};
-  const baseZ = Number(surface.base_z_mm || 0);
-  const topZ = Number(surface.top_z_mm != null ? surface.top_z_mm : baseZ);
-  const thickness = Number(region.thickness_mm) > 0 ? Number(region.thickness_mm) : 0;
-  const margin = Math.max(Number(topMarginMm) || 0, 0);
-  const width = xRange[1] - xRange[0];
-  const depth = yRange[1] - yRange[0];
-  return {
-    width,
-    depth,
-    diameter: width,
-    height: topZ - (baseZ - thickness) + margin,
-    bottom: baseZ - thickness,
-    top: topZ + margin,
-    topMarginMm: margin,
-    centreX: (xRange[0] + xRange[1]) / 2,
-    centreY: (yRange[0] + yRange[1]) / 2,
-  };
-}
-
-// 毛坯实体：方形与斜坡用长方体，圆形用竖直圆柱；半透明 + 棱线，与工件颜色明显区分。
-export function buildBlankMesh(region, topMarginMm = BLANK_TOP_MARGIN_MM) {
-  const size = blankSize(region, topMarginMm);
-  const cylindrical = region.id === "circle";
-  const geometry = cylindrical
-    ? new THREE.CylinderGeometry(size.diameter / 2, size.diameter / 2, size.height, 96)
-    : new THREE.BoxGeometry(size.width, size.depth, size.height);
-  const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-    color: COLORS.blank, metalness: 0.1, roughness: 0.9,
-    transparent: true, opacity: 0.22, depthWrite: false,
-  }));
-  const edges = new THREE.LineSegments(
-    new THREE.EdgesGeometry(geometry),
-    new THREE.LineBasicMaterial({ color: COLORS.blankEdge, transparent: true, opacity: 0.9 })
-  );
-  if (cylindrical) {
-    // 圆柱默认沿 Y，转成竖直（沿 Z）与工件的圆形端面对齐。
-    mesh.rotation.x = Math.PI / 2;
-    edges.rotation.x = Math.PI / 2;
-  }
-  const centreZ = size.bottom + size.height / 2;
-  mesh.position.set(size.centreX, size.centreY, centreZ);
-  edges.position.set(size.centreX, size.centreY, centreZ);
-  const group = new THREE.Group();
-  group.name = "blank";
-  group.add(mesh, edges);
-  return group;
-}
-
 export class Viewport {
   constructor(container) {
     this.container = container;
@@ -357,6 +309,10 @@ export class Viewport {
     this._clear(this.pathGroup);
     this._clear(this.traceGroup);
 
+    // 切削仿真要按当前结果重建：新结果从"未切削的毛坯"重新开始。
+    this.payload = payload;
+    this.playhead = null;
+
     const region = payload.region;
     const [xMin, xMax] = region.bounds_mm[0];
     const [yMin, yMax] = region.bounds_mm[1];
@@ -411,8 +367,10 @@ export class Viewport {
     this._autoFrame();
   }
 
-  /** 毛坯：竖直面贴紧区域的长方体（方形、斜坡）或竖直圆柱（圆形），顶面留 topMarginMm 余量；
-   *  传 null 收起。只换几何、不负责重绘——调用方按本文件的习惯自己 render()。
+  /** 毛坯：竖直面贴紧区域的长方体（方形、斜坡）或竖直圆柱（圆形），顶面留 topMarginMm 余量。
+   *  已经有时间轴时，毛坯换成**可切削实体**：播放时刀具扫过哪里、哪里的料就消失，走完刀路
+   *  剩下的就是区域形状（仿真在 stock.js）。传 null 收起。
+   *  只换几何、不负责重绘——调用方按本文件的习惯自己 render()。
    */
   setBlank(region, topMarginMm = BLANK_TOP_MARGIN_MM) {
     this.blankRegion = region || null;
@@ -420,8 +378,28 @@ export class Viewport {
       ? Math.max(Number(topMarginMm) || 0, 0)
       : BLANK_TOP_MARGIN_MM;
     this._clear(this.blankGroup);
+    this.stock = null;
     if (this.blankRegion) {
-      this.blankGroup.add(buildBlankMesh(this.blankRegion, this.blankTopMarginMm));
+      const timeline = this.payload && this.payload.timeline;
+      const cuttable = Boolean(timeline && timeline.positions && timeline.positions.length > 1);
+      if (cuttable) {
+        // 未切削毛坯的棱线留着：一眼看得出被削掉了多少。
+        this.blankGroup.add(
+          buildBlankOutline(this.blankRegion, this.blankTopMarginMm, COLORS.blankEdge)
+        );
+        this.stock = new StockSimulation(this.blankRegion, (this.payload || {}).tool || {},
+          this.blankTopMarginMm, {
+            timeline,
+            kinds: decodeKinds(timeline),
+            colour: COLORS.blank,
+          });
+        this.blankGroup.add(this.stock.object3d);
+        if (this.playhead) this.stock.syncTo(this.playhead.index, this.playhead.position);
+        this.stock.updateGeometry();
+      } else {
+        this.blankGroup.add(buildBlankMesh(this.blankRegion, this.blankTopMarginMm,
+          COLORS.blank, COLORS.blankEdge));
+      }
     }
     return this.blankRegion !== null;
   }
@@ -465,6 +443,13 @@ export class Viewport {
     if (this.traceLine && traversedSegments !== this._lastTraversed) {
       this._lastTraversed = traversedSegments;
       this.traceLine.geometry.setDrawRange(0, Math.max(0, traversedSegments) * 2);
+    }
+    // 切削仿真跟着播放进度走：刀具扫过的地方毛坯消失，回拖会自动从头重放
+    // （高度场只会变矮，重放很便宜）。
+    this.playhead = { index: traversedSegments, position: position.slice(0, 3) };
+    if (this.stock) {
+      this.stock.syncTo(traversedSegments, position);
+      if (this.stock.dirty) this.stock.updateGeometry();
     }
   }
 
