@@ -312,7 +312,8 @@ class SlopedSurfaceTests(unittest.TestCase):
 class RegionHeightTests(unittest.TestCase):
     """平面区域设了高度，刀路整条跟着抬：Z、安全面都相对它算。"""
 
-    def _lifted(self, height: float, shape: str = "square", **overrides):
+    def _lifted(self, height: float, shape: str = "square", *, thickness: float = 20.0,
+                **overrides):
         options = {"mode": "one_way", "stepover_mm": 20.0, "direction_deg": 0.0,
                    "feed_mm_per_min": 600.0}
         options.update(overrides)
@@ -320,7 +321,8 @@ class RegionHeightTests(unittest.TestCase):
         return run_plan(
             planner_id="raster",
             tool=_tool(),
-            region=build_region(shape, {key: 80.0, "height_mm": height}),
+            region=build_region(shape, {key: 80.0, "height_mm": height,
+                                        "thickness_mm": thickness}),
             parameters=options,
         )
 
@@ -349,6 +351,16 @@ class RegionHeightTests(unittest.TestCase):
         # 高度不改变"平面沿用抬刀连接"的判断（加工面仍然是水平的）
         outcome = self._lifted(20.0)
         self.assertFalse([m for m in outcome.toolpath.moves if m.kind is MoveKind.LINK])
+
+    def test_part_thickness_does_not_change_the_toolpath(self) -> None:
+        # 部件厚度只是"料有多厚"，刀路一模一样
+        thin = self._lifted(0.0, thickness=5.0).toolpath
+        thick = self._lifted(0.0, thickness=80.0).toolpath
+        self.assertAlmostEqual(thin.cut_length_mm, thick.cut_length_mm, places=9)
+        self.assertEqual(len(thin.moves), len(thick.moves))
+        for first, second in zip(thin.moves, thick.moves):
+            self.assertEqual(first.kind, second.kind)
+            self.assertTrue(np.allclose(first.points, second.points))
 
 
 class BullToolTests(unittest.TestCase):

@@ -13,6 +13,7 @@ from toolpath_lab.core.region import (
     RAMP_CAP_MM,
     RAMP_MAX_ANGLE_DEG,
     REGION_SHAPES,
+    RegionShape,
     build_region,
     polygon_area,
     polygon_bounds,
@@ -31,15 +32,15 @@ class RegionCatalogTests(unittest.TestCase):
         self.assertEqual(entries["ramp"]["label"], "斜坡")
         self.assertEqual(
             [item["key"] for item in entries["square"]["parameters"]],
-            ["side_mm", "height_mm"],
+            ["side_mm", "height_mm", "thickness_mm"],
         )
         self.assertEqual(
             [item["key"] for item in entries["circle"]["parameters"]],
-            ["diameter_mm", "height_mm"],
+            ["diameter_mm", "height_mm", "thickness_mm"],
         )
         self.assertEqual(
             [item["key"] for item in entries["ramp"]["parameters"]],
-            ["side_mm", "angle_deg", "include_plateau"],
+            ["side_mm", "angle_deg", "include_plateau", "thickness_mm"],
         )
 
     def test_flat_shapes_publish_a_flat_surface(self) -> None:
@@ -99,6 +100,59 @@ class PlanarHeightTests(unittest.TestCase):
                 {entry["id"]: entry for entry in region_catalog()}["ramp"]["parameters"]]
         self.assertNotIn("height_mm", keys)
         self.assertFalse(hasattr(build_region("ramp", {}), "height_mm"))
+
+
+class PartThicknessTests(unittest.TestCase):
+    """部件厚度：加工面以下那块基体有多厚，三个区域都能设，纯几何、不参与刀路计算。"""
+
+    def _region(self, shape: str, thickness: float):
+        key = {"square": "side_mm", "circle": "diameter_mm", "ramp": "side_mm"}[shape]
+        return build_region(shape, {key: 80.0, "thickness_mm": thickness})
+
+    def test_default_thickness_is_published_for_every_shape(self) -> None:
+        entries = {entry["id"]: entry for entry in region_catalog()}
+        for shape in ("square", "circle", "ramp"):
+            thickness = [item for item in entries[shape]["parameters"]
+                         if item["key"] == "thickness_mm"][0]
+            self.assertEqual(thickness["default"], 20.0)
+            self.assertEqual(thickness["min"], 1.0)
+            self.assertEqual(thickness["max"], 500.0)
+            self.assertEqual(self._region(shape, 20.0).describe()["thickness_mm"], 20.0)
+
+    def test_custom_thickness_reaches_the_description(self) -> None:
+        for shape in ("square", "circle", "ramp"):
+            region = self._region(shape, 45.0)
+            self.assertEqual(region.thickness_mm, 45.0)
+            self.assertEqual(region.describe()["thickness_mm"], 45.0)
+
+    def test_thickness_does_not_touch_the_machining_surface(self) -> None:
+        # 厚度只是"料有多厚"，加工面与刀路都不该受影响
+        for shape in ("square", "circle", "ramp"):
+            thin = self._region(shape, 5.0)
+            thick = self._region(shape, 80.0)
+            samples = thin.boundary()
+            self.assertTrue(np.allclose(thin.height_at(samples), thick.height_at(samples)))
+            self.assertEqual(thin.boundary().shape, thick.boundary().shape)
+
+    def test_out_of_range_thickness_is_rejected(self) -> None:
+        for shape in ("square", "circle", "ramp"):
+            with self.assertRaises(ParameterError):
+                self._region(shape, 0.5)
+            with self.assertRaises(ParameterError):
+                self._region(shape, 1000.0)
+
+    def test_shape_without_the_field_falls_back_to_the_default(self) -> None:
+        # 扩展路径：新形状只实现 boundary() 时，describe() 也要能用
+        class Bare(RegionShape):
+            id = "bare"
+
+            def boundary(self):
+                return np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]])
+
+            def height_at(self, points_xy):
+                return np.zeros(np.asarray(points_xy).reshape(-1, 2).shape[0])
+
+        self.assertEqual(Bare().describe()["thickness_mm"], 20.0)
 
 
 class SquareRegionTests(unittest.TestCase):

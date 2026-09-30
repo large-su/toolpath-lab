@@ -136,9 +136,10 @@ class CatalogTests(ApiTestCase):
         _, body, _ = self.get("/api/catalog")
         keyed = {item["id"]: [parameter["key"] for parameter in item["parameters"]]
                  for item in json.loads(body)["regions"]["shapes"]}
-        self.assertEqual(keyed["square"], ["side_mm", "height_mm"])
-        self.assertEqual(keyed["circle"], ["diameter_mm", "height_mm"])
+        self.assertEqual(keyed["square"], ["side_mm", "height_mm", "thickness_mm"])
+        self.assertEqual(keyed["circle"], ["diameter_mm", "height_mm", "thickness_mm"])
         self.assertNotIn("height_mm", keyed["ramp"])
+        self.assertIn("thickness_mm", keyed["ramp"])
 
     def test_region_height_lifts_the_toolpath(self) -> None:
         status, payload, _ = self.plan(
@@ -155,6 +156,27 @@ class CatalogTests(ApiTestCase):
         self.assertTrue(cuts)
         for move in cuts:
             self.assertTrue(all(point[2] == 20.0 for point in move["points"]))
+
+    def test_part_thickness_reaches_the_payload(self) -> None:
+        status, payload, _ = self.plan(
+            {
+                "region": {"shape": "square",
+                           "parameters": {"side_mm": 80.0, "thickness_mm": 45.0}},
+                "planner": {"id": "raster", "parameters": {"stepover_mm": 20.0}},
+            }
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["region"]["thickness_mm"], 45.0)
+        self.assertEqual(payload["region"]["parameters"]["thickness_mm"], 45.0)
+        # 厚度纯几何：刀路与默认厚度时完全一致
+        _, baseline, _ = self.plan(
+            {
+                "region": {"shape": "square", "parameters": {"side_mm": 80.0}},
+                "planner": {"id": "raster", "parameters": {"stepover_mm": 20.0}},
+            }
+        )
+        self.assertEqual(payload["toolpath"]["statistics"]["cut_length_mm"],
+                         baseline["toolpath"]["statistics"]["cut_length_mm"])
 
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:

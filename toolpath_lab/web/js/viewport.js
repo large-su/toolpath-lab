@@ -301,7 +301,10 @@ export class Viewport {
     const [yMin, yMax] = region.bounds_mm[1];
     const span = Math.max(xMax - xMin, yMax - yMin);
 
-    const thickness = this._thickness(span);
+    // 部件厚度来自区域参数（加工面以下那块基体有多厚）；载荷没带这个字段时按跨度估算。
+    const thickness = Number(region.thickness_mm) > 0
+      ? Number(region.thickness_mm)
+      : this._thickness(span);
     // 加工面的最低 Z：水平面区域就是它的高度（默认 0），斜面是低边（0）。
     const surfaceZ = Number(((region.surface || {}).base_z_mm) || 0);
     this.workpieceGroup.add(this._workpiece(region, thickness, surfaceZ));

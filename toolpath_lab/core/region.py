@@ -128,6 +128,11 @@ class RegionShape:
             "area_mm2": polygon_area(polygon),
             "bounds_mm": polygon_bounds(polygon),
             "surface": self.surface_payload(),
+            # 工件实体的厚度（加工面以下那块基体）：纯几何，不参与刀路计算。
+            # 新形状没声明这个字段时退回默认值，扩展路径因此不会被打断。
+            "thickness_mm": float(
+                getattr(self, "thickness_mm", DEFAULT_REGION_THICKNESS_MM)
+            ),
         }
 
 
@@ -155,6 +160,16 @@ PLANAR_HEIGHT_SPEC = spec(
     help="加工面相对基准面 Z = 0 的高度；刀路 Z、安全面与 G-code 都跟着它走",
 )
 
+#: 部件厚度的默认值（mm）。
+DEFAULT_REGION_THICKNESS_MM = 20.0
+
+#: 所有区域共用的"部件厚度"参数：加工面以下那块基体有多厚。
+REGION_THICKNESS_SPEC = spec(
+    "thickness_mm", "部件厚度", K.FLOAT, DEFAULT_REGION_THICKNESS_MM,
+    minimum=1.0, maximum=500.0, step=1.0, unit="mm", group="区域",
+    help="加工面以下那块基体的厚度；只影响工件实体与显示，不参与刀路计算",
+)
+
 
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
@@ -163,15 +178,17 @@ class SquareRegion(RegionShape):
 
     side_mm: float = 80.0
     height_mm: float = 0.0
+    thickness_mm: float = DEFAULT_REGION_THICKNESS_MM
 
     id: ClassVar[str] = "square"
     label: ClassVar[str] = "方形"
-    description: ClassVar[str] = "面铣最常见的形状，用来对比往复与单向；加工面高度可设"
+    description: ClassVar[str] = "面铣最常见的形状，用来对比往复与单向；加工面高度与部件厚度可设"
     parameters: ClassVar[ParameterSet] = ParameterSet(
         (
             spec("side_mm", "边长", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
                  step=5.0, unit="mm", group="区域"),
             PLANAR_HEIGHT_SPEC,
+            REGION_THICKNESS_SPEC,
         )
     )
 
@@ -180,6 +197,8 @@ class SquareRegion(RegionShape):
             raise ParameterError("方形边长必须为正")
         if not isfinite(self.height_mm):
             raise ParameterError("方形加工面高度必须是有限数")
+        if not isfinite(self.thickness_mm) or self.thickness_mm <= 0:
+            raise ParameterError("方形部件厚度必须是有限正数")
 
     def boundary(self) -> NDArray[np.float64]:
         half = self.side_mm / 2.0
@@ -200,15 +219,17 @@ class CircleRegion(RegionShape):
 
     diameter_mm: float = 80.0
     height_mm: float = 0.0
+    thickness_mm: float = DEFAULT_REGION_THICKNESS_MM
 
     id: ClassVar[str] = "circle"
     label: ClassVar[str] = "圆形"
-    description: ClassVar[str] = "圆形端面，用来观察刀路在曲线边界上的收放；加工面高度可设"
+    description: ClassVar[str] = "圆形端面，用来观察刀路在曲线边界上的收放；加工面高度与部件厚度可设"
     parameters: ClassVar[ParameterSet] = ParameterSet(
         (
             spec("diameter_mm", "直径 D", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
                  step=5.0, unit="mm", group="区域"),
             PLANAR_HEIGHT_SPEC,
+            REGION_THICKNESS_SPEC,
         )
     )
 
@@ -217,6 +238,8 @@ class CircleRegion(RegionShape):
             raise ParameterError("圆形直径必须为正")
         if not isfinite(self.height_mm):
             raise ParameterError("圆形加工面高度必须是有限数")
+        if not isfinite(self.thickness_mm) or self.thickness_mm <= 0:
+            raise ParameterError("圆形部件厚度必须是有限正数")
 
     def boundary(self) -> NDArray[np.float64]:
         radius = self.diameter_mm / 2.0
@@ -241,6 +264,7 @@ class RampRegion(RegionShape):
     side_mm: float = 80.0
     angle_deg: float = 30.0
     include_plateau: bool = False
+    thickness_mm: float = DEFAULT_REGION_THICKNESS_MM
 
     id: ClassVar[str] = "ramp"
     label: ClassVar[str] = "斜坡"
@@ -256,6 +280,7 @@ class RampRegion(RegionShape):
                  help=f"加工面与 XY 平面的夹角；0° 就是平面，最大 {RAMP_MAX_ANGLE_DEG:g}°"),
             spec("include_plateau", "加工平顶", K.BOOL, False, group="区域",
                  help="关（默认）：刀路只覆盖斜面段，升到上限后的平顶留给别的工序；开：平顶一起加工"),
+            REGION_THICKNESS_SPEC,
         )
     )
 
@@ -264,6 +289,8 @@ class RampRegion(RegionShape):
             raise ParameterError("斜坡边长必须是有限正数")
         if not isfinite(self.angle_deg) or not 0.0 <= self.angle_deg <= RAMP_MAX_ANGLE_DEG:
             raise ParameterError(f"斜坡斜度必须在 0° 到 {RAMP_MAX_ANGLE_DEG:g}° 之间")
+        if not isfinite(self.thickness_mm) or self.thickness_mm <= 0:
+            raise ParameterError("斜坡部件厚度必须是有限正数")
 
     # -- 加工面 ------------------------------------------------------------
     @property

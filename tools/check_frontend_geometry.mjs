@@ -127,5 +127,15 @@ check("默认高度时网格仍贴着工件底面（不穿工件）",
   Math.abs(flatHost.gridGroup.children[0].position.z + 7.3) < 1e-6,
   `网格 Z ${flatHost.gridGroup.children[0].position.z.toFixed(2)}`);
 
+// 5. 部件厚度：只把基体加厚/减薄，加工面不动 ---------------------------
+console.log("部件厚度：");
+const deep = viewport.Viewport.prototype._workpiece(boxRegion(20), 30, 20);
+deep.updateMatrixWorld(true);
+const deepBox = new THREE.Box3().setFromObject(deep);
+check("厚度 30：基体挂在顶面之下 30", Math.abs(deepBox.min.z + 10) < 1e-6,
+  `底面 ${deepBox.min.z.toFixed(3)}`);
+check("厚度不改变加工面高度", Math.abs(deepBox.max.z - 20) < 1e-6,
+  `顶面 ${deepBox.max.z.toFixed(3)}`);
+
 console.log(failed === 0 ? "\n全部通过" : `\n有 ${failed} 项不通过`);
 process.exit(failed === 0 ? 0 : 1);

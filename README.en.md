@@ -33,10 +33,14 @@ by parameters, and the parameter panel is generated from the backend's parameter
     ground grid stays on the datum, so a raised region is obvious at a glance;
   - **ramp**: the XY projection is still a square (80 × 80 by default) while the machining surface
     rises from the outermost **+X edge** (Z = 0) towards -X at an adjustable angle (up to 80°),
-    turning into a flat top once it reaches Z = 80 mm; the same base thickness sits below the
-    surface. **Only the slope is machined by default** - the toolpath stops right at the crease and
-    never runs onto the flat top (left for another operation); tick the region parameter
-    "machine plateau" to cover both. (A height setting is not offered for the ramp yet.)
+    turning into a flat top once it reaches Z = 80 mm. **Only the slope is machined by default** -
+    the toolpath stops right at the crease and never runs onto the flat top (left for another
+    operation); tick the region parameter "machine plateau" to cover both. (A height setting is not
+    offered for the ramp yet.)
+  - All three shapes also take a **part thickness** (how thick the body below the machining surface
+    is, 20 mm by default). It is pure geometry: it only affects the workpiece solid in the 3D view
+    and **never enters the toolpath** - make the stock thicker or thinner and the toolpath is
+    identical.
 - **Toolpaths**: two strategies
   - **raster** - parallel scan lines with two modes: **zigzag** (every other pass runs in the opposite
     direction and consecutive passes are linked) and **one-way** (all passes run in the same
@@ -49,8 +53,8 @@ by parameters, and the parameter panel is generated from the backend's parameter
   outside the part instead of plunging into the slope, and one-way passes are **linked along the
   surface** instead of lifting to the safe plane every time.
 - **Parameters**: stepover, pass direction, mode, entry, linking, cut order and feed rate; the region
-  side adds side / diameter, machining height, angle and "machine plateau". Safe height, rapid feed,
-  lead-in length and boundary handling are constants (see "Configuration constants").
+  side adds side / diameter, machining height, part thickness, angle and "machine plateau". Safe height,
+  rapid feed, lead-in length and boundary handling are constants (see "Configuration constants").
 - **3D view**: workpiece, region contour, toolpath (cut / link / rapid colour coded), cutter solid,
   traversed path and live shadows.
 - **Playback**: time is parameterised by each move's own feed rate; play / pause, scrubbing, cutting
@@ -182,7 +186,7 @@ the window - so the planning code runs headless. See [docs/architecture.md](docs
 | Pass sampling | two end points on a flat region; one extra vertex at the ramp crease | `toolpath_lab/planning/base.py` |
 | Loop linking | every loop runs in the same winding; loops are linked by a radial step-over at the seam, at feed, without retracting | `toolpath_lab/planning/follow_periphery.py` |
 | Ramp Z cap | 80 mm (anything higher becomes the flat top) | `toolpath_lab/core/region.py` |
-| Base thickness | 9% of the region span, clamped to 4–24 mm (7.2 mm for an 80 mm square) | `toolpath_lab/web/js/viewport.js` |
+| Default part thickness | 20 mm (a region parameter, 1–500); when a payload omits it the front-end falls back to 9% of the span, clamped to 4–24 mm | `toolpath_lab/core/region.py`, `toolpath_lab/web/js/viewport.js` |
 
 To expose them as adjustable parameters, see [docs/extending.md](docs/extending.md).
 
