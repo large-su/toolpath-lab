@@ -280,6 +280,25 @@ class PlanTests(ApiTestCase):
                   if move["kind"] == "cut" and move["label"] != "沿面切入"]
         self.assertGreater(passes[0]["points"][-1][2], passes[0]["points"][0][2])
 
+    def test_ramp_z_cap_is_configurable(self) -> None:
+        status, payload, _ = self.plan(
+            {
+                "region": {"shape": "ramp",
+                           "parameters": {"side_mm": 80.0, "angle_deg": 60.0,
+                                          "cap_z_mm": 40.0}},
+                "planner": {"id": "raster", "parameters": {"stepover_mm": 6.0}},
+            }
+        )
+        self.assertEqual(status, 200)
+        surface = payload["region"]["surface"]
+        self.assertEqual(surface["cap_z_mm"], 40.0)
+        self.assertAlmostEqual(surface["crease_x_mm"], 40.0 - 40.0 / 1.7320508, places=3)
+        self.assertEqual(payload["region"]["parameters"]["cap_z_mm"], 40.0)
+        cuts = [move for move in payload["toolpath"]["moves"] if move["kind"] == "cut"]
+        self.assertAlmostEqual(
+            max(point[2] for move in cuts for point in move["points"]), 40.0, places=6
+        )
+
     def test_flat_region_reports_a_flat_surface(self) -> None:
         _, payload, _ = self.plan({})
         self.assertEqual(payload["region"]["surface"]["kind"], "flat")

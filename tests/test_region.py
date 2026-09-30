@@ -10,7 +10,7 @@ import numpy as np
 from toolpath_lab.core.errors import ParameterError, RegistryError
 from toolpath_lab.core.region import (
     CIRCLE_SEGMENTS,
-    RAMP_CAP_MM,
+    DEFAULT_RAMP_CAP_MM,
     RAMP_MAX_ANGLE_DEG,
     REGION_SHAPES,
     RegionShape,
@@ -40,7 +40,7 @@ class RegionCatalogTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["key"] for item in entries["ramp"]["parameters"]],
-            ["side_mm", "angle_deg", "include_plateau", "thickness_mm"],
+            ["side_mm", "angle_deg", "cap_z_mm", "include_plateau", "thickness_mm"],
         )
 
     def test_flat_shapes_publish_a_flat_surface(self) -> None:
@@ -50,6 +50,63 @@ class RegionCatalogTests(unittest.TestCase):
     def test_unknown_shape_raises(self) -> None:
         with self.assertRaises(RegistryError):
             build_region("hexagon", {})
+
+
+class RampCapTests(unittest.TestCase):
+    """斜坡的 Z 上限（斜面沿 Z 轴的投影长度上限）可设，默认 80 mm。"""
+
+    def _ramp(self, cap: float, angle: float = 60.0, side: float = 80.0):
+        return build_region("ramp", {"side_mm": side, "angle_deg": angle,
+                                     "cap_z_mm": cap})
+
+    def test_default_cap_is_eighty(self) -> None:
+        entry = {item["id"]: item for item in region_catalog()}["ramp"]
+        cap = [item for item in entry["parameters"] if item["key"] == "cap_z_mm"][0]
+        self.assertEqual(cap["default"], DEFAULT_RAMP_CAP_MM)
+        self.assertEqual(cap["min"], 1.0)
+        self.assertEqual(cap["max"], 1000.0)
+        region = self._ramp(DEFAULT_RAMP_CAP_MM)
+        self.assertEqual(region.cap_z_mm, DEFAULT_RAMP_CAP_MM)
+        self.assertEqual(region.surface_payload()["cap_z_mm"], DEFAULT_RAMP_CAP_MM)
+
+    def test_cap_moves_the_crease_and_the_plateau(self) -> None:
+        slope = tan(radians(60.0))
+        for cap in (20.0, 50.0, 120.0):  # 60° 时整块坡度只升 138.6 mm，上限得在这以内才有折痕
+            region = self._ramp(cap)
+            self.assertAlmostEqual(region.crease_x_mm, 40.0 - cap / slope, places=9)
+            self.assertAlmostEqual(region.peak_z_mm, cap, places=9)
+            self.assertAlmostEqual(
+                float(region.height_at(np.array([[-40.0, 0.0]]))[0]), cap, places=9
+            )
+            self.assertEqual(region.surface_payload()["cap_z_mm"], cap)
+
+    def test_small_cap_makes_a_wide_plateau(self) -> None:
+        low = self._ramp(20.0)
+        high = self._ramp(120.0)
+        # 上限越低，斜面段越窄、平顶越宽（折痕越靠 +X）
+        self.assertGreater(low.crease_x_mm, high.crease_x_mm)
+        low_ramp_patch, low_top_patch = low.surface_patches()
+        high_ramp_patch, high_top_patch = high.surface_patches()
+        self.assertLess(
+            abs(polygon_area(low_ramp_patch[:, :2])),
+            abs(polygon_area(high_ramp_patch[:, :2])),
+        )
+        self.assertGreater(
+            abs(polygon_area(low_top_patch[:, :2])),
+            abs(polygon_area(high_top_patch[:, :2])),
+        )
+
+    def test_cap_above_the_whole_rise_means_no_plateau(self) -> None:
+        # 60° 时整块坡度只升 80·tan60 ≈ 138.6，上限给 200 就没有平顶了
+        region = self._ramp(200.0)
+        self.assertIsNone(region.crease_x_mm)
+        self.assertAlmostEqual(region.peak_z_mm, 80.0 * tan(radians(60.0)), places=6)
+
+    def test_out_of_range_cap_is_rejected(self) -> None:
+        with self.assertRaises(ParameterError):
+            self._ramp(0.0)
+        with self.assertRaises(ParameterError):
+            self._ramp(2000.0)
 
 
 class PlanarHeightTests(unittest.TestCase):
@@ -226,15 +283,15 @@ class RampRegionTests(unittest.TestCase):
 
     def test_height_is_capped_at_the_ramp_cap(self) -> None:
         region = self._ramp(60.0)
-        self.assertAlmostEqual(region.peak_z_mm, RAMP_CAP_MM, places=9)
+        self.assertAlmostEqual(region.peak_z_mm, DEFAULT_RAMP_CAP_MM, places=9)
         uncapped = 80.0 * tan(radians(60.0))
-        self.assertGreater(uncapped, RAMP_CAP_MM)
-        self.assertAlmostEqual(float(region.height_at(np.array([[-40.0, 0.0]]))[0]), RAMP_CAP_MM)
+        self.assertGreater(uncapped, DEFAULT_RAMP_CAP_MM)
+        self.assertAlmostEqual(float(region.height_at(np.array([[-40.0, 0.0]]))[0]), DEFAULT_RAMP_CAP_MM)
 
     def test_crease_appears_only_when_the_slope_reaches_the_cap(self) -> None:
         self.assertIsNone(self._ramp(30.0).crease_x_mm)
         self.assertIsNone(self._ramp(45.0).crease_x_mm)  # 45° 正好在 −X 边上到 80 mm
-        expected = 40.0 - RAMP_CAP_MM / tan(radians(60.0))
+        expected = 40.0 - DEFAULT_RAMP_CAP_MM / tan(radians(60.0))
         self.assertAlmostEqual(self._ramp(60.0).crease_x_mm, expected, places=9)
         self.assertLess(self._ramp(60.0).crease_x_mm, 0.0)
 
@@ -244,9 +301,9 @@ class RampRegionTests(unittest.TestCase):
         heights = region.height_at(
             np.array([[crease + 5.0, 0.0], [crease, 0.0], [crease - 5.0, 0.0]])
         )
-        self.assertLess(float(heights[0]), RAMP_CAP_MM)   # 折痕靠 +X 一侧还是斜面
-        self.assertAlmostEqual(float(heights[1]), RAMP_CAP_MM, places=9)
-        self.assertAlmostEqual(float(heights[2]), RAMP_CAP_MM, places=9)
+        self.assertLess(float(heights[0]), DEFAULT_RAMP_CAP_MM)   # 折痕靠 +X 一侧还是斜面
+        self.assertAlmostEqual(float(heights[1]), DEFAULT_RAMP_CAP_MM, places=9)
+        self.assertAlmostEqual(float(heights[2]), DEFAULT_RAMP_CAP_MM, places=9)
 
     def test_surface_is_split_into_ramp_and_flat_patches(self) -> None:
         self.assertEqual(len(self._ramp(30.0).surface_patches()), 1)
@@ -258,10 +315,10 @@ class RampRegionTests(unittest.TestCase):
         # 斜段从折痕到低边（+X），平顶从 −X 边到折痕
         self.assertAlmostEqual(float(patches[0][:, 0].min()), crease, places=9)
         self.assertAlmostEqual(float(patches[0][:, 0].max()), 40.0, places=9)
-        self.assertAlmostEqual(float(patches[0][:, 2].max()), RAMP_CAP_MM, places=9)
+        self.assertAlmostEqual(float(patches[0][:, 2].max()), DEFAULT_RAMP_CAP_MM, places=9)
         self.assertAlmostEqual(float(patches[1][:, 0].min()), -40.0, places=9)
         self.assertAlmostEqual(float(patches[1][:, 0].max()), crease, places=9)
-        self.assertAlmostEqual(float(patches[1][:, 2].min()), RAMP_CAP_MM, places=9)
+        self.assertAlmostEqual(float(patches[1][:, 2].min()), DEFAULT_RAMP_CAP_MM, places=9)
 
     def test_surface_breaks_only_when_the_segment_crosses_the_crease(self) -> None:
         region = self._ramp(60.0)
@@ -279,10 +336,10 @@ class RampRegionTests(unittest.TestCase):
         payload = self._ramp(60.0).surface_payload()
         self.assertEqual(payload["kind"], "ramp")
         self.assertEqual(payload["angle_deg"], 60.0)
-        self.assertEqual(payload["cap_z_mm"], RAMP_CAP_MM)
+        self.assertEqual(payload["cap_z_mm"], DEFAULT_RAMP_CAP_MM)
         self.assertAlmostEqual(payload["crease_x_mm"], self._ramp(60.0).crease_x_mm, places=9)
         self.assertEqual(payload["base_z_mm"], 0.0)
-        self.assertEqual(payload["top_z_mm"], RAMP_CAP_MM)
+        self.assertEqual(payload["top_z_mm"], DEFAULT_RAMP_CAP_MM)
         self.assertEqual(payload["patch_count"], 2)
 
     def test_outline_carries_the_surface_height(self) -> None:

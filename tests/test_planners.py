@@ -161,15 +161,19 @@ class BallToolTests(unittest.TestCase):
 
 
 def _ramp_plan(parameters=None, *, angle: float = 30.0, kind: ToolKind = ToolKind.FLAT,
-               plateau: bool = False):
+               plateau: bool = False, cap: float | None = None):
     options = {"mode": "one_way", "stepover_mm": 6.0, "direction_deg": 0.0,
                "feed_mm_per_min": 600.0}
     options.update(parameters or {})
+    region_parameters: dict[str, float | bool] = {
+        "side_mm": 80.0, "angle_deg": angle, "include_plateau": plateau,
+    }
+    if cap is not None:
+        region_parameters["cap_z_mm"] = cap
     return run_plan(
         planner_id="raster",
         tool=_tool(kind=kind),
-        region=build_region("ramp", {"side_mm": 80.0, "angle_deg": angle,
-                                     "include_plateau": plateau}),
+        region=build_region("ramp", region_parameters),
         parameters=options,
     )
 
@@ -281,6 +285,32 @@ class SlopedSurfaceTests(unittest.TestCase):
         toolpath = _ramp_plan(angle=60.0, plateau=True).toolpath
         lowest = min(float(move.points[:, 0].min()) for move in _pass_cuts(toolpath))
         self.assertLess(lowest, float(region.crease_x_mm) - 1.0)
+
+    def test_z_cap_limits_the_machining_height(self) -> None:
+        # 60°、上限 40：升到 40 mm 就转平顶，默认只加工斜面段 → 刀路最高 Z = 40
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0,
+                                       "cap_z_mm": 40.0})
+        toolpath = _ramp_plan(angle=60.0, cap=40.0).toolpath
+        passes = _pass_cuts(toolpath)
+        self.assertAlmostEqual(max(float(move.points[:, 2].max()) for move in passes),
+                               40.0, places=6)
+        self.assertAlmostEqual(float(region.crease_x_mm),
+                               40.0 - 40.0 / np.tan(np.radians(60.0)), places=6)
+        for move in passes:
+            self.assertGreaterEqual(float(move.points[:, 0].min()),
+                                    float(region.crease_x_mm) - 1e-9)
+
+    def test_a_larger_cap_leaves_no_plateau(self) -> None:
+        # 60° 时整块坡度只升 138.6 mm，上限 200 → 一路都是斜面；
+        # 刀路内缩一个足迹半径（D6 → 3 mm），所以最高只爬到 x = −37 处的高度
+        region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0,
+                                       "cap_z_mm": 200.0})
+        self.assertIsNone(region.crease_x_mm)
+        passes = _pass_cuts(_ramp_plan(angle=60.0, cap=200.0).toolpath)
+        highest = float(region.height_at(np.array([[-37.0, 0.0]]))[0])
+        self.assertAlmostEqual(max(float(move.points[:, 2].max()) for move in passes),
+                               highest, places=6)
+        self.assertAlmostEqual(highest, 77.0 * np.tan(np.radians(60.0)), places=6)
 
     def test_safe_height_is_measured_from_the_surface(self) -> None:
         for angle in (30.0, 60.0):

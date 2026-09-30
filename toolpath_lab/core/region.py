@@ -5,7 +5,7 @@
 
 - 方形（square）：一个边长；
 - 圆形（circle）：一个直径；
-- 斜坡（ramp）：XY 投影是方形，加工面沿 +X 抬起，最高截到 80 mm 后转成平顶。
+- 斜坡（ramp）：XY 投影是方形，加工面沿 −X 抬起，升到「Z 上限」（默认 80 mm，可设）后转成平顶。
 
 所有形状统一归约为一条**逆时针、不重复首点**的边界多边形（XY 投影）。加工面由
 ``height_at`` 给出每个 (x, y) 处的 Z：平面形状恒为 0，斜坡是一个被截断的斜面。
@@ -35,8 +35,8 @@ REGION_SHAPES: Registry[type["RegionShape"]] = Registry("region shape")
 
 #: 圆用多少段折线逼近；固定值，避免把离散精度暴露成一个意义不大的参数。
 CIRCLE_SEGMENTS = 180
-#: 斜坡的 Z 上限（mm）：斜面超过这个高度就取成平顶。
-RAMP_CAP_MM = 80.0
+#: 斜坡 Z 上限的默认值（mm）：斜面沿 Z 轴升到这个高度就取成平顶。可以在区域参数里改。
+DEFAULT_RAMP_CAP_MM = 80.0
 #: 斜坡允许的最大斜度（度）。
 RAMP_MAX_ANGLE_DEG = 80.0
 
@@ -254,22 +254,24 @@ class CircleRegion(RegionShape):
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class RampRegion(RegionShape):
-    """XY 投影是方形、沿 +Z 抬起的斜面，Z 到 RAMP_CAP_MM 截成平顶。
+    """XY 投影是方形、沿 +Z 抬起的斜面，升到 Z 上限后截成平顶。
 
     低边是 **+X 方向的最外侧边**（x = +边长/2，Z = 0），沿 −X 方向线性升高；
-    `tan(斜度) · 边长` 超过 RAMP_CAP_MM 时，多出来的部分取平顶——斜度越大平顶越宽，
-    最高的地方始终不超过 RAMP_CAP_MM。加工面以下仍保留与其它区域一样的基体厚度。
+    `tan(斜度) · 边长` 超过 Z 上限（`cap_z_mm`，默认 80 mm）时，多出来的部分取平顶——
+    上限越小、斜度越大，平顶越宽；加工面的最高处始终不超过它。加工面以下保留部件厚度。
     """
 
     side_mm: float = 80.0
     angle_deg: float = 30.0
+    cap_z_mm: float = DEFAULT_RAMP_CAP_MM
     include_plateau: bool = False
     thickness_mm: float = DEFAULT_REGION_THICKNESS_MM
 
     id: ClassVar[str] = "ramp"
     label: ClassVar[str] = "斜坡"
     description: ClassVar[str] = (
-        f"XY 投影为方形的斜面：以 +X 最外侧边为低边向 −X 抬起，最高到 {RAMP_CAP_MM:g} mm 后转平顶"
+        f"XY 投影为方形的斜面：以 +X 最外侧边为低边向 −X 抬起，"
+        f"升到 Z 上限（默认 {DEFAULT_RAMP_CAP_MM:g} mm，可设）后转平顶"
     )
     parameters: ClassVar[ParameterSet] = ParameterSet(
         (
@@ -278,8 +280,11 @@ class RampRegion(RegionShape):
             spec("angle_deg", "斜度", K.FLOAT, 30.0, minimum=0.0,
                  maximum=RAMP_MAX_ANGLE_DEG, step=5.0, unit="°", group="区域",
                  help=f"加工面与 XY 平面的夹角；0° 就是平面，最大 {RAMP_MAX_ANGLE_DEG:g}°"),
+            spec("cap_z_mm", "Z 上限", K.FLOAT, DEFAULT_RAMP_CAP_MM, minimum=1.0,
+                 maximum=1000.0, step=5.0, unit="mm", group="区域",
+                 help="斜面沿 Z 轴能升到的最大高度，也就是斜面在 Z 方向的投影长度上限；升到它就转平顶"),
             spec("include_plateau", "加工平顶", K.BOOL, False, group="区域",
-                 help="关（默认）：刀路只覆盖斜面段，升到上限后的平顶留给别的工序；开：平顶一起加工"),
+                 help="关（默认）：刀路只覆盖斜面段，升到 Z 上限后的平顶留给别的工序；开：平顶一起加工"),
             REGION_THICKNESS_SPEC,
         )
     )
@@ -289,6 +294,8 @@ class RampRegion(RegionShape):
             raise ParameterError("斜坡边长必须是有限正数")
         if not isfinite(self.angle_deg) or not 0.0 <= self.angle_deg <= RAMP_MAX_ANGLE_DEG:
             raise ParameterError(f"斜坡斜度必须在 0° 到 {RAMP_MAX_ANGLE_DEG:g}° 之间")
+        if not isfinite(self.cap_z_mm) or self.cap_z_mm <= 0:
+            raise ParameterError("斜坡 Z 上限必须是有限正数")
         if not isfinite(self.thickness_mm) or self.thickness_mm <= 0:
             raise ParameterError("斜坡部件厚度必须是有限正数")
 
@@ -306,12 +313,12 @@ class RampRegion(RegionShape):
         if self.slope <= _EPS:
             return None
         half = self.side_mm / 2.0
-        crease = half - RAMP_CAP_MM / self.slope
+        crease = half - self.cap_z_mm / self.slope
         return crease if crease > -half + 1e-9 else None
 
     @property
     def peak_z_mm(self) -> float:
-        """加工面实际达到的最高点（斜度不够时到不了 RAMP_CAP_MM）。"""
+        """加工面实际达到的最高点（斜度不够时到不了 Z 上限）。"""
 
         return float(self.height_at(np.array([[-self.side_mm / 2.0, 0.0]]))[0])
 
@@ -325,7 +332,7 @@ class RampRegion(RegionShape):
     def height_at(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
         planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
         rise = (self.side_mm / 2.0 - planar[:, 0]) * self.slope
-        return np.clip(rise, 0.0, RAMP_CAP_MM)
+        return np.clip(rise, 0.0, self.cap_z_mm)
 
     def surface_breaks(
         self, start_xy: NDArray[np.float64], end_xy: NDArray[np.float64]
@@ -380,7 +387,7 @@ class RampRegion(RegionShape):
             "kind": "ramp",
             "angle_deg": self.angle_deg,
             "slope": self.slope,
-            "cap_z_mm": RAMP_CAP_MM,
+            "cap_z_mm": self.cap_z_mm,
             "crease_x_mm": self.crease_x_mm,
         }
 
