@@ -100,14 +100,16 @@ class CatalogTests(ApiTestCase):
         status, body, _ = self.get("/api/catalog")
         payload = json.loads(body)
         self.assertEqual(status, 200)
-        self.assertEqual([item["id"] for item in payload["planners"]["list"]], ["raster"])
+        self.assertEqual([item["id"] for item in payload["planners"]["list"]],
+                         ["raster", "spiral"])
         self.assertEqual(
-            sorted(item["id"] for item in payload["regions"]["shapes"]), ["circle", "square"]
+            sorted(item["id"] for item in payload["regions"]["shapes"]),
+            ["circle", "ellipse", "square"],
         )
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
         self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
-                         ["kind", "diameter_mm", "length_mm"])
+                         ["kind", "diameter_mm", "length_mm", "corner_radius_mm"])
 
     def test_catalog_reports_the_fixed_settings(self) -> None:
         _, body, _ = self.get("/api/catalog")
@@ -115,10 +117,17 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(fixed["safe_height_mm"], 5.0)
         self.assertEqual(fixed["rapid_feed_mm_per_min"], 5000.0)
 
-    def test_disabled_tool_kinds_are_published(self) -> None:
+    def test_all_tool_kinds_are_published_and_enabled(self) -> None:
         _, body, _ = self.get("/api/catalog")
-        kinds = json.loads(body)["tool"]["parameters"][0]["choices"]
-        self.assertEqual([item["disabled"] for item in kinds], [False, True, True])
+        parameters = {item["key"]: item for item in json.loads(body)["tool"]["parameters"]}
+        kinds = parameters["kind"]["choices"]
+        self.assertEqual([item["value"] for item in kinds], ["flat", "ball", "bull"])
+        self.assertEqual([item["disabled"] for item in kinds], [False, False, False])
+
+    def test_corner_radius_is_only_visible_for_the_bull_nose(self) -> None:
+        _, body, _ = self.get("/api/catalog")
+        parameters = {item["key"]: item for item in json.loads(body)["tool"]["parameters"]}
+        self.assertEqual(parameters["corner_radius_mm"]["visible_if"], {"kind": "bull"})
 
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -163,10 +172,52 @@ class PlanTests(ApiTestCase):
         self.assertEqual(parameters["mode"], "zigzag")
         self.assertEqual(parameters["feed_mm_per_min"], 600.0)
 
-    def test_unknown_planner_is_a_bad_request(self) -> None:
-        status, payload, _ = self.plan({"planner": {"id": "spiral"}})
+    def test_bull_nose_plan_reports_its_footprint(self) -> None:
+        status, payload, _ = self.plan(
+            {
+                "tool": {"kind": "bull", "diameter_mm": 10.0, "length_mm": 40.0,
+                         "corner_radius_mm": 2.0},
+                "region": {"shape": "square", "parameters": {"side_mm": 80.0}},
+                "planner": {"id": "raster", "parameters": {"stepover_mm": 6.0}},
+            }
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["tool"]["kind"], "bull")
+        self.assertEqual(payload["tool"]["corner_radius_mm"], 2.0)
+        self.assertEqual(payload["tool"]["footprint_radius_mm"], 3.0)
+
+    def test_ball_nose_plan_needs_no_inset(self) -> None:
+        status, payload, _ = self.plan(
+            {"tool": {"kind": "ball", "diameter_mm": 8.0, "length_mm": 40.0},
+             "planner": {"id": "raster", "parameters": {"stepover_mm": 6.0}}}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["tool"]["footprint_radius_mm"], 0.0)
+        self.assertGreater(payload["toolpath"]["statistics"]["pass_count"], 0)
+
+    def test_corner_radius_beyond_the_tool_radius_is_a_bad_request(self) -> None:
+        status, payload, _ = self.plan(
+            {"tool": {"kind": "bull", "diameter_mm": 10.0, "corner_radius_mm": 9.0}}
+        )
         self.assertEqual(status, 400)
-        self.assertIn("spiral", payload["error"])
+        self.assertIn("圆角", payload["error"])
+
+    def test_ellipse_region_round_trip(self) -> None:
+        status, payload, _ = self.plan(
+            {"region": {"shape": "ellipse",
+                        "parameters": {"semi_major_mm": 60.0, "semi_minor_mm": 40.0}},
+             "planner": {"id": "spiral", "parameters": {"stepover_mm": 6.0}}}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["request"]["region"]["shape"], "ellipse")
+        self.assertEqual(payload["region"]["id"], "ellipse")
+        self.assertEqual(payload["region"]["bounds_mm"], [[-60.0, 60.0], [-40.0, 40.0]])
+        self.assertAlmostEqual(payload["region"]["area_mm2"], 3.14159 * 60.0 * 40.0, delta=5.0)
+
+    def test_unknown_planner_is_a_bad_request(self) -> None:
+        status, payload, _ = self.plan({"planner": {"id": "no_such_planner"}})
+        self.assertEqual(status, 400)
+        self.assertIn("no_such_planner", payload["error"])
 
     def test_unknown_region_shape_is_a_bad_request(self) -> None:
         status, payload, _ = self.plan({"region": {"shape": "hexagon"}})

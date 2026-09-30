@@ -244,37 +244,74 @@ export class Viewport {
     if (this.bounds) this.fittedDiagonal = this.bounds.getSize(new THREE.Vector3()).length();
   }
 
+  // 刀具的 z = 0 是刀尖（与加工面接触的那一点），往上依次是刃部与夹持部分。
+  // 底部形状按刀型生成：平底刀是圆柱、球头刀是半球、圆鼻刀是平底 + 圆角。
   setTool(tool) {
     this.tool = tool;
     this._clear(this.toolGroup);
-    const radius = Math.max(tool.radius_mm, 0.2);
-    const length = tool.length_mm;
+
+    const kind = tool.kind || "flat";
+    const radius = Math.max(Number(tool.radius_mm) || 0, 0.2);
+    const length = Math.max(Number(tool.length_mm) || 0, radius * 2);
+    const nominal = Number(tool.corner_radius_mm) || 0;
+    const corner = kind === "ball" ? radius : Math.min(Math.max(nominal, 0), radius);
+
     const flute = Math.min(length * 0.65, radius * 6);
     const holder = Math.max(length - flute, length * 0.2);
+    const steel = new THREE.MeshStandardMaterial({
+      color: COLORS.tool, metalness: 0.5, roughness: 0.34,
+    });
 
-    // 两段都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
+    // 所有回转体都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
     // 黄色切削段对齐 UGNX 的刀具配色。
-    const cutting = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, flute, 64),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.tool, metalness: 0.5, roughness: 0.34,
-      })
-    );
+    const cylinder = (r, height, bottom) => {
+      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(r, r, height, 64), steel);
+      mesh.rotation.x = Math.PI / 2;
+      mesh.position.z = bottom + height / 2;
+      return mesh;
+    };
+
+    const parts = [];
+    if (kind === "ball") {
+      // 半球刀尖：最低点 z = 0，球心 z = R，赤道以上再接一段等径圆柱凑满刃长。
+      const tip = new THREE.Mesh(
+        new THREE.SphereGeometry(radius, 48, 24, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
+        steel
+      );
+      tip.rotation.x = Math.PI / 2;
+      tip.position.z = radius;
+      parts.push(tip, cylinder(radius, Math.max(flute - radius, radius * 0.5), radius));
+    } else if (kind === "bull" && corner > 1e-6 && corner < radius - 1e-6) {
+      // 平底（半径 R−Rc）→ 圆角（半径 Rc）→ 刀体（半径 R）：三段在 z = Rc 处相切。
+      const fillet = new THREE.Mesh(
+        new THREE.TorusGeometry(radius - corner, corner, 16, 64), steel
+      );
+      // 圆环默认就躺在 XY 平面（孔沿 Z 轴），不需要旋转。
+      fillet.position.z = corner;
+      parts.push(
+        cylinder(radius - corner, corner, 0),
+        fillet,
+        cylinder(radius, Math.max(flute - corner, radius * 0.5), corner)
+      );
+    } else {
+      // 平底刀，也就是圆鼻刀圆角为 0 时的退化情形。
+      parts.push(cylinder(radius, flute, 0));
+    }
+
     const shank = new THREE.Mesh(
       new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
       new THREE.MeshStandardMaterial({
         color: COLORS.holder, metalness: 0.92, roughness: 0.24,
       })
     );
-    for (const mesh of [cutting, shank]) {
+    shank.rotation.x = Math.PI / 2;
+    shank.position.z = flute + holder / 2;
+
+    for (const mesh of [...parts, shank]) {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.toolGroup.add(mesh);
     }
-    cutting.rotation.x = Math.PI / 2;
-    cutting.position.z = flute / 2;
-    shank.rotation.x = Math.PI / 2;
-    shank.position.z = flute + holder / 2;
     this.toolMesh = this.toolGroup;
     this.toolGroup.visible = this.display.showTool;
   }
@@ -363,20 +400,33 @@ export class Viewport {
     return Math.min(Math.max(span * 0.09, 4), 24);
   }
 
+  // 工件直接由区域边界拉伸而来，所以任何实现了 boundary() 的形状（方形、圆形、椭圆，
+  // 以及将来新增的形状）都会自动显示正确，这里不需要按形状分支。
   _workpiece(region, thickness) {
     const material = new THREE.MeshStandardMaterial({
       color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
     });
-    if (region.id === "circle") {
-      const radius = (region.bounds_mm[0][1] - region.bounds_mm[0][0]) / 2;
-      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, thickness, 128), material);
-      mesh.rotation.x = Math.PI / 2;
-      mesh.position.z = -thickness / 2;
+    const outline = (region.boundary || []).map(
+      (point) => new THREE.Vector2(point[0], point[1])
+    );
+    if (outline.length >= 3) {
+      const mesh = new THREE.Mesh(
+        new THREE.ExtrudeGeometry(new THREE.Shape(outline), {
+          depth: thickness, bevelEnabled: false,
+        }),
+        material
+      );
+      // 拉伸从 z = 0 向 +Z 进行，下移一个厚度让上表面落在 z = 0（加工面）。
+      mesh.position.z = -thickness;
       mesh.receiveShadow = true;
       return mesh;
     }
-    const side = region.bounds_mm[0][1] - region.bounds_mm[0][0];
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(side, side, thickness), material);
+    // 兜底：边界点数不足时退回包围盒。
+    const [xMin, xMax] = region.bounds_mm[0];
+    const [yMin, yMax] = region.bounds_mm[1];
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(xMax - xMin, yMax - yMin, thickness), material
+    );
     mesh.position.z = -thickness / 2;
     mesh.receiveShadow = true;
     return mesh;

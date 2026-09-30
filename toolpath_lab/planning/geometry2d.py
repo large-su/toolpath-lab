@@ -83,3 +83,62 @@ def scanline_intervals(polygon: NDArray[np.float64], level: float) -> list[Inter
         return []
     pairs = xs[: xs.size - (xs.size % 2)].reshape(-1, 2)
     return [Interval(float(a), float(b)) for a, b in pairs if b - a > _EPS]
+
+
+def polygon_centroid(polygon: NDArray[np.float64]) -> NDArray[np.float64]:
+    """多边形的面积质心，形状 (2,)。
+
+    多边形退化（面积为零）时退回顶点平均值，保证调用方永远拿到一个可用的中心点。
+    """
+
+    points = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
+    x = points[:, 0]
+    y = points[:, 1]
+    x_next = np.roll(x, -1)
+    y_next = np.roll(y, -1)
+    cross = x * y_next - x_next * y
+    area = float(cross.sum()) * 0.5
+    if abs(area) <= _EPS:
+        return points.mean(axis=0)
+    return np.array(
+        [
+            float(np.sum((x + x_next) * cross)) / (6.0 * area),
+            float(np.sum((y + y_next) * cross)) / (6.0 * area),
+        ],
+        dtype=np.float64,
+    )
+
+
+def ray_boundary_radius(
+    polygon: NDArray[np.float64],
+    center: NDArray[np.float64],
+    angles_rad: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """从 center 沿一组角度方向打射线，返回每条射线**首次命中边界**的距离 (M,)。
+
+    射线与多边形每条边解一个 2x2 线性方程组（t 是射线参数、u 是边参数），
+    取满足 0 <= u <= 1 且 t > 0 的最小 t。只有区域相对 center 是**星形**时
+    "首次命中"才等于"到边界的距离"，方形、圆形都满足这一点。
+    没有命中的方向返回 +inf，调用方据此判断区域是否可用作回转体。
+    """
+
+    points = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
+    origin = np.asarray(center, dtype=np.float64).reshape(2)
+    theta = np.asarray(angles_rad, dtype=np.float64).reshape(-1)
+
+    directions = np.column_stack((np.cos(theta), np.sin(theta)))  # (M, 2)
+    start = points[None, :, :]                                     # (1, E, 2)
+    edge = np.roll(points, -1, axis=0)[None, :, :] - start         # (1, E, 2)
+    relative = start - origin                                      # (1, E, 2)
+    direction = directions[:, None, :]                             # (M, 1, 2)
+
+    determinant = edge[..., 0] * direction[..., 1] - edge[..., 1] * direction[..., 0]
+    safe = np.where(np.abs(determinant) > _EPS, determinant, np.inf)
+    along_ray = (edge[..., 0] * relative[..., 1]
+                 - edge[..., 1] * relative[..., 0]) / safe
+    along_edge = (direction[..., 0] * relative[..., 1]
+                  - direction[..., 1] * relative[..., 0]) / safe
+
+    hit = (along_edge >= -1e-9) & (along_edge <= 1.0 + 1e-9) & (along_ray > 1e-9)
+    along_ray = np.where(hit, along_ray, np.inf)
+    return along_ray.min(axis=1)

@@ -17,6 +17,7 @@ from toolpath_lab.planning import (
     planner_catalog,
     run_plan,
 )
+from toolpath_lab.planning.offset import distance_to_boundary
 
 
 def _tool(diameter: float = 6.0) -> Tool:
@@ -40,8 +41,8 @@ def _cut_moves(toolpath: Toolpath):
 
 
 class RegistryTests(unittest.TestCase):
-    def test_only_the_raster_strategy_is_registered(self) -> None:
-        self.assertEqual(PLANNERS.ids(), ["raster"])
+    def test_registered_strategies_are_raster_and_spiral(self) -> None:
+        self.assertEqual(PLANNERS.ids(), ["raster", "spiral"])
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:
         entry = planner_catalog()[0]
@@ -149,6 +150,106 @@ class CircleRegionTests(unittest.TestCase):
             ).toolpath
         )
         self.assertLess(passes[0].length_mm, passes[len(passes) // 2].length_mm)
+
+
+class EllipseRegionTests(unittest.TestCase):
+    """椭圆区域：栅格刀路与螺旋刀路都应自动适配。"""
+
+    @staticmethod
+    def _ellipse(major: float = 60.0, minor: float = 40.0):
+        return build_region("ellipse", {"semi_major_mm": major, "semi_minor_mm": minor})
+
+    def test_passes_fit_inside_the_two_semi_axes(self) -> None:
+        # 走刀方向 0° → 刀线沿 x、在 y 方向布刀；短半轴 40 内缩 3 后是 ±37。
+        toolpath = run_plan(
+            planner_id="raster", tool=_tool(), region=self._ellipse(),
+            parameters={"stepover_mm": 6.0},
+        ).toolpath
+        levels = sorted({round(float(move.points[0][1]), 6) for move in _cut_moves(toolpath)})
+        self.assertAlmostEqual(levels[0], -37.0, places=6)
+        self.assertAlmostEqual(levels[-1], 37.0, places=6)
+
+    def test_a_round_ellipse_matches_the_equivalent_circle(self) -> None:
+        ellipse = run_plan(
+            planner_id="raster", tool=_tool(), region=self._ellipse(40.0, 40.0),
+            parameters={"stepover_mm": 6.0},
+        ).toolpath
+        circle = run_plan(
+            planner_id="raster", tool=_tool(),
+            region=build_region("circle", {"diameter_mm": 80.0}),
+            parameters={"stepover_mm": 6.0},
+        ).toolpath
+        self.assertAlmostEqual(ellipse.cut_length_mm, circle.cut_length_mm, places=6)
+
+    def test_a_wide_ellipse_cuts_more_than_the_narrow_one(self) -> None:
+        wide = run_plan(
+            planner_id="raster", tool=_tool(), region=self._ellipse(80.0, 40.0),
+            parameters={"stepover_mm": 6.0},
+        ).toolpath
+        narrow = run_plan(
+            planner_id="raster", tool=_tool(), region=self._ellipse(40.0, 40.0),
+            parameters={"stepover_mm": 6.0},
+        ).toolpath
+        self.assertGreater(wide.cut_length_mm, narrow.cut_length_mm)
+
+    def test_ellipse_also_works_with_the_spiral(self) -> None:
+        # 椭圆相对中心仍是星形，螺旋可用；且刀心不会切出轮廓。
+        region = self._ellipse()
+        move = _cut_moves(
+            run_plan(
+                planner_id="spiral", tool=_tool(), region=region,
+                parameters={"stepover_mm": 6.0},
+            ).toolpath
+        )[0]
+        clearance = distance_to_boundary(move.points[:, :2], region.boundary()).min()
+        self.assertGreaterEqual(clearance, _tool().footprint_radius_mm - 1e-6)
+
+
+class ToolKindIntegrationTests(unittest.TestCase):
+    """刀型经由"足迹半径"影响刀路：球头刀为 0，圆鼻刀为 R − Rc。"""
+
+    @staticmethod
+    def _levels(tool: Tool):
+        toolpath = run_plan(
+            planner_id="raster",
+            tool=tool,
+            region=build_region("square", {"side_mm": 80.0}),
+            parameters={"mode": "zigzag", "stepover_mm": 6.0},
+        ).toolpath
+        return sorted({round(float(move.points[0][1]), 6) for move in _cut_moves(toolpath)})
+
+    def test_flat_tool_insets_by_the_radius(self) -> None:
+        levels = self._levels(Tool(ToolKind.FLAT, 6.0, 30.0))
+        self.assertAlmostEqual(levels[0], -37.0, places=6)
+        self.assertAlmostEqual(levels[-1], 37.0, places=6)
+
+    def test_ball_tool_runs_right_on_the_contour(self) -> None:
+        # 足迹半径 0：刀尖可以贴着轮廓走，最外侧刀线落在 x/y = ±40。
+        levels = self._levels(Tool(ToolKind.BALL, 6.0, 30.0))
+        self.assertAlmostEqual(levels[0], -40.0, places=6)
+        self.assertAlmostEqual(levels[-1], 40.0, places=6)
+
+    def test_bull_tool_insets_by_radius_minus_corner_radius(self) -> None:
+        # D10 → R=5，Rc=2 → 足迹 3，与 D6 平底刀一致。
+        levels = self._levels(Tool(ToolKind.BULL, 10.0, 30.0, corner_radius_mm=2.0))
+        self.assertAlmostEqual(levels[0], -37.0, places=6)
+        self.assertAlmostEqual(levels[-1], 37.0, places=6)
+
+    def test_bull_tool_without_a_corner_radius_matches_a_flat_tool(self) -> None:
+        bull = self._levels(Tool(ToolKind.BULL, 6.0, 30.0))
+        flat = self._levels(Tool(ToolKind.FLAT, 6.0, 30.0))
+        self.assertEqual(bull, flat)
+
+    def test_ball_tool_also_works_with_the_spiral(self) -> None:
+        toolpath = run_plan(
+            planner_id="spiral",
+            tool=Tool(ToolKind.BALL, 8.0, 40.0),
+            region=build_region("circle", {"diameter_mm": 80.0}),
+            parameters={"stepover_mm": 6.0},
+        ).toolpath
+        cut = _cut_moves(toolpath)[0]
+        # 球头刀不内缩，螺旋最外圈半径就是区域半径 40。
+        self.assertAlmostEqual(float(np.linalg.norm(cut.points[-1][:2])), 40.0, places=3)
 
 
 class SafetyTests(unittest.TestCase):

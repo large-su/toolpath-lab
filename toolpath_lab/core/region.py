@@ -1,13 +1,14 @@
 """加工区域。
 
 区域就是"要加工的那块地方"，它替代了"导入模型 + 提取特征"这一整套前置环节：
-直接给定一个规则区域即可开始规划。当前提供两种形状：
+直接给定一个规则区域即可开始规划。当前提供三种形状：
 
 - 方形（square）：一个边长；
-- 圆形（circle）：一个直径。
+- 圆形（circle）：一个直径；
+- 椭圆（ellipse）：长半轴 a 与短半轴 b，用参数方程生成多边形近似。
 
 所有形状统一归约为一条**逆时针、不重复首点**的边界多边形。栅格刀路只会用到
-"一条直线与多边形求交"，因此新增形状（椭圆、跑道形、凹多边形……）只要实现一个
+"一条直线与多边形求交"，因此新增形状（跑道形、凹多边形……）只要实现一个
 boundary() 就能直接参与规划，不需要改任何刀路代码。
 """
 
@@ -134,6 +135,42 @@ class CircleRegion(RegionShape):
         radius = self.diameter_mm / 2.0
         angles = np.linspace(0.0, 2.0 * pi, CIRCLE_SEGMENTS, endpoint=False)
         return np.column_stack((radius * np.cos(angles), radius * np.sin(angles)))
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class EllipseRegion(RegionShape):
+    """以原点为中心的椭圆区域。"""
+
+    semi_major_mm: float = 60.0
+    semi_minor_mm: float = 40.0
+
+    id: ClassVar[str] = "ellipse"
+    label: ClassVar[str] = "椭圆"
+    description: ClassVar[str] = "长半轴 / 短半轴定义的椭圆，用来观察刀路在非圆形曲线边界上的收放"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("semi_major_mm", "长半轴 a", K.FLOAT, 60.0, minimum=5.0, maximum=500.0,
+                 step=5.0, unit="mm", group="区域"),
+            spec("semi_minor_mm", "短半轴 b", K.FLOAT, 40.0, minimum=5.0, maximum=500.0,
+                 step=5.0, unit="mm", group="区域"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.semi_major_mm <= 0 or self.semi_minor_mm <= 0:
+            raise ParameterError("椭圆的长半轴与短半轴必须为正")
+
+    def boundary(self) -> NDArray[np.float64]:
+        # 参数方程 (a·cosθ, b·sinθ)：均匀取角度就够了，椭圆的弧长不均匀只影响点距，
+        # 不影响力路径形状——栅格刀路靠扫描线求交，任何点距都能正确裁剪。
+        angles = np.linspace(0.0, 2.0 * pi, CIRCLE_SEGMENTS, endpoint=False)
+        return np.column_stack(
+            (
+                self.semi_major_mm * np.cos(angles),
+                self.semi_minor_mm * np.sin(angles),
+            )
+        )
 
 
 def build_region(shape_id: str, raw_parameters: Mapping[str, Any] | None = None) -> RegionShape:

@@ -67,7 +67,8 @@ class SpiralPlanner(Planner):
 
 ## 2. 新增一个区域形状
 
-在 toolpath_lab/core/region.py 里加一个类，或者单独放一个模块再导入：
+在 toolpath_lab/core/region.py 里加一个类，或者单独放一个模块再导入。
+（椭圆已经按这个写法内置到 core/region.py 了，下面仍用它当样例。）
 
 ```python
 from dataclasses import dataclass
