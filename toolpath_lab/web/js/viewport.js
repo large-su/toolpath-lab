@@ -14,6 +14,7 @@ const COLORS = {
   background: 0x071014,
   white: 0xffffff,
   workpiece: 0x5b6b7e,
+  stock: 0x93a4b8,
   contour: 0x54d6c4,
   cut: 0xffa726,
   link: 0xf2c94c,
@@ -61,6 +62,41 @@ function orientation(view) {
 // 刀路整体抬高一点点画，避免与工件上表面互相穿插（z-fighting）。
 function liftPaths(polylines) {
   return polylines.map((points) => points.map((point) => [point[0], point[1], PATH_LIFT_MM]));
+}
+
+// ------------------------------------------------------------------ 高度场
+// 材料切除仿真把毛坯离散成一张高度场，载荷里每帧只带"相对上一帧变化的格子"。
+// 每个游程是 [行号, 起始列, 值串]：值串每两个字节是一个格子的量化值（UTF-16LE
+// 码点，低字节在前），还原公式是 value * step_mm + offset_mm。
+function decodeStockFrames(payload) {
+  const { rows, columns, encoding, stock_top_mm: stockTop } = payload;
+  const state = new Uint16Array(rows * columns);
+  const initial = Math.round((stockTop - encoding.offset_mm) / encoding.step_mm);
+  state.fill(initial);
+  const frames = [];
+  for (const runs of payload.frames) {
+    for (const [row, start, packed] of runs) {
+      const base = row * columns + start;
+      const count = packed.length >> 1;
+      for (let index = 0; index < count; index += 1) {
+        state[base + index] = packed.charCodeAt(index);
+      }
+    }
+    frames.push(state.slice());
+  }
+  return frames;
+}
+
+function frameIndexFor(times, time) {
+  if (times.length < 2) return 0;
+  let low = 0;
+  let high = times.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (times[middle] <= time) low = middle;
+    else high = middle - 1;
+  }
+  return low;
 }
 
 function polylineGeometry(polylines, dashed = false) {
@@ -136,12 +172,13 @@ export class Viewport {
 
     this.gridGroup = new THREE.Group();
     this.workpieceGroup = new THREE.Group();
+    this.stockGroup = new THREE.Group();
     this.contourGroup = new THREE.Group();
     this.pathGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
     this.toolGroup = new THREE.Group();
     this.scene.add(
-      this.gridGroup, this.workpieceGroup,
+      this.gridGroup, this.workpieceGroup, this.stockGroup,
       this.contourGroup, this.pathGroup, this.traceGroup, this.toolGroup
     );
 
@@ -149,6 +186,11 @@ export class Viewport {
     this.toolMesh = null;
     this.traceLine = null;
     this.rapidLine = null;
+    this.stockSimulation = null;   //: 高度场仿真的载荷（含编码参数）
+    this.stockFrames = [];         //: 解码后的逐帧顶面高度（量化整数）
+    this.stockMesh = null;
+    this.stockGeometry = null;
+    this._stockFrameIndex = -1;
 
     this.resize();
     if (typeof ResizeObserver !== "undefined") {
@@ -174,12 +216,102 @@ export class Viewport {
     this.renderer.render(this.scene, this.camera);
   }
 
+  // ------------------------------------------------------------ 材料切除
+  // 把高度场画成一张网格：顶点的 Z 就是该处材料的顶面高度，随播放进度逐帧下降。
+  _buildStock(stock) {
+    this.stockSimulation = null;
+    this.stockFrames = [];
+    this.stockMesh = null;
+    this.stockGeometry = null;
+    this._stockFrameIndex = -1;
+    if (!stock || !stock.enabled || !stock.columns || !stock.rows) return;
+
+    this.stockSimulation = stock;
+    this.stockFrames = decodeStockFrames(stock);
+
+    const rows = stock.rows;
+    const columns = stock.columns;
+    const geometry = new THREE.PlaneGeometry(
+      stock.x_range_mm[1] - stock.x_range_mm[0],
+      stock.y_range_mm[1] - stock.y_range_mm[0],
+      columns - 1,
+      rows - 1
+    );
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: COLORS.stock, metalness: 0.12, roughness: 0.78,
+        side: THREE.DoubleSide,
+      })
+    );
+    // 平面的行是从上往下排的；网格首行对应 y_min，所以对 y 翻转一次。
+    mesh.scale.set(1, -1, 1);
+    mesh.position.set(
+      (stock.x_range_mm[0] + stock.x_range_mm[1]) / 2,
+      (stock.y_range_mm[0] + stock.y_range_mm[1]) / 2,
+      0
+    );
+    // 毛坯是主视觉，但自己给自己投阴影会在网格面上留下细密的条纹（shadow acne），
+    // 而它只需要接收刀路与刀具的阴影。
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    this.stockGroup.add(mesh);
+    this.stockMesh = mesh;
+    this.stockGeometry = geometry;
+    this._updateStockSurface(stock.times[0]);
+  }
+
+  // 每帧只改顶点高度；法线只在跨到下一个关键帧时重算一次，省掉大部分开销。
+  _updateStockSurface(time) {
+    const stock = this.stockSimulation;
+    const geometry = this.stockGeometry;
+    if (!stock || !geometry) return;
+    const times = stock.times;
+    const index = Math.min(frameIndexFor(times, time), this.stockFrames.length - 1);
+    if (index < 0) return;
+    const next = Math.min(index + 1, this.stockFrames.length - 1);
+    const t0 = times[index];
+    const t1 = times[next];
+    const ratio = next === index || t1 <= t0 ? 0 : (time - t0) / (t1 - t0);
+    const start = this.stockFrames[index];
+    const end = this.stockFrames[next];
+    const position = geometry.attributes.position;
+    const array = position.array;
+    const step = stock.encoding.step_mm;
+    const offset = stock.encoding.offset_mm;
+    const rows = stock.rows;
+    const columns = stock.columns;
+    // 每个顶点 3 个浮点数（x, y, z），所以一行的跨距是"列数 × 3"，
+    // 而 z 在本行的偏移是"列号 × 3 + 2"。
+    const rowStride = columns * 3;
+
+    for (let row = 0; row < rows; row += 1) {
+      const base = (rows - 1 - row) * rowStride;
+      const source = row * columns;
+      for (let column = 0; column < columns; column += 1) {
+        const cell = source + column;
+        const removed = start[cell] + ratio * (end[cell] - start[cell]);
+        array[base + column * 3 + 2] = removed * step + offset;
+      }
+    }
+    position.needsUpdate = true;
+    if (index !== this._stockFrameIndex) {
+      this._stockFrameIndex = index;
+      geometry.computeVertexNormals();
+    }
+  }
+
+  setSimulationTime(timeSeconds) {
+    this._updateStockSurface(Math.max(0, timeSeconds));
+  }
+
   // ---------------------------------------------------------------- 结果
   setResult(payload) {
     this._clear(this.workpieceGroup);
     this._clear(this.contourGroup);
     this._clear(this.pathGroup);
     this._clear(this.traceGroup);
+    this._clear(this.stockGroup);
 
     const region = payload.region;
     const [xMin, xMax] = region.bounds_mm[0];
@@ -190,6 +322,7 @@ export class Viewport {
     this.workpieceGroup.add(this._workpiece(region, thickness));
     this.contourGroup.add(this._contour(region.boundary));
     this._rebuildGrid(span, thickness);
+    this._buildStock(payload.stock);
 
     const groups = { cut: [], link: [], rapid: [] };
     for (const move of payload.toolpath.moves) {
@@ -290,6 +423,7 @@ export class Viewport {
   setDisplayOptions(options) {
     this.display = Object.assign({}, this.display, options || {});
     this.workpieceGroup.visible = this.display.showWorkpiece;
+    this.stockGroup.visible = this.display.showStock && this.stockGroup.children.length > 0;
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.toolGroup.visible = this.display.showTool;
@@ -307,7 +441,7 @@ export class Viewport {
     this.renderer.shadowMap.needsUpdate = true;
     this.keyLight.castShadow = shadows;
     this.gridGroup.visible = grid;
-    for (const group of [this.workpieceGroup, this.toolGroup]) {
+    for (const group of [this.workpieceGroup, this.stockGroup, this.toolGroup]) {
       group.traverse((object) => {
         if (object.isMesh) object.castShadow = shadows;
       });

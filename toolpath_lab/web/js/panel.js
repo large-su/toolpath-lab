@@ -3,6 +3,7 @@
 
 const DISPLAY_OPTIONS = [
   { key: "showWorkpiece", label: "工件" },
+  { key: "showStock", label: "材料切除", color: "var(--teal)" },
   { key: "showPath", label: "刀路", color: "var(--orange)" },
   { key: "showRapid", label: "快移", color: "var(--cyan)" },
   { key: "showTrace", label: "已走轨迹", color: "var(--teal)" },
@@ -17,6 +18,15 @@ const FIXED_NOTES = [
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
+
+//: 毛坯分组的兜底声明：老版本目录里没有 stock 时，界面也不能崩。
+const FALLBACK_STOCK = [
+  { key: "depth_mm", label: "毛坯厚度", kind: "float", default: 20.0, min: 0.5, max: 200.0, step: 0.5, unit: "mm" },
+  { key: "top_mm", label: "上表面余量", kind: "float", default: 1.0, min: 0.0, max: 20.0, step: 0.1, unit: "mm" },
+  { key: "margin_mm", label: "侧向余量", kind: "float", default: 1.0, min: 0.0, max: 50.0, step: 0.5, unit: "mm" },
+  { key: "resolution_mm", label: "网格精度", kind: "float", default: 1.0, min: 0.2, max: 10.0, step: 0.1, unit: "mm" },
+  { key: "frame_budget", label: "动画帧数", kind: "int", default: 24, min: 4, max: 48, step: 4, unit: "帧" },
+];
 
 function defaultsOf(item) {
   const values = {};
@@ -55,7 +65,11 @@ export class ParameterPanel {
         id: this.catalog.planners.default_id,
         values: clone(this.catalog.planners.defaults),
       },
-      display: { showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true },
+      stock: clone((this.catalog.stock && this.catalog.stock.defaults) || {}),
+      display: {
+        showWorkpiece: true, showStock: true, showPath: true,
+        showRapid: true, showTrace: true, showTool: true,
+      },
     };
     this.rows = [];
     this.render();
@@ -66,6 +80,7 @@ export class ParameterPanel {
       tool: clone(this.state.tool),
       region: { shape: this.state.region.id, parameters: clone(this.state.region.values) },
       planner: { id: this.state.planner.id, parameters: clone(this.state.planner.values) },
+      stock: clone(this.state.stock),
     };
   }
 
@@ -80,6 +95,7 @@ export class ParameterPanel {
       this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
       this._regionSection(),
       this._plannerSection(),
+      this._stockSection(),
       this._displaySection(),
       this._noteSection()
     );
@@ -172,6 +188,24 @@ export class ParameterPanel {
         this._wrapRow(spec, control, "planner", this.state.planner.values)
       );
     }
+    return section;
+  }
+
+  _stockSection() {
+    const catalog = this.catalog.stock;
+    const specs = (catalog && catalog.parameters) || FALLBACK_STOCK;
+    const section = this._section("毛坯 · 材料切除");
+    for (const spec of specs) {
+      const control = this._buildControl(spec, this.state.stock[spec.key], (value) => {
+        this.state.stock[spec.key] = value;
+        this.onChange();
+      });
+      section.appendChild(this._wrapRow(spec, control, "stock", this.state.stock));
+    }
+    const hint = document.createElement("div");
+    hint.className = "note";
+    hint.textContent = "毛坯按刀路扫掠范围自动取尺寸；上表面余量决定能切掉多少，留 0 会自动补一点。";
+    section.appendChild(hint);
     return section;
   }
 

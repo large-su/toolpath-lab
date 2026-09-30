@@ -216,6 +216,15 @@ function renderStats(result) {
     ["切削长度", stats.cut_length_mm.toFixed(1) + " mm"],
     ["预计工时", seconds(stats.estimated_time_s)],
   ];
+  if (result.stock && result.stock.statistics) {
+    const stock = result.stock.statistics;
+    rows.push(
+      ["切除体积", Math.round(stock.removed_volume_mm3) + " mm³"],
+      ["最大切深", stock.max_cut_depth_mm.toFixed(2) + " mm"],
+      ["已加工面", (stock.machined_ratio * 100).toFixed(0) + " %"],
+      ["高度场", result.stock.columns + " × " + result.stock.rows]
+    );
+  }
   const list = document.createElement("dl");
   for (const [label, value] of rows) {
     for (const node of statRow(label, value)) list.appendChild(node);
@@ -243,6 +252,8 @@ function animate(now) {
   const state = playback.update(dt);
   if (state && playback.timeline) {
     viewport.setPlayhead(state.position, state.index);
+    // 材料切除跟着播放进度走：拖进度条能看到毛坯一路被削出来。
+    viewport.setSimulationTime(state.time);
     if (playback.playing || scrubbing) renderPlaybar(state);
   }
   viewport.render();
