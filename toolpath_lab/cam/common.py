@@ -122,6 +122,33 @@ class MillingContext:
     def clearance(self) -> float:
         return float(self.parameters["clearance_mm"])
 
+    # -- 进退刀（型腔铣读这组；老工程没有这些键时按默认值走） ----------------
+    @property
+    def entry_method(self) -> str:
+        return str(self.parameters.get("entry_method", "auto"))
+
+    @property
+    def retract_method(self) -> str:
+        return str(self.parameters.get("retract_method", "lift"))
+
+    @property
+    def level_transition(self) -> str:
+        return str(self.parameters.get("level_transition", "ramp"))
+
+    @property
+    def ramp_angle_rad(self) -> float:
+        """进刀与层间斜降的最大坡度（弧度）。"""
+
+        degrees = float(self.parameters.get("ramp_angle_deg", 3.0))
+        return float(np.radians(np.clip(degrees, 0.5, 45.0)))
+
+    @property
+    def entry_radius(self) -> float:
+        """进刀圆弧/螺旋半径（mm）；0 表示按刀具直径自动取。"""
+
+        value = float(self.parameters.get("entry_radius_mm", 0.0) or 0.0)
+        return value if value > 0 else 0.25 * self.tool.diameter_mm
+
     @property
     def tool_radius(self) -> float:
         return self.tool.radius_mm
@@ -347,6 +374,30 @@ class MoveBuilder:
         start = self._last if self._last is not None else target
         points = np.vstack([start, target])
         self._append(MoveKind.CUT, points, self.context.plunge_feed, label)
+
+    def entry(self, points: NDArray[np.float64], *, label: str = "下刀") -> None:
+        """进刀段（斜插 / 螺旋 / 圆弧）：走**下刀进给**，标签统一带「下刀」。
+
+        与 :meth:`plunge` 的区别只是点列——一个直上直下，一个带着斜坡或圆弧。
+        统一标签是刻意的：统计、测试与阅读刀路时"下刀"就是"从上方进入材料"这件事。
+        """
+
+        self._append(MoveKind.CUT, points, self.context.plunge_feed, label)
+
+    @property
+    def last_direction(self) -> NDArray[np.float64] | None:
+        """最后一段的 XY 单位方向（切向退刀用）；不足两点或零长时为 None。"""
+
+        if not self.moves:
+            return None
+        points = np.asarray(self.moves[-1].points, dtype=np.float64)
+        if points.shape[0] < 2:
+            return None
+        delta = points[-1, :2] - points[-2, :2]
+        length = float(np.hypot(delta[0], delta[1]))
+        if length <= 1e-9:
+            return None
+        return delta / length
 
     def next_pass(self) -> int:
         self._pass_index += 1

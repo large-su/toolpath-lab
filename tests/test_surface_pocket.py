@@ -408,7 +408,11 @@ class SlopedPocketToolpathTests(unittest.TestCase):
         region = self._region(part, floor_face, ceiling=40.0)
         tool = flat_tool(6.0)
         toolpath = self._plan(region, tool, cut_depth_mm=3.0)
-        points = cut_points(toolpath)
+        # 进刀段（螺旋/圆弧/斜插）从材料顶面下探到本层起点，它本身就带着一串中间高度，
+        # 不是"环"的一部分——按全文件的口径跳过带"下刀"的段，剩下的才是层环。
+        points = np.vstack([np.asarray(move.points, dtype=float)
+                            for move in toolpath.moves
+                            if move.kind is MoveKind.CUT and "下刀" not in move.label])
         zs = np.unique(np.round(points[:, 2], 6))
         self.assertEqual(zs.size, 5, f"应当只有 5 个层高，实际 {zs.tolist()}")
         for z in zs:

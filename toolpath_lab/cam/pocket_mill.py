@@ -28,7 +28,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -37,6 +37,8 @@ from toolpath_lab.cam.boundary import MachiningRegion, offset_outline_polygons
 from toolpath_lab.cam.common import (LevelCoverage, MillingContext, MoveBuilder,
                                      depth_levels, in_level_transfer, level_key,
                                      stepped_levels)
+from toolpath_lab.cam.entry import (ENTRY_LABELS, Feasible, build_depart,
+                                    build_entry, build_transition)
 from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.path import Toolpath
 
@@ -143,12 +145,14 @@ def _cut_pocket_level(builder: MoveBuilder, job: _PocketJob, level_index: int,
             else:
                 job.skipped_layers += 1
             return first_cut
+        wall_ring = _ring_for_transition(context, region, job.base_offset, target_z)
         for ring_index, polygon in enumerate(rings):
             job.ring_count += 1
             points = _ring_points(region, context, polygon, target_z, close=True)
             _emit_ring(builder, context, points, first_cut, level_index, ring_index,
                        region=region, level_mask=level_region,
-                       label_prefix=job.prefix)
+                       label_prefix=job.prefix, engage_z=previous_z,
+                       offset_mm=job.base_offset, wall_ring=wall_ring)
             first_cut = False
         # BUG-025 修：最后一环到区域最深点的距离若超过刀半径，中心会剩一块
         # 谁都切不到的"内岛"（中心处的小等距轮廓已被 min_area 过滤）。
@@ -161,7 +165,8 @@ def _cut_pocket_level(builder: MoveBuilder, job: _PocketJob, level_index: int,
                 _emit_ring(builder, context, cleanup, first_cut,
                            level_index, len(rings), region=region,
                            level_mask=level_region, label_suffix="（中心清理）",
-                           label_prefix=job.prefix)
+                           label_prefix=job.prefix, engage_z=previous_z,
+                           offset_mm=job.base_offset, wall_ring=wall_ring)
                 first_cut = False
     else:
         mask = region.offset_mask(job.base_offset)
@@ -182,13 +187,16 @@ def _cut_pocket_level(builder: MoveBuilder, job: _PocketJob, level_index: int,
         # 单向走刀失效。单向走刀的语义是"每刀抬刀 → 同向落刀"，不翻折；
         # 往复（zigzag）才是"奇数刀翻折 + 邻刀相连"。
         force_safe_link = (job.mode == "one_way")
+        wall_ring = _ring_for_transition(context, region, job.base_offset, target_z)
         for pass_index, world_pass in enumerate(passes):
             if job.mode == "zigzag" and pass_index % 2 == 1:
                 world_pass = world_pass[::-1]
             points = _ring_points(region, context, world_pass, target_z)
             _emit_ring(builder, context, points, first_cut, level_index, pass_index,
                        region=region, level_mask=level_region,
-                       force_safe_link=force_safe_link, label_prefix=job.prefix)
+                       force_safe_link=force_safe_link, label_prefix=job.prefix,
+                       engage_z=previous_z, offset_mm=job.base_offset,
+                       wall_ring=wall_ring)
             first_cut = False
 
     # BUG-005 修：先前精修用 base_offset (= R + stock_allowance) 偏置——
@@ -201,7 +209,8 @@ def _cut_pocket_level(builder: MoveBuilder, job: _PocketJob, level_index: int,
             and region.offset_area_mm2(context.tool_radius) > 0.0:
         _emit_wall_finish(builder, context, region, context.tool_radius, target_z,
                           mask=region.obstacle_mask(target_z, context.tool),
-                          level_mask=level_region, label_prefix=job.prefix)
+                          level_mask=level_region, label_prefix=job.prefix,
+                          engage_z=previous_z)
     return first_cut
 
 
@@ -210,9 +219,12 @@ def _follow_floor(builder: MoveBuilder, job: _PocketJob, first_cut: bool) -> boo
 
     if job.flat_floor:
         return first_cut
+    # 这一道跟进刀时的"材料顶面"取最后一层：底面跟随就切在最后一层之下，
+    # 之上已经切过，斜率受限的进刀只需覆盖那一小段。
+    engage_z = job.levels[-1] if job.levels else float(job.region.top_z)
     count = _emit_floor_follow(builder, job.context, job.region, job.base_offset,
                                job.stepover, job.floor_target, first_cut,
-                               label_prefix=job.prefix)
+                               label_prefix=job.prefix, engage_z=engage_z)
     job.ring_count += count
     return first_cut and count == 0
 
@@ -242,6 +254,7 @@ def plan_pocket_mill(context: MillingContext, *, notes_prefix: str = "") -> Tool
     # 走一圈圈等距环、Z **逐点**取刀轴不过切高度，把台阶一次切净、底面切到实处。
     _follow_floor(builder, job, first_cut)
 
+    _emit_departure(builder, context, region)  # 切向圆弧退刀（直接抬刀时是空操作）
     notes = _notes(context, region, job.mode, job.stepover, job.ring_count, len(job.levels),
                    notes_prefix, job.floor_target, job.skipped_layers)
     return builder.finish(planner="pocket_mill", label="型腔铣", notes=notes)
@@ -306,6 +319,8 @@ def plan_pocket_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
     # （顶面内环并入可切区域后，顶面与它下方的型腔底在共享层会切同一块 XY）。
     coverage = LevelCoverage()
     dedup_count = 0
+    # 收尾退刀要知道刀最后停在哪个区域里（切向圆弧要拿它的可行区）。
+    last_region: list[MachiningRegion | None] = [None]
 
     def cut_level(job: _PocketJob, level_index: int, target_z: float) -> None:
         nonlocal first_cut, dedup_count
@@ -319,6 +334,7 @@ def plan_pocket_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
                                       previous_z_of(job, level_index), first_cut,
                                       exclude_mask=exclude)
         coverage.record(job.region, target_z, natural)
+        last_region[0] = job.region
 
     if str(order) == "depth_first":
         for job in jobs:
@@ -337,6 +353,10 @@ def plan_pocket_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
                 cut_level(job, level_index, target_z)
         for job in jobs:
             first_cut = _follow_floor(builder, job, first_cut)
+            last_region[0] = job.region
+
+    # 收尾：切向圆弧退刀（retract_method=arc 时才产生动作，否则原地抬到安全面）
+    _emit_departure(builder, lead, last_region[0])
 
     notes: list[str] = []
     for job in jobs:
@@ -514,24 +534,176 @@ def _zigzag_passes(region: MachiningRegion, mask: NDArray[np.bool_], angle: floa
     return passes
 
 
+def _clamp_to_axis(context: MillingContext, region: MachiningRegion | None,
+                   points: NDArray[np.float64]) -> NDArray[np.float64]:
+    """进刀 / 斜降的点列逐点抬到「刀轴不过切高度」之上（斜/曲面底面才起作用）。
+
+    环切本身早就是逐点 ``max(层高, 刀轴)``（见 :func:`_ring_points`），但新生成的
+    连接段不是：斜降会把 XY 拉到两端之间的某处，而斜/曲底上那里的底面可能比两端
+    都高，照两端线性插值下去就扎进去了（实测曲底过切 1.24 mm）。同一把尺子量所有
+    点，抬升只会让刀绕过凸起，不会改变端点（端点本来就 ≥ 刀轴高度）。
+    """
+
+    if region is None:
+        return points
+    out = np.array(points, dtype=np.float64, copy=True)
+    axis = np.asarray(region.axis_z_at(out[:, 0], out[:, 1], context.tool),
+                      dtype=np.float64).reshape(-1)
+    out[:, 2] = np.maximum(out[:, 2], axis)
+    return out
+
+
+def _entry_tangent(points: NDArray[np.float64]) -> NDArray[np.float64] | None:
+    """进刀要"对齐"的那个方向：首刀的行进方向（首点 → 次点）。
+
+    切向圆弧、斜插都按它来——从切入点**背后**沿切向进来，落地即可直接开切，
+    不用再拐一个弯；首段是零长（闭合环首末重合）时退到第二段。
+    """
+
+    if points.shape[0] < 2:
+        return None
+    delta = points[1, :2] - points[0, :2]
+    if float(np.hypot(delta[0], delta[1])) <= 1e-9 and points.shape[0] > 2:
+        delta = points[2, :2] - points[0, :2]
+    length = float(np.hypot(delta[0], delta[1]))
+    return None if length <= 1e-9 else delta / length
+
+
+def _entry_feasible(region: MachiningRegion | None, offset_mm: float,
+                    level_mask: NDArray[np.bool_] | None) -> Feasible | None:
+    """进刀的可行走域：``刀心 ≤ 距材料 offset_mm`` 再裁本层还能切的区域。"""
+
+    if region is None:
+        return None
+    mask = region.offset_mask(offset_mm)
+    if level_mask is not None:
+        mask = mask & level_mask
+    return Feasible(region, mask)
+
+
+def _emit_departure(builder: MoveBuilder, context: MillingContext,
+                    region: MachiningRegion | None) -> None:
+    """退刀方式选了「切向圆弧」时，抬刀前先沿切线甩出去；选「直接抬刀」时是空操作。
+
+    退刀时刀还在材料里，原地垂直升会在已加工面上留下一道竖直划痕；甩出的方向
+    与刀轨切向一致，划痕落在切削方向上，看不出来。圆弧只升一点点，剩下的交给
+    后面的快速抬刀——退刀段的重点是**方向**，不是高度。
+    """
+
+    if context.retract_method != "arc" or region is None:
+        return
+    last = builder.last_point
+    tangent = builder.last_direction
+    if last is None or tangent is None:
+        return  # 还没开始切（或刚抬到安全面），没有可甩的切向
+    if float(last[2]) >= context.safe_z - 1e-9:
+        return
+    feasible = _entry_feasible(region, context.tool_radius, None)
+    if feasible is None:
+        return
+    points = build_depart(feasible, last, tangent, angle_rad=context.ramp_angle_rad,
+                          radius_mm=context.entry_radius)
+    if points is not None:
+        builder.link(points, label="退刀（切向圆弧）")
+
+
+def _emit_entry(builder: MoveBuilder, context: MillingContext,
+                region: MachiningRegion | None, target: NDArray[np.float64],
+                engage_z: float, tangent: NDArray[np.float64] | None, *,
+                offset_mm: float, level_mask: NDArray[np.bool_] | None = None,
+                label_prefix: str = "") -> str:
+    """先"离开"当前位置，再定位到切入点上方，最后按 ``entry_method`` 进刀。
+
+    返回实际用上的进刀方式（``auto`` 逐档尝试的结果，失败兜底是 ``plunge``）。
+    进刀段的标签统一带「下刀」两个字：统计、既有测试与阅读刀路时，"下刀"始终
+    表示"从上方进入材料"这一件事，与走的是弧、是螺旋还是直插无关。
+    """
+
+    destination = np.asarray(target, dtype=np.float64).reshape(3)
+    _emit_departure(builder, context, region)
+    method = context.entry_method
+    if method == "plunge" or region is None:
+        # 垂直直插（或没有区域可查）：沿用原来的两步走，几何由 rapid_to_safe 决定。
+        builder.rapid_to_safe(destination, label=f"{label_prefix}定位到下刀点")
+        builder.plunge(destination, label=f"{label_prefix}下刀 Z{destination[2]:.3f}")
+        return "plunge"
+    feasible = _entry_feasible(region, offset_mm, level_mask)
+    built = None if feasible is None else build_entry(
+        feasible, destination, z_engage=engage_z, tangent=tangent, method=method,
+        angle_rad=context.ramp_angle_rad, radius_mm=context.entry_radius)
+    if built is None:
+        if method != "auto" and feasible is not None:
+            context.warn(
+                f"进刀方式「{method}」在这个区域放不下（落点或斜坡出界），已改为垂直下刀")
+        builder.rapid_to_safe(destination, label=f"{label_prefix}定位到下刀点")
+        builder.plunge(destination, label=f"{label_prefix}下刀 Z{destination[2]:.3f}")
+        return "plunge"
+    start, points, used = built
+    points = _clamp_to_axis(context, region, points)
+    top = np.array([start[0], start[1], float(points[0][2])], dtype=np.float64)
+    builder.rapid_to_safe(top, label=f"{label_prefix}定位到下刀点")
+    builder.entry(points, label=f"{label_prefix}下刀（{ENTRY_LABELS[used]}）")
+    return used
+
+
+def _wall_ring_for(region: MachiningRegion, offset: float, target_z: float,
+                   tool: Any) -> NDArray[np.float64] | None:
+    """「沿壁斜降」用的腔壁等距环：取周长最长的那一圈（外轮廓，不是岛屿）。
+
+    走刀半径按 ``offset`` 偏置——正是壁精修那一刀的轨迹，本身就贴着可行区边界。
+    """
+
+    polygons = offset_outline_polygons(region, offset,
+                                       mask=region.obstacle_mask(target_z, tool))
+    loops = [np.vstack([polygon, polygon[:1]]) for polygon in polygons
+             if polygon.shape[0] >= 3]
+    if not loops:
+        return None
+    return max(loops, key=lambda loop: float(
+        np.hypot(np.diff(loop[:, 0]), np.diff(loop[:, 1])).sum()))
+
+
+def _ring_for_transition(context: MillingContext, region: MachiningRegion,
+                         offset: float, target_z: float) -> NDArray[np.float64] | None:
+    """「沿壁斜降」才需要腔壁环；其余过渡档不花这笔等距偏置的钱。"""
+
+    if context.level_transition != "wall_ramp":
+        return None
+    return _wall_ring_for(region, offset, target_z, context.tool)
+
+
 def _emit_ring(builder: MoveBuilder, context: MillingContext, points: NDArray[np.float64],
                first_cut: bool, level_index: int, ring_index: int, *,
                region: MachiningRegion | None = None,
                level_mask: NDArray[np.bool_] | None = None,
                force_safe_link: bool = False, label_suffix: str = "",
-               label_prefix: str = "") -> None:
+               label_prefix: str = "", engage_z: float | None = None,
+               offset_mm: float | None = None,
+               wall_ring: NDArray[np.float64] | None = None) -> None:
     """走一条闭合环（或一段扫描线）。
 
     环间转移**优先在层内平移**：一次下刀后把整层连贯切完（z 不同时补一段
-    斜降连接），只有出界（穿岛、跨两个型腔之间的实体、贴凹角）或 ``one_way``
+    连接），只有出界（穿岛、跨两个型腔之间的实体、贴凹角）或 ``one_way``
     强制抬刀时才回退到"抬到安全面 + 下刀"。
+
+    连接怎么走由 ``context.level_transition`` 决定（见
+    :func:`toolpath_lab.cam.entry.build_transition`）：受控斜降 / 沿壁斜降 /
+    直接连接三档都在同一份可行区上校验，做不出来就退回两点直线——那条直线
+    已经由 ``in_level_transfer`` 判定可行，永远是安全的兜底。抬刀转移那一档
+    走 ``_emit_entry``，离开与进刀各按自己的方式来。
     """
 
     label = f"{label_prefix}第 {level_index + 1} 层 第 {ring_index + 1} 条刀轨{label_suffix}"
     previous = builder.last_point
+    tangent = _entry_tangent(points)
+    if offset_mm is None:
+        offset_mm = context.tool_radius + context.stock_allowance
+    if engage_z is None:
+        engage_z = float(region.top_z) if region is not None else context.top_z
     if previous is None or first_cut:
-        builder.rapid_to_safe(points[0], label="定位到下刀点")
-        builder.plunge(points[0], label=f"下刀 Z{points[0][2]:.3f}")
+        _emit_entry(builder, context, region, points[0], engage_z, tangent,
+                    offset_mm=offset_mm, level_mask=level_mask,
+                    label_prefix=label_prefix)
         builder.cut(points, label=label)
         return
     gap = float(np.linalg.norm(previous[:2] - points[0][:2]))
@@ -541,18 +713,30 @@ def _emit_ring(builder: MoveBuilder, context: MillingContext, points: NDArray[np
                    and in_level_transfer(region, context.tool_radius,
                                          previous[:2], points[0][:2],
                                          level_mask=level_mask))
-    if not transfer_ok:
-        builder.rapid_to_safe(points[0], label="环间转移")
-        builder.plunge(points[0])
-    elif gap > 1e-9 or z_gap > 1e-9:
-        builder.link(np.vstack([previous, points[0]]), label="层内转移")
+    moved = gap > 1e-9 or z_gap > 1e-9
+    if not transfer_ok or (moved and context.level_transition == "safe"):
+        # 出界 / 跨区域 / 用户要求抬刀转移：离开（可选切向圆弧）→ 抬到安全面 → 进刀
+        _emit_entry(builder, context, region, points[0], engage_z, tangent,
+                    offset_mm=offset_mm, level_mask=level_mask,
+                    label_prefix=label_prefix)
+    elif moved:
+        feasible = _entry_feasible(region, context.tool_radius, level_mask)
+        transition = None if feasible is None else build_transition(
+            feasible, previous, points[0], method=context.level_transition,
+            angle_rad=context.ramp_angle_rad, wall_ring=wall_ring)
+        if transition is None:
+            builder.link(np.vstack([previous, points[0]]), label="层内转移")
+        else:
+            move_label, move_points = transition
+            builder.link(_clamp_to_axis(context, region, move_points), label=move_label)
     builder.cut(points, label=label)
 
 
 def _emit_floor_follow(builder: MoveBuilder, context: MillingContext,
                        region: MachiningRegion, base_offset: float, stepover: float,
                        floor_target: float, first_cut: bool, *,
-                       label_prefix: str = "") -> int:
+                       label_prefix: str = "",
+                       engage_z: float | None = None) -> int:
     """斜/曲面底面的"底面跟随"刀路：整片可切区域按底面实际高度走一遍。
 
     分层粗加工只能切到"层高仍高于底面 + 抬升"的地方，层间台阶与最深的一带都留给这一道：
@@ -592,7 +776,8 @@ def _emit_floor_follow(builder: MoveBuilder, context: MillingContext,
         _emit_ring(builder, context, points, first_cut, 0, index,
                    region=region, level_mask=allowed,
                    label_prefix=f"{label_prefix}底面跟随 ",
-                   label_suffix="（斜面/曲面底面）")
+                   label_suffix="（斜面/曲面底面）",
+                   engage_z=engage_z, offset_mm=base_offset)
         first_cut = False
         count += 1
     return count
@@ -629,7 +814,8 @@ def _emit_wall_finish(builder: MoveBuilder, context: MillingContext,
                       region: MachiningRegion, offset: float, target_z: float, *,
                       mask: NDArray[np.bool_] | None = None,
                       level_mask: NDArray[np.bool_] | None = None,
-                      label_prefix: str = "") -> None:
+                      label_prefix: str = "",
+                      engage_z: float | None = None) -> None:
     """沿腔壁补一刀精修（把侧面余量留到这一刀）。
 
     斜/曲面底面上这一刀同时也是"贴壁的底面跟随"：Z 取 ``max(层高, 刀轴高度)``，
@@ -638,11 +824,14 @@ def _emit_wall_finish(builder: MoveBuilder, context: MillingContext,
     裁完最深层就再也够不到壁边底面，实测曲底壁边残留整整一层切深的料。
 
     本层环切已经把层面切平，去壁起点的平移必然在层内完成（不再抬到安全面
-    插下来）；只有直线出界（穿岛/凹角）时才回退到抬刀定位。
+    插下来）；只有直线出界（穿岛/凹角）时才回退到"离开 → 定位 → 进刀"，
+    进刀方式与开粗下刀共用同一套（``entry_method``）。
     """
 
     polygons = offset_outline_polygons(region, offset, mask=mask)
     previous = builder.last_point
+    if engage_z is None:
+        engage_z = float(region.top_z)
     for polygon in polygons:
         if polygon.shape[0] < 3:
             continue
@@ -659,8 +848,9 @@ def _emit_wall_finish(builder: MoveBuilder, context: MillingContext,
                 builder.link(np.vstack([previous, points[0]]),
                              label=f"{label_prefix}层内转移")
         else:
-            builder.rapid_to_safe(points[0], label=f"{label_prefix}定位到腔壁起点")
-            builder.plunge(points[0], label=f"{label_prefix}下刀（壁精修）")
+            _emit_entry(builder, context, region, points[0], engage_z,
+                        _entry_tangent(points), offset_mm=offset,
+                        label_prefix=label_prefix)
         builder.cut(points, label=f"{label_prefix}精修腔壁")
         previous = builder.last_point
 

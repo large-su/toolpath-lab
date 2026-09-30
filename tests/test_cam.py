@@ -308,10 +308,13 @@ class PocketMillTests(unittest.TestCase):
         self.assertLessEqual(float(np.abs(cut_points[:, 1]).max()), 20.0 - 5.0 + 1.2)
 
     def test_layer_count_matches_depth_over_cut_depth(self) -> None:
-        # 15 mm 深、每层 5 mm：层内环数会随层数增长，比较"每层第一刀的 z"个数
+        # 15 mm 深、每层 5 mm：层内环数会随层数增长，比较"每层第一刀的 z"个数。
+        # 进刀段（螺旋/圆弧/斜插）从材料顶面开始下探、末点才是本层起点，它的首点 z
+        # 不是层高，按全文件的口径跳过带"下刀"的段。
         result = self._run(cut_mode="contour", cut_depth_mm=5.0, finish_pass=False)
         zs = sorted({round(float(np.asarray(move.points, dtype=float)[0, 2]), 3)
-                     for move in result.toolpath.moves if move.kind is MoveKind.CUT})
+                     for move in result.toolpath.moves
+                     if move.kind is MoveKind.CUT and "下刀" not in move.label})
         self.assertEqual(len(zs), 3)
 
     def test_zigzag_mode_produces_scanlines(self) -> None:

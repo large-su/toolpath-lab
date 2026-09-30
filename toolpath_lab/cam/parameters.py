@@ -10,6 +10,8 @@
 切削          spindle_rpm、feed_mm_per_min、plunge_feed_mm_per_min、
               stepover_ratio、cut_depth_mm、stock_allowance_mm、
               finish_allowance_mm、stepdown_mm（仅型腔铣）
+进退刀        entry_method、retract_method、level_transition、
+              ramp_angle_deg、entry_radius_mm（型腔铣）
 安全          safe_height_mm、clearance_mm、rapid_feed_mm_per_min、
               spindle_direction、coolant
 ============  ==========================================================
@@ -58,6 +60,29 @@ COOLANTS: tuple[Choice, ...] = (
     Choice("flood", "乳化液 M08"),
     Choice("mist", "气雾 M07"),
     Choice("off", "关闭 M09"),
+)
+
+#: 进刀方式（UG/NX「非切削移动 · 进刀」的对应选项）。
+ENTRY_METHODS: tuple[Choice, ...] = (
+    Choice("auto", "自动 Auto"),
+    Choice("arc", "切向圆弧 Arc"),
+    Choice("helix", "螺旋 Helical"),
+    Choice("ramp", "斜插 Ramp"),
+    Choice("plunge", "垂直 Plunge"),
+)
+
+#: 退刀方式。
+RETRACT_METHODS: tuple[Choice, ...] = (
+    Choice("lift", "直接抬刀 Lift"),
+    Choice("arc", "切向圆弧 Arc"),
+)
+
+#: 层与层之间的过渡（UG/NX「传递 · 层之间」的对应选项）。
+LEVEL_TRANSITIONS: tuple[Choice, ...] = (
+    Choice("ramp", "受控斜降 Ramp"),
+    Choice("wall_ramp", "沿壁斜降 Wall ramp"),
+    Choice("direct", "直接连接 Direct"),
+    Choice("safe", "抬刀转移 Safe"),
 )
 
 
@@ -120,6 +145,39 @@ def cutting_parameters() -> ParameterSet:
     )
 
 
+def engage_parameters() -> ParameterSet:
+    """进刀 / 退刀 / 层间过渡（UG/NX「非切削移动」对应的那一组）。
+
+    目前只有型腔铣读这组参数；面铣与轮廓铣仍是垂直下刀，避免一次改太多。
+    """
+
+    return ParameterSet(
+        (
+            spec("entry_method", "进刀方式", K.CHOICE, "auto", group="进退刀",
+                 choices=ENTRY_METHODS,
+                 help="刀具从材料顶面进入本层第一刀的方式。自动=依次尝试切向圆弧 → 螺旋 → "
+                      "斜插，都放不下才垂直下刀；斜插与螺旋的坡度由「斜插角度」限制"),
+            spec("retract_method", "退刀方式", K.CHOICE, "lift", group="进退刀",
+                 choices=RETRACT_METHODS,
+                 help="直接抬刀=原地升到安全高度；切向圆弧=先沿切线方向甩出一段圆弧再抬刀，"
+                      "不在已加工面上留下垂直划痕"),
+            spec("level_transition", "层间过渡", K.CHOICE, "ramp", group="进退刀",
+                 choices=LEVEL_TRANSITIONS,
+                 help="上一层终点到下一层起点怎么走。受控斜降=先在层高上平移、再按斜插角下降；"
+                      "沿壁斜降=沿腔壁等距环绕行下降（绕行够长，坡度天然平缓）；"
+                      "直接连接=两点直线（坡度不受控）；抬刀转移=抬到安全面重新进刀。"
+                      "斜降越出可行走域时自动退回更保守的一档"),
+            spec("ramp_angle_deg", "斜插角度", K.FLOAT, 3.0, minimum=0.5,
+                 maximum=45.0, step=0.5, unit="°", group="进退刀",
+                 help="进刀与层间斜降的最大坡度：同样深度下角度越小、走过的水平距离越长"),
+            spec("entry_radius_mm", "进刀半径", K.FLOAT, 0.0, minimum=0.0,
+                 maximum=100.0, step=0.5, unit="mm", group="进退刀",
+                 help="切向圆弧与螺旋的半径；0 = 自动取刀具直径的 25%，"
+                      "区域放不下时逐级减半"),
+        )
+    )
+
+
 def safety_parameters() -> ParameterSet:
     """安全与辅助参数。"""
 
@@ -143,7 +201,7 @@ def safety_parameters() -> ParameterSet:
 def cam_parameters() -> ParameterSet:
     """全部 CAM 参数（合计顺序就是界面上的分组顺序）。"""
 
-    return tool_parameters() + cutting_parameters() + safety_parameters()
+    return tool_parameters() + cutting_parameters() + engage_parameters() + safety_parameters()
 
 
 def controller_parameters() -> ParameterSet:
@@ -220,10 +278,14 @@ def _optional_positive(raw: Any) -> float | None:
 __all__ = [
     "CAM_FIXED",
     "COOLANTS",
+    "ENTRY_METHODS",
+    "LEVEL_TRANSITIONS",
+    "RETRACT_METHODS",
     "SPINDLE_DIRECTIONS",
     "cam_parameters",
     "controller_parameters",
     "cutting_parameters",
+    "engage_parameters",
     "safety_parameters",
     "tool_from_cam_parameters",
     "tool_geometry_parameters",
