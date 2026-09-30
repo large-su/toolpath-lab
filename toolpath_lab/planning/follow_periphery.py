@@ -43,6 +43,7 @@ from toolpath_lab.planning.base import (
     SURFACE_PARAMETERS,
     Planner,
     PlanningContext,
+    resolve_stepover,
 )
 from toolpath_lab.planning.geometry2d import offset_polygon, resample_ring, signed_area
 from toolpath_lab.planning.registry import PLANNERS
@@ -73,8 +74,9 @@ class FollowPeripheryPlanner(Planner):
                 Choice("ccw", "逆时针 CCW"),
                 Choice("cw", "顺时针 CW"),
             ), help="俯视（从上往下看）为准，每一环同向绕行；逆时针与区域轮廓同向"),
-            spec("stepover_mm", "切宽 ae", K.FLOAT, 6.0, minimum=0.5, maximum=100.0,
-                 step=0.5, unit="mm", group="刀路", help="相邻两环的间距"),
+            spec("stepover_mm", "切宽 ae", K.FLOAT, 0.0, minimum=0.0, maximum=100.0,
+                 step=0.5, unit="mm", group="刀路",
+                 help="相邻两环的间距；填 0 = 自动，按刀具直径 − 1 mm 算"),
             spec("sample_step_mm", "采样步长", K.FLOAT, 1.0, minimum=0.1, maximum=20.0,
                  step=0.1, unit="mm", group="刀路", help="轮廓与凹角圆弧的离散精度"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
@@ -124,9 +126,7 @@ class FollowPeripheryPlanner(Planner):
 
         direction = str(context.parameters["direction"])
         winding = str(context.parameters["winding"])
-        stepover = self.require_positive(
-            float(context.parameters["stepover_mm"]), "切宽 stepover_mm"
-        )
+        stepover = resolve_stepover(context.parameters, context.tool)
         sample_step = self.require_positive(
             float(context.parameters["sample_step_mm"]), "采样步长 sample_step_mm"
         )
@@ -168,7 +168,7 @@ class FollowPeripheryPlanner(Planner):
     def _rings(context: PlanningContext, stepover: float) -> list[NDArray[np.float64]]:
         """从刀路范围（斜坡"只加工斜面段"时比轮廓窄）内缩一个足迹半径开始，每环再推进一个切宽。"""
 
-        boundary = context.machining_boundary
+        boundary = context.toolpath_boundary
         rings: list[NDArray[np.float64]] = []
         if boundary.shape[0] < 3:
             return rings  # 这一层已经没有料了
@@ -199,13 +199,13 @@ class FollowPeripheryPlanner(Planner):
     ) -> tuple[str, ...]:
         direction = str(context.parameters["direction"])
         winding = str(context.parameters["winding"])
-        stepover = float(context.parameters["stepover_mm"])
+        stepover = resolve_stepover(context.parameters, context.tool)
         sample_step = float(context.parameters["sample_step_mm"])
         notes = [
             f"{_DIRECTION_LABELS[direction]}走刀，{_WINDING_LABELS[winding]}绕行，"
             f"共 {ring_count} 环，切宽 {stepover:g} mm，采样步长 {sample_step:g} mm",
-            f"边界内缩一个刀具足迹半径（本刀 {context.tool.footprint_radius_mm:g} mm），"
-            "安全高度 5 mm、快移 5000 mm/min 为固定值",
+            f"刀心可走到区域边界（零件边界外扩一个足迹半径再内缩，本刀 "
+            f"{context.tool.footprint_radius_mm:g} mm），安全高度 5 mm、快移 5000 mm/min 为固定值",
         ]
         if layer_count and context.layer_depth_mm > 0:
             _, high = context.surface_z_range

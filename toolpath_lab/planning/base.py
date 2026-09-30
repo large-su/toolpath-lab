@@ -165,6 +165,19 @@ class PlanningContext:
         return ensure_ccw(self.region.machining_boundary(footprint))
 
     @property
+    def toolpath_boundary(self) -> NDArray[np.float64]:
+        """刀心范围：区域在零件边界上外扩一个足迹半径，内缩之后刀心正好落在零件边界上。
+
+        这样最外层刀路离边界的距离是 **0**（小于刀具半径）——刀边越出边界那半圈是空刀，
+        边界上就不会留下一圈"刀边只擦到"的残留。加工范围边界（例如斜坡折痕）不放开。
+        """
+
+        footprint = self.tool.footprint_radius_mm
+        if self.level_z is not None:
+            return ensure_ccw(self.region.toolpath_boundary_at(self.level_z, footprint))
+        return ensure_ccw(self.region.toolpath_boundary(footprint))
+
+    @property
     def surface_varies(self) -> bool:
         """加工面是否随位置起伏（水平面为 False，斜面、曲面为 True）。
 
@@ -355,6 +368,19 @@ class PlanningContext:
         end = np.array([start[0], start[1], start[2] + SAFE_HEIGHT_MM], dtype=np.float64)
         return Move(MoveKind.RAPID, np.vstack([start, end]), RAPID_FEED_MM_PER_MIN,
                     label="抬刀")
+
+
+def resolve_stepover(parameters: Mapping[str, Any], tool: Tool) -> float:
+    """切宽：填了正数就用它；填 0 表示自动——**刀具直径 − 1 mm**（并保底 0.1 mm）。
+
+    自动值比直径小 1，是为了让相邻两刀（两环）之间留出稳定重叠：切宽等于直径时刀间刚好相切，
+    边界上会留下"够不到"的一圈，斜面上残留高度也会放大到接近一整个半径。
+    """
+
+    value = float(parameters.get("stepover_mm", 0.0) or 0.0)
+    if value > 0.0:
+        return value
+    return max(float(tool.diameter_mm) - 1.0, 0.1)
 
 
 class Planner:

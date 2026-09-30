@@ -293,7 +293,7 @@ class PlanTests(ApiTestCase):
         lead_in = [move for move in payload["toolpath"]["moves"]
                    if move["kind"] == "cut" and move["label"] == "沿面切入"]
         self.assertEqual(len(lead_in), 1)
-        self.assertAlmostEqual(lead_in[0]["points"][0][0], 42.0, places=4)
+        self.assertAlmostEqual(lead_in[0]["points"][0][0], 45.0, places=4)
         # 沿加工面的那一遍由低往高；另有平顶高度上的一层负责清掉平顶之上的毛坯
         surface = [move for move in payload["toolpath"]["moves"]
                    if move["kind"] == "cut" and move["label"] != "沿面切入"
@@ -369,13 +369,13 @@ class PlanTests(ApiTestCase):
         self.assertEqual(status, 400)
         self.assertIn("diameter_mm", payload["error"])
 
-    def test_impossible_geometry_is_unprocessable(self) -> None:
-        # 参数本身合法（D60 在允许范围内），但足迹半径超过区域宽度：这是几何不可行，不是参数错误。
+    def test_oversized_tool_can_still_be_planned(self) -> None:
+        # 参数本身合法（D60 在允许范围内）；刀比区域大也能加工——刀心走到轮廓上、刀盘盖住整块。
         status, payload, _ = self.plan(
             {"tool": {"diameter_mm": 60.0}, "region": {"shape": "square", "parameters": {"side_mm": 40.0}}}
         )
-        self.assertEqual(status, 422)
-        self.assertTrue(payload["error"])
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(payload["toolpath"]["statistics"]["pass_count"], 1)
 
     def test_warnings_are_returned(self) -> None:
         _, payload, _ = self.plan(

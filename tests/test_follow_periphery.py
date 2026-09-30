@@ -85,17 +85,30 @@ class RegistryTests(unittest.TestCase):
 
 
 class RingLayoutTests(unittest.TestCase):
-    def test_rings_start_at_the_tool_radius_and_step_inward(self) -> None:
+    def test_auto_stepover_is_diameter_minus_one(self) -> None:
+        """切宽填 0 = 自动：按刀具直径 − 1 mm 算（D6 → 5），环间距就是它。"""
+
+        boundary = ensure_ccw(_region().boundary())
+        rings = _rings(_plan({"stepover_mm": 0.0}).toolpath)
+        distances = [float(distance_to_boundary(move.points[:, :2], boundary).mean())
+                     for move in rings]
+        self.assertAlmostEqual(distances[0], 0.0, places=6)
+        for previous, current in zip(distances, distances[1:]):
+            self.assertAlmostEqual(current - previous, 5.0, places=6)
+
+    def test_outermost_ring_sits_on_the_contour(self) -> None:
+        """刀心可以走到轮廓上：第一环就贴着它（离边界 0 < 刀具半径）。"""
+
         boundary = ensure_ccw(_region().boundary())
         rings = _rings(_plan().toolpath)
         distances = [
             float(distance_to_boundary(move.points[:, :2], boundary).mean())
             for move in rings
         ]
-        # 80 方形、D6（足迹半径 3）、切宽 6：3、9、15、21、27、33、39 共 7 环
-        self.assertEqual(len(rings), 7)
-        self.assertAlmostEqual(distances[0], 3.0, places=6)
-        self.assertAlmostEqual(distances[-1], 39.0, places=6)
+        self.assertGreaterEqual(len(rings), 2)
+        self.assertAlmostEqual(distances[0], 0.0, places=6)
+        self.assertTrue(all(b >= a - 1e-9 for a, b in zip(distances, distances[1:])))
+        self.assertAlmostEqual(distances[-1], 36.0, places=6)
         for previous, current in zip(distances, distances[1:]):
             self.assertAlmostEqual(current - previous, 6.0, places=6)
 
@@ -108,14 +121,13 @@ class RingLayoutTests(unittest.TestCase):
     def test_rings_shrink_towards_the_centre(self) -> None:
         spans = [float(np.ptp(move.points[:, 0])) for move in _rings(_plan().toolpath)]
         self.assertEqual(spans, sorted(spans, reverse=True))
-        self.assertAlmostEqual(spans[0], 74.0, places=6)
-        self.assertAlmostEqual(spans[-1], 2.0, places=6)
+        self.assertAlmostEqual(spans[0], 80.0, places=6)
 
-    def test_rings_keep_the_tool_inside_the_contour(self) -> None:
+    def test_rings_keep_the_tool_within_one_footprint_of_the_contour(self) -> None:
         boundary = ensure_ccw(_region().boundary())
         for move in _rings(_plan().toolpath):
             closest = float(distance_to_boundary(move.points[:, :2], boundary).min())
-            self.assertGreaterEqual(closest, 3.0 - 1e-3)
+            self.assertGreaterEqual(closest, -3.0 - 1e-3)
 
     def test_larger_stepover_needs_fewer_rings(self) -> None:
         self.assertGreater(
@@ -218,11 +230,11 @@ class WindingTests(unittest.TestCase):
 
 
 class RegionTests(unittest.TestCase):
-    def test_circle_rings_keep_the_tool_inside_the_contour(self) -> None:
+    def test_circle_rings_keep_the_tool_within_one_footprint(self) -> None:
         boundary = ensure_ccw(_region("circle").boundary())
         for move in _rings(_plan(shape="circle").toolpath):
             closest = float(distance_to_boundary(move.points[:, :2], boundary).min())
-            self.assertGreaterEqual(closest, 3.0 - 1e-3)
+            self.assertGreaterEqual(closest, -3.0 - 1e-3)
 
     def test_circle_rings_are_shorter_than_the_square_ones(self) -> None:
         self.assertLess(
@@ -246,11 +258,11 @@ class BallToolTests(unittest.TestCase):
         for previous, current in zip(distances, distances[1:]):
             self.assertAlmostEqual(current - previous, 6.0, places=6)
 
-    def test_flat_tool_starts_one_footprint_inside(self) -> None:
+    def test_flat_tool_starts_on_the_contour(self) -> None:
         boundary = ensure_ccw(_region().boundary())
         rings = _rings(_plan().toolpath)
         first = float(distance_to_boundary(rings[0].points[:, :2], boundary).mean())
-        self.assertAlmostEqual(first, 3.0, places=6)
+        self.assertAlmostEqual(first, 0.0, places=6)
 
 
 class SlopedSurfaceTests(unittest.TestCase):
@@ -287,9 +299,10 @@ class SlopedSurfaceTests(unittest.TestCase):
 
 
 class ErrorAndWarningTests(unittest.TestCase):
-    def test_oversized_tool_is_reported_as_unprocessable(self) -> None:
-        with self.assertRaises(PlanningError):
-            _plan(diameter=120.0)
+    def test_oversized_tool_can_still_machine_the_region(self) -> None:
+        """刀具比区域还大也能加工：刀心走到轮廓上，刀盘盖住整块。"""
+
+        self.assertGreaterEqual(_plan(diameter=120.0).toolpath.pass_count, 1)
 
     def test_large_stepover_is_warned_about(self) -> None:
         outcome = _plan({"stepover_mm": 20.0})
@@ -299,7 +312,7 @@ class ErrorAndWarningTests(unittest.TestCase):
         self.assertEqual(_plan({"stepover_mm": 4.0}).warnings, ())
 
     def test_invalid_parameters_are_rejected(self) -> None:
-        for bad in ({"stepover_mm": 0.0}, {"direction": "sideways"}, {"winding": "diagonal"},
+        for bad in ({"stepover_mm": -1.0}, {"direction": "sideways"}, {"winding": "diagonal"},
                     {"sample_step_mm": -1.0}):
             with self.assertRaises(ParameterError):
                 _plan(bad)

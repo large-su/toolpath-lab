@@ -40,6 +40,7 @@ from toolpath_lab.planning.base import (
     SURFACE_PARAMETERS,
     Planner,
     PlanningContext,
+    resolve_stepover,
 )
 from toolpath_lab.planning.geometry2d import scanline_intervals
 from toolpath_lab.planning.registry import PLANNERS
@@ -71,8 +72,9 @@ class RasterPlanner(Planner):
                  ),
                  help="只对单向模式有效；沿面连接贴着加工面切过去，斜面上因此不必每次抬到安全面",
                  visible_if={"mode": "one_way"}),
-            spec("stepover_mm", "切宽 ae", K.FLOAT, 6.0, minimum=0.5, maximum=100.0,
-                 step=0.5, unit="mm", group="刀路", help="相邻两条刀线的间距"),
+            spec("stepover_mm", "切宽 ae", K.FLOAT, 0.0, minimum=0.0, maximum=100.0,
+                 step=0.5, unit="mm", group="刀路",
+                 help="相邻两条刀线的间距；填 0 = 自动，按刀具直径 − 1 mm 算"),
             spec("direction_deg", "走刀方向", K.FLOAT, 0.0, minimum=0.0, maximum=180.0,
                  step=5.0, unit="°", group="刀路", help="扫描线的行进方向；切宽方向与之垂直"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
@@ -81,9 +83,7 @@ class RasterPlanner(Planner):
     )
 
     def plan(self, context: PlanningContext) -> Toolpath:
-        stepover = self.require_positive(
-            float(context.parameters["stepover_mm"]), "切宽 stepover_mm"
-        )
+        stepover = resolve_stepover(context.parameters, context.tool)
         self._warn_if_stepover_too_large(context, stepover)
 
         # 加工面有起伏时改成"由低往高"：这样下刀的那一端就是低处，沿面切入不会撞上高处的材料。
@@ -130,11 +130,9 @@ class RasterPlanner(Planner):
         """
 
         mode = str(context.parameters["mode"])
-        stepover = self.require_positive(
-            float(context.parameters["stepover_mm"]), "切宽 stepover_mm"
-        )
+        stepover = resolve_stepover(context.parameters, context.tool)
         offset = context.tool.footprint_radius_mm
-        boundary = context.machining_boundary
+        boundary = context.toolpath_boundary
         if boundary.shape[0] < 3:
             return [], first_index  # 这一层已经没有料了
 
@@ -233,7 +231,7 @@ class RasterPlanner(Planner):
         flipped: bool,
     ) -> tuple[str, ...]:
         mode = str(context.parameters["mode"])
-        stepover = float(context.parameters["stepover_mm"])
+        stepover = resolve_stepover(context.parameters, context.tool)
         direction = float(context.parameters["direction_deg"])
         surface: list[str] = []
         if context.entry_along_surface:
@@ -248,8 +246,8 @@ class RasterPlanner(Planner):
         notes = [
             f"{_MODE_LABELS[mode]}走刀，共 {pass_count} 刀，"
             f"切宽 {stepover:g} mm，走刀方向 {direction:g}°",
-            f"边界内缩一个刀具足迹半径（本刀 {context.tool.footprint_radius_mm:g} mm），"
-            "安全高度 5 mm、快移 5000 mm/min 为固定值",
+            f"刀心可走到区域边界（零件边界外扩一个足迹半径再内缩，本刀 "
+            f"{context.tool.footprint_radius_mm:g} mm），安全高度 5 mm、快移 5000 mm/min 为固定值",
         ]
         if layer_count and context.layer_depth_mm > 0:
             _, high = context.surface_z_range

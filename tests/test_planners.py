@@ -60,15 +60,26 @@ class RegistryTests(unittest.TestCase):
 
 class PassLayoutTests(unittest.TestCase):
     def test_pass_count_follows_stepover_and_tool_radius(self) -> None:
-        # 80 mm 方形，刀具 D6（足迹半径 3），切宽 6 → v 从 -37 到 37，13 个间隔 + 末刀对齐 = 14
+        # 80 mm 方形，刀具 D6（足迹半径 3），切宽 6 → v 从 -40 到 40（刀心可走到轮廓），
+        # 13 个间隔 + 末刀对齐 = 15
         toolpath = _plan().toolpath
-        self.assertEqual(toolpath.pass_count, 14)
+        self.assertEqual(toolpath.pass_count, 15)
 
-    def test_passes_are_inside_the_contour_by_the_tool_radius(self) -> None:
+    def test_auto_stepover_is_diameter_minus_one(self) -> None:
+        """切宽填 0 = 自动：按刀具直径 − 1 mm 算（D6 → 5），刀线间距就是它。"""
+
+        levels = _pass_levels(_plan({"stepover_mm": 0.0}))
+        gaps = [round(b - a, 6) for a, b in zip(levels, levels[1:])]
+        self.assertTrue(gaps and all(abs(gap - 5.0) < 1e-9 for gap in gaps), gaps[:4])
+        self.assertAlmostEqual(levels[0], -40.0, places=6)
+
+    def test_outermost_passes_reach_the_contour(self) -> None:
+        """最外层刀路落在轮廓上：离边界 0 < 刀具半径，边界不会留一圈够不到的料。"""
+
         passes = _cut_moves(_plan().toolpath)
         levels = sorted({round(float(move.points[0][1]), 6) for move in passes})
-        self.assertAlmostEqual(levels[0], -37.0, places=6)
-        self.assertAlmostEqual(levels[-1], 37.0, places=6)
+        self.assertAlmostEqual(levels[0], -40.0, places=6)
+        self.assertAlmostEqual(levels[-1], 40.0, places=6)
 
     def test_each_pass_has_two_points_on_the_machining_plane(self) -> None:
         for move in _cut_moves(_plan().toolpath):
@@ -140,21 +151,21 @@ class DirectionTests(unittest.TestCase):
 class BallToolTests(unittest.TestCase):
     """球头刀只有刀尖接触（足迹半径 0），所以刀路不再内缩一个半径。"""
 
-    def test_flat_tool_passes_are_inset_by_its_radius(self) -> None:
+    def test_flat_tool_passes_also_reach_the_contour(self) -> None:
         levels = _pass_levels(_plan())
-        self.assertAlmostEqual(levels[0], -37.0, places=6)
-        self.assertAlmostEqual(levels[-1], 37.0, places=6)
+        self.assertAlmostEqual(levels[0], -40.0, places=6)
+        self.assertAlmostEqual(levels[-1], 40.0, places=6)
 
     def test_ball_tool_passes_reach_the_contour(self) -> None:
         levels = _pass_levels(_plan(kind=ToolKind.BALL))
         self.assertAlmostEqual(levels[0], -40.0, places=6)
         self.assertAlmostEqual(levels[-1], 40.0, places=6)
 
-    def test_ball_tool_needs_more_passes_than_the_flat_tool(self) -> None:
-        self.assertGreater(
-            _plan(kind=ToolKind.BALL).toolpath.pass_count,
-            _plan().toolpath.pass_count,
-        )
+    def test_both_tools_cover_the_same_width(self) -> None:
+        """球头刀足迹半径是 0，但外扩之后两者的刀心范围相同（都到轮廓），刀数因此一致。"""
+
+        self.assertEqual(_plan(kind=ToolKind.BALL).toolpath.pass_count,
+                         _plan().toolpath.pass_count)
 
     def test_ball_tool_keeps_the_stepover(self) -> None:
         levels = _pass_levels(_plan(kind=ToolKind.BALL))
@@ -302,9 +313,9 @@ class SlopedSurfaceTests(unittest.TestCase):
         levels = _level_passes(toolpath)
         self.assertEqual(sorted({round(float(m.points[0][2]), 6) for m in levels}),
                          [region.cap_z_mm])
-        # 那一层覆盖整个区域（D6 内缩 3）：平顶之上因此不会留下毛坯
-        self.assertAlmostEqual(float(levels[0].points[:, 0].min()), -37.0, places=6)
-        self.assertAlmostEqual(float(levels[0].points[:, 0].max()), 37.0, places=6)
+        # 那一层覆盖整个区域（刀心可以走到轮廓）
+        self.assertAlmostEqual(float(levels[0].points[:, 0].min()), -40.0, places=6)
+        self.assertAlmostEqual(float(levels[0].points[:, 0].max()), 40.0, places=6)
         self.assertIn("平台高度", " ".join(toolpath.notes))
 
     def test_plateau_layer_disappears_without_stock_above_it(self) -> None:
@@ -339,15 +350,15 @@ class SlopedSurfaceTests(unittest.TestCase):
 
     def test_a_larger_cap_leaves_no_plateau(self) -> None:
         # 60° 时整块坡度只升 138.6 mm，上限 200 → 一路都是斜面；
-        # 刀路内缩一个足迹半径（D6 → 3 mm），所以最高只爬到 x = −37 处的高度
+        # 刀心可以走到轮廓，所以一路爬到 x = −40 处的高度
         region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0,
                                        "cap_z_mm": 200.0})
         self.assertIsNone(region.crease_x_mm)
         passes = _pass_cuts(_ramp_plan(angle=60.0, cap=200.0).toolpath)
-        highest = float(region.height_at(np.array([[-37.0, 0.0]]))[0])
+        highest = float(region.height_at(np.array([[-40.0, 0.0]]))[0])
         self.assertAlmostEqual(max(float(move.points[:, 2].max()) for move in passes),
                                highest, places=6)
-        self.assertAlmostEqual(highest, 77.0 * np.tan(np.radians(60.0)), places=6)
+        self.assertAlmostEqual(highest, 80.0 * np.tan(np.radians(60.0)), places=6)
 
     def test_safe_height_is_measured_from_the_surface(self) -> None:
         for angle in (30.0, 60.0):
@@ -491,7 +502,7 @@ class LayerRoughingTests(unittest.TestCase):
             # 越往下只有靠低边（+X）那一侧还有料，所以料边一路往 +X 挪
             self.assertGreater(x_min[lower], x_min[higher])
         # 平顶那一层反过来：整个区域都要清
-        self.assertAlmostEqual(x_min[80.0], -35.0, places=6)
+        self.assertAlmostEqual(x_min[80.0], -40.0, places=6)
 
     def test_the_cutter_never_digs_into_the_finished_side(self) -> None:
         region = build_region("ramp", {"side_mm": 80.0, "angle_deg": 60.0})
@@ -560,20 +571,23 @@ class BullToolTests(unittest.TestCase):
                         "feed_mm_per_min": 600.0},
         )
 
-    def test_passes_are_inset_by_radius_minus_corner(self) -> None:
+    def test_bull_tool_passes_also_reach_the_contour(self) -> None:
         levels = _pass_levels(self._bull_plan(1.5))
-        self.assertAlmostEqual(levels[0], -(40.0 - 3.5), places=6)
-        self.assertAlmostEqual(levels[-1], 40.0 - 3.5, places=6)
+        self.assertAlmostEqual(levels[0], -40.0, places=6)
+        self.assertAlmostEqual(levels[-1], 40.0, places=6)
 
-    def test_a_bigger_corner_insets_less(self) -> None:
+    def test_a_bigger_corner_does_not_change_the_outermost_pass(self) -> None:
+        """外扩按足迹半径算，足迹更小（圆角更大）也不会让最外层刀路缩回来。"""
+
         small_corner = _pass_levels(self._bull_plan(0.5, stepover=10.0))
         big_corner = _pass_levels(self._bull_plan(4.0, stepover=10.0))
-        self.assertLess(abs(small_corner[0]), abs(big_corner[0]))
+        self.assertAlmostEqual(small_corner[0], -40.0, places=6)
+        self.assertAlmostEqual(big_corner[0], -40.0, places=6)
 
     def test_zero_corner_behaves_like_a_flat_tool(self) -> None:
         levels = _pass_levels(self._bull_plan(0.0, stepover=10.0))
-        self.assertAlmostEqual(levels[0], -35.0, places=6)
-        self.assertAlmostEqual(levels[-1], 35.0, places=6)
+        self.assertAlmostEqual(levels[0], -40.0, places=6)
+        self.assertAlmostEqual(levels[-1], 40.0, places=6)
 
     def test_full_corner_behaves_like_a_ball_tool(self) -> None:
         levels = _pass_levels(self._bull_plan(5.0, stepover=20.0))
@@ -615,14 +629,16 @@ class SafetyTests(unittest.TestCase):
                  if m.kind is MoveKind.RAPID]
         self.assertTrue(all(move.feed_mm_per_min == RAPID_FEED_MM_PER_MIN for move in rapid))
 
-    def test_oversized_tool_is_reported_as_unprocessable(self) -> None:
-        with self.assertRaises(PlanningError):
-            run_plan(
-                planner_id="raster",
-                tool=_tool(120.0),
-                region=build_region("square", {"side_mm": 40.0}),
-                parameters={"stepover_mm": 5.0},
-            )
+    def test_oversized_tool_can_still_face_the_region(self) -> None:
+        """刀具比区域还大也能加工：刀心走到轮廓上，刀盘盖住整块（相当于端面铣）。"""
+
+        outcome = run_plan(
+            planner_id="raster",
+            tool=_tool(120.0),
+            region=build_region("square", {"side_mm": 40.0}),
+            parameters={"stepover_mm": 5.0},
+        )
+        self.assertGreaterEqual(outcome.toolpath.pass_count, 1)
 
     def test_large_stepover_is_warned_about(self) -> None:
         outcome = _plan({"stepover_mm": 20.0})

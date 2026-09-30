@@ -107,6 +107,25 @@ class RegionShape:
 
         return self.machining_boundary(footprint_mm)
 
+    def toolpath_boundary(self, footprint_mm: float) -> NDArray[np.float64]:
+        """刀心可以走到的范围（策略再按足迹半径内缩一次，得到刀心轨迹）。
+
+        与 machining_boundary 的区别：**零件自己的边界外扩一个足迹半径**，于是内缩之后刀心正好
+        落在零件边界上——刀边越出边界的那半圈是空刀（毛坯竖直面与区域齐平，外面没有料），
+        边界上因此不会留下"刀边只擦到、两刀之间够不到"的一圈残留。斜面折痕那侧属于**加工范围**
+        边界（那边还有料），不在这儿放开。默认与 machining_boundary 相同；已知的三个形状按
+        各自的解析式外扩。
+        """
+
+        return self.machining_boundary(footprint_mm)
+
+    def toolpath_boundary_at(
+        self, z_mm: float, footprint_mm: float
+    ) -> NDArray[np.float64]:
+        """分层粗加工时某一层的刀心范围；默认与 toolpath_boundary 相同（水平面每层一样）。"""
+
+        return self.toolpath_boundary(footprint_mm)
+
     def surface_step_levels(self) -> list[float]:
         """加工面上"平台"所在的高度。
 
@@ -231,6 +250,15 @@ class SquareRegion(RegionShape):
         planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
         return np.full(planar.shape[0], self.height_mm, dtype=np.float64)
 
+    def toolpath_boundary(self, footprint_mm: float) -> NDArray[np.float64]:
+        """零件边界外扩一个足迹半径：内缩之后刀心正好落在区域边界上（刀边越界那半圈是空刀）。"""
+
+        half = self.side_mm / 2.0 + max(float(footprint_mm), 0.0)
+        return np.array(
+            [(-half, -half), (half, -half), (half, half), (-half, half)],
+            dtype=np.float64,
+        )
+
 
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
@@ -269,6 +297,13 @@ class CircleRegion(RegionShape):
     def height_at(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
         planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
         return np.full(planar.shape[0], self.height_mm, dtype=np.float64)
+
+    def toolpath_boundary(self, footprint_mm: float) -> NDArray[np.float64]:
+        """圆也外扩一个足迹半径（半径 + 足迹）：内缩之后刀心落在圆周上。"""
+
+        radius = self.diameter_mm / 2.0 + max(float(footprint_mm), 0.0)
+        angles = np.linspace(0.0, 2.0 * pi, CIRCLE_SEGMENTS, endpoint=False)
+        return np.column_stack((radius * np.cos(angles), radius * np.sin(angles)))
 
 
 @REGION_SHAPES.register
@@ -435,6 +470,51 @@ class RampRegion(RegionShape):
         if self.include_plateau or self.slope <= _EPS or self.crease_x_mm is None:
             return []
         return [self.cap_z_mm]
+
+    def toolpath_boundary(self, footprint_mm: float) -> NDArray[np.float64]:
+        """外扩一个足迹半径：+X 低边与两侧放开（刀心可走到零件边界），
+        折痕那条边**不**放开（那边还有料），仍停在折痕外侧一个足迹处。"""
+
+        half = self.side_mm / 2.0
+        margin = max(float(footprint_mm), 0.0)
+        crease = self.crease_x_mm
+        if self.include_plateau or crease is None:
+            limit = -half - margin
+        else:
+            limit = max(crease - margin, -half - margin)
+        return np.array(
+            [(limit, -half - margin), (half + margin, -half - margin),
+             (half + margin, half + margin), (limit, half + margin)],
+            dtype=np.float64,
+        )
+
+    def toolpath_boundary_at(
+        self, z_mm: float, footprint_mm: float
+    ) -> NDArray[np.float64]:
+        """某一层的刀心范围：外圈放开一个足迹半径，料边那一侧保持 x_low
+        （按足迹内缩后刀边正好贴住料边，不会切进已经成形的一侧）。"""
+
+        half = self.side_mm / 2.0
+        margin = max(float(footprint_mm), 0.0)
+        if self.slope <= _EPS:
+            return self.toolpath_boundary(footprint_mm)
+        z = float(z_mm)
+        if z >= self.cap_z_mm:
+            # 整块（含平顶）都在这一层之下：四周都放开，别让折痕那条边限制住。
+            limit = -half - margin
+            return np.array(
+                [(limit, -half - margin), (half + margin, -half - margin),
+                 (half + margin, half + margin), (limit, half + margin)],
+                dtype=np.float64,
+            )
+        x_low = max(half - z / self.slope, -half)
+        if x_low >= half:
+            return np.empty((0, 2), dtype=np.float64)
+        return np.array(
+            [(x_low, -half - margin), (half + margin, -half - margin),
+             (half + margin, half + margin), (x_low, half + margin)],
+            dtype=np.float64,
+        )
 
     def surface_payload(self) -> dict[str, Any]:
         return {
