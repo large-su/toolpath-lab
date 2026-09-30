@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.runtime/
+build/
+dist/
+exports/
+examples/toolpath_demo.nc
+examples/toolpath_demo.csv
+
+# Electron 壳（package-lock.json 需要提交，保证 Electron 版本可复现）
+node_modules/

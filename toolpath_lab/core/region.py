@@ -1,0 +1,309 @@
+"""加工区域。
+
+区域就是"要加工的那块地方"，它替代了"导入模型 + 提取特征"这一整套前置环节：
+直接给定一个规则区域即可开始规划。当前提供三种形状：
+
+- 方形（square）：一个边长；
+- 圆形（circle）：一个直径；
+- 斜坡（ramp）：XY 投影是方形，加工面沿 +X 抬起，最高截到 80 mm 后转成平顶。
+
+所有形状统一归约为一条**逆时针、不重复首点**的边界多边形（XY 投影）。加工面由
+``height_at`` 给出每个 (x, y) 处的 Z：平面形状恒为 0，斜坡是一个被截断的斜面。
+因此
+"平面加工"与"斜面加工"走的是同一条代码路径——策略只管 XY 投影，Z 由区域负责。
+新增形状（椭圆、跑道形、凹多边形……）只要实现 boundary() 就能直接参与规划。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, fields
+from math import isfinite, pi, radians, tan
+from typing import Any, ClassVar, Mapping
+
+import numpy as np
+from numpy.typing import NDArray
+
+from toolpath_lab.core.errors import ParameterError
+from toolpath_lab.core.parameters import (
+    ParameterKind as K,
+    ParameterSet,
+    spec,
+)
+from toolpath_lab.core.registry import Registry
+
+REGION_SHAPES: Registry[type["RegionShape"]] = Registry("region shape")
+
+#: 圆用多少段折线逼近；固定值，避免把离散精度暴露成一个意义不大的参数。
+CIRCLE_SEGMENTS = 180
+#: 斜坡的 Z 上限（mm）：斜面超过这个高度就取成平顶。
+RAMP_CAP_MM = 80.0
+#: 斜坡允许的最大斜度（度）。
+RAMP_MAX_ANGLE_DEG = 80.0
+
+_EPS = 1e-9
+
+
+@dataclass(frozen=True, slots=True)
+class RegionShape:
+    """所有区域形状的基类。"""
+
+    id: ClassVar[str] = ""
+    label: ClassVar[str] = ""
+    description: ClassVar[str] = ""
+    parameters: ClassVar[ParameterSet] = ParameterSet()
+
+    def boundary(self) -> NDArray[np.float64]:
+        """逆时针闭合边界，形状 (N, 2)，不重复首点。"""
+
+        raise NotImplementedError
+
+    def height_at(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
+        """加工面在这些 (x, y) 处的高度 Z；平面形状恒为 0。"""
+
+        planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
+        return np.zeros(planar.shape[0], dtype=np.float64)
+
+    def surface_breaks(
+        self, start_xy: NDArray[np.float64], end_xy: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """直线段上必须插点的位置（加工面出现折角的地方）。
+
+        加工面是分片平面时，只在"平面接平面"的折痕处补点就足够精确；平面形状返回空，
+        于是"一刀两个点"的约定保持不变。
+        """
+
+        return np.empty((0, 2), dtype=np.float64)
+
+    def boundary_3d(self) -> NDArray[np.float64]:
+        """贴合加工面的三维轮廓，形状 (N, 3)。"""
+
+        planar = self.boundary()
+        return np.column_stack((planar, self.height_at(planar)))
+
+    def surface_patches(self) -> list[NDArray[np.float64]]:
+        """顶面的分片（每片都是共面的凸多边形，带 Z）。
+
+        前端据此拼出工件实体；平面形状就是轮廓本身一片。
+        """
+
+        return [self.boundary_3d()]
+
+    def surface_payload(self) -> dict[str, Any]:
+        """加工面的摘要，给界面与脚本看。"""
+
+        outline = self.boundary_3d()
+        return {
+            "kind": "flat",
+            "base_z_mm": float(outline[:, 2].min()),
+            "top_z_mm": float(outline[:, 2].max()),
+            "patch_count": len(self.surface_patches()),
+        }
+
+    def to_params(self) -> dict[str, Any]:
+        return {item.name: getattr(self, item.name) for item in fields(self)}
+
+    def describe(self) -> dict[str, Any]:
+        polygon = self.boundary()
+        return {
+            "id": self.id,
+            "label": self.label,
+            "description": self.description,
+            "parameters": self.to_params(),
+            "area_mm2": polygon_area(polygon),
+            "bounds_mm": polygon_bounds(polygon),
+            "surface": self.surface_payload(),
+        }
+
+
+def polygon_area(polygon: NDArray[np.float64]) -> float:
+    """多边形的有向面积（逆时针为正）。"""
+
+    x = polygon[:, 0]
+    y = polygon[:, 1]
+    return float(0.5 * np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+def polygon_bounds(polygon: NDArray[np.float64]) -> list[list[float]]:
+    """轴对齐包围盒，形式为 [[x_min, x_max], [y_min, y_max]]。"""
+
+    return [
+        [float(polygon[:, 0].min()), float(polygon[:, 0].max())],
+        [float(polygon[:, 1].min()), float(polygon[:, 1].max())],
+    ]
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class SquareRegion(RegionShape):
+    """以原点为中心的方形区域。"""
+
+    side_mm: float = 80.0
+
+    id: ClassVar[str] = "square"
+    label: ClassVar[str] = "方形"
+    description: ClassVar[str] = "面铣最常见的形状，用来对比往复与单向"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("side_mm", "边长", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.side_mm <= 0:
+            raise ParameterError("方形边长必须为正")
+
+    def boundary(self) -> NDArray[np.float64]:
+        half = self.side_mm / 2.0
+        return np.array(
+            [(-half, -half), (half, -half), (half, half), (-half, half)],
+            dtype=np.float64,
+        )
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class CircleRegion(RegionShape):
+    """以原点为中心的圆形区域。"""
+
+    diameter_mm: float = 80.0
+
+    id: ClassVar[str] = "circle"
+    label: ClassVar[str] = "圆形"
+    description: ClassVar[str] = "圆形端面，用来观察刀路在曲线边界上的收放"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("diameter_mm", "直径 D", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.diameter_mm <= 0:
+            raise ParameterError("圆形直径必须为正")
+
+    def boundary(self) -> NDArray[np.float64]:
+        radius = self.diameter_mm / 2.0
+        angles = np.linspace(0.0, 2.0 * pi, CIRCLE_SEGMENTS, endpoint=False)
+        return np.column_stack((radius * np.cos(angles), radius * np.sin(angles)))
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class RampRegion(RegionShape):
+    """XY 投影是方形、沿 +Z 抬起的斜面，Z 到 RAMP_CAP_MM 截成平顶。
+
+    低边是 **+X 方向的最外侧边**（x = +边长/2，Z = 0），沿 −X 方向线性升高；
+    `tan(斜度) · 边长` 超过 RAMP_CAP_MM 时，多出来的部分取平顶——斜度越大平顶越宽，
+    最高的地方始终不超过 RAMP_CAP_MM。加工面以下仍保留与其它区域一样的基体厚度。
+    """
+
+    side_mm: float = 80.0
+    angle_deg: float = 30.0
+
+    id: ClassVar[str] = "ramp"
+    label: ClassVar[str] = "斜坡"
+    description: ClassVar[str] = (
+        f"XY 投影为方形的斜面：以 +X 最外侧边为低边向 −X 抬起，最高到 {RAMP_CAP_MM:g} mm 后转平顶"
+    )
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("side_mm", "边长", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域", help="XY 投影方向的边长（默认 80 × 80）"),
+            spec("angle_deg", "斜度", K.FLOAT, 30.0, minimum=0.0,
+                 maximum=RAMP_MAX_ANGLE_DEG, step=5.0, unit="°", group="区域",
+                 help=f"加工面与 XY 平面的夹角；0° 就是平面，最大 {RAMP_MAX_ANGLE_DEG:g}°"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if not isfinite(self.side_mm) or self.side_mm <= 0:
+            raise ParameterError("斜坡边长必须是有限正数")
+        if not isfinite(self.angle_deg) or not 0.0 <= self.angle_deg <= RAMP_MAX_ANGLE_DEG:
+            raise ParameterError(f"斜坡斜度必须在 0° 到 {RAMP_MAX_ANGLE_DEG:g}° 之间")
+
+    # -- 加工面 ------------------------------------------------------------
+    @property
+    def slope(self) -> float:
+        """tan(斜度)：沿 −X 每走 1 mm 抬起多少。"""
+
+        return tan(radians(self.angle_deg))
+
+    @property
+    def crease_x_mm(self) -> float | None:
+        """斜面转平顶的折痕所在的 x；整块都还是斜面时为 None。"""
+
+        if self.slope <= _EPS:
+            return None
+        half = self.side_mm / 2.0
+        crease = half - RAMP_CAP_MM / self.slope
+        return crease if crease > -half + 1e-9 else None
+
+    @property
+    def peak_z_mm(self) -> float:
+        """加工面实际达到的最高点（斜度不够时到不了 RAMP_CAP_MM）。"""
+
+        return float(self.height_at(np.array([[-self.side_mm / 2.0, 0.0]]))[0])
+
+    def boundary(self) -> NDArray[np.float64]:
+        half = self.side_mm / 2.0
+        return np.array(
+            [(-half, -half), (half, -half), (half, half), (-half, half)],
+            dtype=np.float64,
+        )
+
+    def height_at(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
+        planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
+        rise = (self.side_mm / 2.0 - planar[:, 0]) * self.slope
+        return np.clip(rise, 0.0, RAMP_CAP_MM)
+
+    def surface_breaks(
+        self, start_xy: NDArray[np.float64], end_xy: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        crease = self.crease_x_mm
+        if crease is None:
+            return np.empty((0, 2), dtype=np.float64)
+        start = np.asarray(start_xy, dtype=np.float64).reshape(2)
+        end = np.asarray(end_xy, dtype=np.float64).reshape(2)
+        if (start[0] - crease) * (end[0] - crease) >= 0.0:
+            return np.empty((0, 2), dtype=np.float64)
+        fraction = (crease - start[0]) / (end[0] - start[0])
+        return (start + fraction * (end - start)).reshape(1, 2)
+
+    def surface_patches(self) -> list[NDArray[np.float64]]:
+        """顶面分片：斜段一片（靠 +X 的低边）、平顶一片（靠 −X 的高边）。"""
+
+        half = self.side_mm / 2.0
+        crease = self.crease_x_mm
+        if crease is None:
+            corners = self.boundary()
+            return [self._patch([tuple(corner) for corner in corners])]
+        return [
+            self._patch([(crease, -half), (half, -half), (half, half), (crease, half)]),
+            self._patch([(-half, -half), (crease, -half), (crease, half), (-half, half)]),
+        ]
+
+    def _patch(self, corners: list[tuple[float, float]]) -> NDArray[np.float64]:
+        planar = np.array(corners, dtype=np.float64)
+        return np.column_stack((planar, self.height_at(planar)))
+
+    def surface_payload(self) -> dict[str, Any]:
+        return {
+            **super().surface_payload(),
+            "kind": "ramp",
+            "angle_deg": self.angle_deg,
+            "slope": self.slope,
+            "cap_z_mm": RAMP_CAP_MM,
+            "crease_x_mm": self.crease_x_mm,
+        }
+
+
+def build_region(shape_id: str, raw_parameters: Mapping[str, Any] | None = None) -> RegionShape:
+    """由接口参数构造一个已注册的区域形状。"""
+
+    cls = REGION_SHAPES.get(shape_id)
+    return cls(**cls.parameters.coerce(raw_parameters))
+
+
+def region_catalog() -> list[dict[str, Any]]:
+    return REGION_SHAPES.catalog()

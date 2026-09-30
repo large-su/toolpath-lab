@@ -1,0 +1,14 @@
+{
+  "name": "toolpath-lab",
+  "private": true,
+  "version": "0.0.1",
+  "description": "ToolpathLab desktop shell (Electron). The planning backend is Python; this package only provides the window.",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^43.0.0"
+  }
+}
