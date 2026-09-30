@@ -154,6 +154,7 @@ toolpath_lab/
 electron/      桌面壳：拉起 Python 后端并承载窗口
 examples/      命令行示例与示例插件
 tests/         单元测试
+tools/         前端几何自检（node tools/check_frontend_geometry.mjs）
 docs/          架构与扩展文档
 ```
 
@@ -194,10 +195,12 @@ docs/          架构与扩展文档
 ## 测试
 
 ```bash
-python -m unittest discover -s tests
+python -m unittest discover -s tests        # 后端与库
+node tools/check_frontend_geometry.mjs      # 前端几何（刀路抬升保留真实 Z、刀尖位置、工件法向）
 ```
 
-覆盖几何裁剪与等距偏置、两种策略的刀路（平面与斜面）与安全高度、时间参数化、G-code 导出、HTTP 接口与静态资源。
+覆盖几何裁剪与等距偏置、两种策略的刀路（平面与斜面）与安全高度、时间参数化、G-code 导出、HTTP 接口与静态资源；
+前端几何自检补上 Python 测试看不到的那一层（渲染前把三维点变成几何的那几步）。
 
 ## 设计说明
 

@@ -59,8 +59,11 @@ function orientation(view) {
 }
 
 // 刀路整体抬高一点点画，避免与工件上表面互相穿插（z-fighting）。
-function liftPaths(polylines) {
-  return polylines.map((points) => points.map((point) => [point[0], point[1], PATH_LIFT_MM]));
+// 注意是"抬高"而不是"抹平"：斜面/曲面上的刀点本身带 Z，必须保留，否则刀路会横在基准平面上。
+export function liftPaths(polylines) {
+  return polylines.map((points) =>
+    points.map((point) => [point[0], point[1], (point[2] || 0) + PATH_LIFT_MM])
+  );
 }
 
 function polylineGeometry(polylines, dashed = false) {

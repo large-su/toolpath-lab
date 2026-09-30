@@ -23,7 +23,13 @@ python -m unittest discover -s tests        # 必须全绿
 python examples/headless_plan.py            # 库路径仍然可用
 node --check electron/main.mjs              # 桌面壳语法
 node --check toolpath_lab/web/js/main.js    # 前端语法（换成任一模块都可以）
+node tools/check_frontend_geometry.mjs      # 前端几何自检：刀路抬升、刀尖位置、工件法向
 ```
+
+`tools/check_frontend_geometry.mjs` 专门盯"Python 测试覆盖不到、又要肉眼才看得出"的几条不变量：
+刀路抬升必须保留真实 Z（曾经把 Z 换成固定抬升量，斜面上刀路整个横在基准平面）、三种刀具的刀尖
+都落在 Z = 0、斜面工件的三角形法向朝外。它不联网、不需要 npm install（自己把 node_modules/three
+指向仓库自带的 vendor）。
 
 改了界面就打开窗口点一遍：参数面板能生成、视图能切、播放能拖、导出能出文件。
 

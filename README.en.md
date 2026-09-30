@@ -160,6 +160,7 @@ toolpath_lab/export/      G-code writer
 toolpath_lab/server/      standard library HTTP API, request validation, static files
 toolpath_lab/web/         front-end: native ES modules + vendored three.js, no build step
 electron/                 desktop shell that spawns the backend and hosts the window
+tools/                    frontend geometry self-check (node tools/check_frontend_geometry.mjs)
 ```
 
 Dependencies point in one direction: `core` depends on nothing, `planning` / `simulation` /
@@ -199,7 +200,8 @@ Full details: [docs/extending.md](docs/extending.md); conventions: [CONTRIBUTING
 ## Tests
 
 ```bash
-python -m unittest discover -s tests
+python -m unittest discover -s tests        # backend and library
+node tools/check_frontend_geometry.mjs      # frontend geometry (path lift keeps Z, tool tip, workpiece normals)
 ```
 
 ## Design notes
