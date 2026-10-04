@@ -1,7 +1,7 @@
 """刀具几何。
 
 刀具不是装饰：栅格刀路的边界偏置量由"刀具在加工面上的足迹半径"决定，
-将来接入球头/圆鼻刀时，残留高度、刀轴姿态也都从这里出发。
+材料切除仿真则直接按下面的圆角半径推出刀底形状（残留高度也从这里出发）。
 
 ===========  ==================  =================  =======================
 类型         底面半径 Rf        圆角半径 Rc        足迹半径（用于偏置）
@@ -11,8 +11,8 @@ ball         -                   R                  0
 bull         R - Rc              Rc                 R - Rc
 ===========  ==================  =================  =======================
 
-当前对外只开放平底刀：其余两种在参数目录里标记为"待拓展"（Choice.disabled），
-想启用它们只需去掉那个标记，并补上对应的三维显示。
+平底刀与球头刀已对外开放（两者共用 simulation/material.py 里同一套刀底公式）。
+圆鼻刀仍标为"待拓展"（Choice.disabled），启用方式见 docs/extending.md。
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ class ToolKind(str, Enum):
 #: 参数目录里的刀具类型选项；disabled 的项在界面上不可选。
 TOOL_KINDS: tuple[Choice, ...] = (
     Choice(ToolKind.FLAT.value, "平底刀 Flat end mill"),
-    Choice(ToolKind.BALL.value, "球头刀 Ball nose（待拓展）", disabled=True),
+    Choice(ToolKind.BALL.value, "球头刀 Ball nose"),
     Choice(ToolKind.BULL.value, "圆鼻刀 Bull nose（待拓展）", disabled=True),
 )
 
@@ -55,7 +55,8 @@ def tool_parameters() -> ParameterSet:
     return ParameterSet(
         (
             spec("kind", "刀具类型", K.CHOICE, ToolKind.FLAT.value, group="刀具",
-                 choices=TOOL_KINDS, help="球头刀与圆鼻刀留作拓展，启用方式见 docs/extending.md"),
+                 choices=TOOL_KINDS,
+                 help="平底刀切出平底；球头刀留下扇贝形残留，曲面上的刀路痕因此可见"),
             spec("diameter_mm", "刀具直径 D", K.FLOAT, 6.0, minimum=1.0, maximum=100.0,
                  step=0.5, unit="mm", group="刀具"),
             spec("length_mm", "刀具长度 L", K.FLOAT, 30.0, minimum=2.0, maximum=300.0,

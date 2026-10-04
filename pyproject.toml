@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "toolpath-lab"
-version = "0.0.2"
-description = "A deliberately small toolpath planning base: flat end mill + square/circle region + zigzag/one-way raster toolpaths, with a Z-map material removal simulation, desktop 3D viewer and feed-rate playback."
+version = "0.0.3"
+description = "A deliberately small toolpath planning base: flat/ball end mill + square/circle region + zigzag/one-way raster toolpaths, with a Z-map material removal simulation, desktop 3D viewer and feed-rate playback."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

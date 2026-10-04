@@ -41,16 +41,27 @@ class ToolParameterTests(unittest.TestCase):
         self.assertEqual(tool.diameter_mm, 6.0)
         self.assertEqual(tool.length_mm, 30.0)
 
-    def test_only_the_flat_kind_is_selectable(self) -> None:
+    def test_flat_and_ball_are_selectable_bull_is_not(self) -> None:
+        # 平底刀与球头刀都已开放（球头刀给出扇贝形残留，材料切除仿真里按球面建模）；
+        # 圆鼻刀仍是"待拓展"。
         disabled = {choice.value: choice.disabled for choice in TOOL_KINDS}
         self.assertFalse(disabled["flat"])
-        self.assertTrue(disabled["ball"])
+        self.assertFalse(disabled["ball"])
         self.assertTrue(disabled["bull"])
+
+    def test_ball_tool_geometry_differs_from_flat(self) -> None:
+        ball = Tool(ToolKind.BALL, diameter_mm=10.0, length_mm=30.0)
+        flat = Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=30.0)
+        # 球头刀的足迹半径是 0（不参与区域偏置），平底刀是整个半径。
+        self.assertAlmostEqual(ball.footprint_radius_mm, 0.0)
+        self.assertAlmostEqual(flat.footprint_radius_mm, 5.0)
+        self.assertAlmostEqual(ball.radius_mm - ball.footprint_radius_mm, 5.0)
 
     def test_parameter_choices_are_published_in_the_catalog(self) -> None:
         kind_spec = tool_parameters().spec("kind")
         self.assertEqual(len(kind_spec.choices), 3)
-        self.assertTrue(kind_spec.to_dict()["choices"][1]["disabled"])
+        self.assertFalse(kind_spec.to_dict()["choices"][1]["disabled"])
+        self.assertTrue(kind_spec.to_dict()["choices"][2]["disabled"])
 
     def test_describe_exposes_the_geometry(self) -> None:
         payload = Tool.from_parameters(

@@ -99,6 +99,16 @@ function frameIndexFor(times, time) {
   return low;
 }
 
+//: 材料切除开启时，刀路线条调淡多少。曲面上那一层线如果保持全不透明，
+//: 斜看就会糊成一片噪点，把刚削出来的形状盖掉。
+const PATH_DIM_WITH_STOCK = 0.4;
+const RAPID_DIM_WITH_STOCK = 0.45;
+
+function lineOpacity(dashed, showStock) {
+  if (!showStock) return 1;
+  return dashed ? RAPID_DIM_WITH_STOCK : PATH_DIM_WITH_STOCK;
+}
+
 function polylineGeometry(polylines, dashed = false) {
   const positions = [];
   for (const points of polylines) {
@@ -186,6 +196,7 @@ export class Viewport {
     this.toolMesh = null;
     this.traceLine = null;
     this.rapidLine = null;
+    this.lineMaterials = [];       //: 刀路线条材质，随"材料切除"开关调制浓淡
     this.stockSimulation = null;   //: 高度场仿真的载荷（含编码参数）
     this.stockFrames = [];         //: 解码后的逐帧顶面高度（量化整数）
     this.stockMesh = null;
@@ -312,6 +323,8 @@ export class Viewport {
     this._clear(this.pathGroup);
     this._clear(this.traceGroup);
     this._clear(this.stockGroup);
+    // 旧材质的引用留在 lineMaterials 里会变成野指针，重建前先清掉。
+    this.lineMaterials = [];
 
     const region = payload.region;
     const [xMin, xMax] = region.bounds_mm[0];
@@ -336,12 +349,14 @@ export class Viewport {
 
     if (payload.timeline && payload.timeline.positions) {
       const geometry = polylineGeometry([liftPaths([payload.timeline.positions])[0]]);
-      this.traceLine = new THREE.LineSegments(
-        geometry,
-        new THREE.LineBasicMaterial({ color: COLORS.trace, transparent: true, opacity: 0.95 })
-      );
+      const traceMaterial = new THREE.LineBasicMaterial({
+        color: COLORS.trace, transparent: true,
+        opacity: 0.95 * lineOpacity(false, this.display.showStock),
+      });
+      this.traceLine = new THREE.LineSegments(geometry, traceMaterial);
       this.traceLine.geometry.setDrawRange(0, 0);
       this.traceGroup.add(this.traceLine);
+      this.lineMaterials.push({ material: traceMaterial, base: 0.95 });
     } else {
       this.traceLine = null;
     }
@@ -384,30 +399,57 @@ export class Viewport {
     const length = tool.length_mm;
     const flute = Math.min(length * 0.65, radius * 6);
     const holder = Math.max(length - flute, length * 0.2);
+    const material = new THREE.MeshStandardMaterial({
+      color: COLORS.tool, metalness: 0.5, roughness: 0.34,
+    });
 
-    // 两段都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
-    // 黄色切削段对齐 UGNX 的刀具配色。
+    // 切削段：圆柱按长度留出刀底所占的那一截，底部再补上真正的刀底形状。
+    // 球头刀的刀底是半球，所以圆柱要从球心以上开始，否则刀会"长"出球面外。
+    const isBall = tool.kind === "ball";
+    const bottom = isBall ? radius : 0;          // 刀底占用的高度
+    const body = Math.max(flute - bottom, radius * 0.5);
+    const meshes = [];
     const cutting = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, flute, 64),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.tool, metalness: 0.5, roughness: 0.34,
-      })
+      new THREE.CylinderGeometry(radius, radius, body, 64), material
     );
+    cutting.rotation.x = Math.PI / 2;
+    cutting.position.z = bottom + body / 2;
+    meshes.push(cutting);
+
+    if (isBall) {
+      // 半球：球心在 z = radius，最低点正好落在刀尖（z = 0）。
+      const ball = new THREE.Mesh(
+        new THREE.SphereGeometry(radius, 48, 24, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
+        material
+      );
+      ball.rotation.x = -Math.PI / 2;
+      ball.position.z = radius;
+      meshes.push(ball);
+    } else {
+      // 平底刀：封一层薄薄的底盖，让它看起来是实体而不是缺面的壳。
+      const cap = new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, Math.max(radius * 0.12, 0.2), 64), material
+      );
+      cap.rotation.x = Math.PI / 2;
+      cap.position.z = Math.max(radius * 0.06, 0.1);
+      meshes.push(cap);
+    }
+
     const shank = new THREE.Mesh(
       new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
       new THREE.MeshStandardMaterial({
         color: COLORS.holder, metalness: 0.92, roughness: 0.24,
       })
     );
-    for (const mesh of [cutting, shank]) {
+    shank.rotation.x = Math.PI / 2;
+    shank.position.z = flute + holder / 2;
+    meshes.push(shank);
+
+    for (const mesh of meshes) {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.toolGroup.add(mesh);
     }
-    cutting.rotation.x = Math.PI / 2;
-    cutting.position.z = flute / 2;
-    shank.rotation.x = Math.PI / 2;
-    shank.position.z = flute + holder / 2;
     this.toolMesh = this.toolGroup;
     this.toolGroup.visible = this.display.showTool;
   }
@@ -429,6 +471,15 @@ export class Viewport {
     this.toolGroup.visible = this.display.showTool;
     if (this.rapidLine) this.rapidLine.visible = this.display.showRapid;
     this.contourGroup.visible = this.display.showWorkpiece;
+    // 材料切除开关直接决定刀路线条的浓淡，所以每次都要跟着更新。
+    const dim = this.display.showStock && this.stockGroup.children.length > 0;
+    for (const entry of this.lineMaterials) {
+      entry.material.opacity = entry.base * lineOpacity(
+        entry.material.isLineDashedMaterial === true, dim
+      );
+    }
+    for (const child of this.pathGroup.children) child.renderOrder = dim ? 0 : 2;
+    if (this.traceLine) this.traceLine.renderOrder = dim ? 0 : 2;
   }
 
   setAppearance(options) {
@@ -527,16 +578,23 @@ export class Viewport {
 
   _line(polylines, color, opacity, dashed = false) {
     const geometry = polylineGeometry(polylines);
+    const start = lineOpacity(dashed, this.display.showStock);
     let material;
     if (dashed) {
       material = new THREE.LineDashedMaterial({
-        color, transparent: true, opacity, dashSize: 3, gapSize: 3,
+        color, transparent: true, opacity: opacity * start, dashSize: 3, gapSize: 3,
       });
     } else {
-      material = new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity });
+      material = new THREE.LineBasicMaterial({
+        color, transparent: true, opacity: opacity * start,
+      });
     }
     const line = new THREE.LineSegments(geometry, material);
     if (dashed) line.computeLineDistances();
+    // 刀路是"程序走在哪"的参考线。材料切除打开时把它画在曲面之后并调淡，
+    // 否则一条条线会盖住刚削出来的形状，看上去像满屏噪点。
+    line.renderOrder = this.display.showStock ? 0 : 2;
+    this.lineMaterials.push({ material, base: opacity });
     return line;
   }
 

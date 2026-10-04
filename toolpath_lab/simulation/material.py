@@ -41,6 +41,8 @@ from toolpath_lab.core.tool import Tool
 
 #: 高度场的网格数上限（横纵各自），约束响应体积。
 MAX_GRID_CELLS = 200
+#: 一条刀轨至少要占多少格，否则坑的边缘会退化成楼梯状锯齿。
+CELLS_PER_PASS = 6.0
 #: 一次仿真默认产生多少帧；帧越多动画越连续，载荷越大。
 DEFAULT_FRAME_BUDGET = 24
 FRAME_BUDGET_RANGE = (4, 48)
@@ -194,7 +196,7 @@ def build_height_field(
     low = points[:, :2].min(axis=0) - reach
     high = points[:, :2].max(axis=0) + reach
 
-    step = _grid_step(high - low, float(settings.resolution_mm))
+    step = _grid_step(high - low, float(settings.resolution_mm), toolpath)
     x_mm = _grid_axis(float(low[0]), float(high[0]), step)
     y_mm = _grid_axis(float(low[1]), float(high[1]), step)
 
@@ -215,12 +217,40 @@ def _default_stock_top(tool: Tool) -> float:
     return float(max(0.2, min(1.0, tool.radius_mm * 0.25)))
 
 
-def _grid_step(span: NDArray[np.float64], resolution_mm: float) -> float:
-    """把请求的精度夹到网格数上限之内。"""
+def _adaptive_step(span: NDArray[np.float64], toolpath: Toolpath) -> float:
+    """按"一条刀轨要占多少格"反推网格步长。
+
+    高度场是离散的，如果每条刀轨只落在一两格里，坑的边缘就会变成楼梯/锯齿。
+    这里用扫掠面积除以切削总长估出相邻刀轨的间距（平面铣里就是切宽），
+    再要求每条刀轨至少占 CELLS_PER_PASS 格。估不出来（刀路太短）时返回 0，表示不干预。
+    """
+
+    cut_length = float(toolpath.cut_length_mm)
+    if cut_length <= _EPS:
+        return 0.0
+    # 刀心停留的范围 = 扫掠范围（B）减去两侧各一个刀具半径，所以 B = 包围盒边长 + 2R。
+    # 用外包矩形估面积会偏大，换算出来的步长偏保守（更细），这里可以接受。
+    swept_area = float(np.prod(np.maximum(np.asarray(span, dtype=np.float64), _EPS)))
+    pass_spacing = 2.0 * swept_area / cut_length
+    return pass_spacing / float(CELLS_PER_PASS)
+
+
+def _grid_step(
+    span: NDArray[np.float64],
+    resolution_mm: float,
+    toolpath: Toolpath,
+) -> float:
+    """把请求的精度夹到网格数上限之内，并按需要自动加密。
+
+    - 用户要得更细就用用户的：``resolution_mm`` 是上限，不会被改粗；
+    - 用户要得太粗（刀路痕迹会被网格吃掉）就自动加密到 :func:`_adaptive_step`；
+    - 无论哪种，都不超过 :data:`MAX_GRID_CELLS` 的单轴格数，保证响应体积可控。
+    """
 
     span = np.maximum(np.asarray(span, dtype=np.float64), _EPS)
-    step = max(float(resolution_mm), float(span.max()) / float(MAX_GRID_CELLS))
-    return max(step, 1e-3)
+    cap = float(span.max()) / float(MAX_GRID_CELLS)
+    step = min(float(resolution_mm), _adaptive_step(span, toolpath) or float("inf"))
+    return max(step, cap, 1e-3)
 
 
 def _grid_axis(low: float, high: float, step: float) -> NDArray[np.float64]:

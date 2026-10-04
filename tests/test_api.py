@@ -125,10 +125,11 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(stock["defaults"]["frame_budget"], 24)
         self.assertGreater(stock["simulation"]["max_grid_cells"], 0)
 
-    def test_disabled_tool_kinds_are_published(self) -> None:
+    def test_tool_kind_availability_is_published(self) -> None:
         _, body, _ = self.get("/api/catalog")
         kinds = json.loads(body)["tool"]["parameters"][0]["choices"]
-        self.assertEqual([item["disabled"] for item in kinds], [False, True, True])
+        # 平底刀与球头刀可选，圆鼻刀仍是"待拓展"。
+        self.assertEqual([item["disabled"] for item in kinds], [False, False, True])
 
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
