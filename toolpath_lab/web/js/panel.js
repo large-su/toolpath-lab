@@ -22,9 +22,10 @@ function clone(value) {
 //: 毛坯分组的兜底声明：老版本目录里没有 stock 时，界面也不能崩。
 const FALLBACK_STOCK = [
   { key: "depth_mm", label: "毛坯厚度", kind: "float", default: 20.0, min: 0.5, max: 200.0, step: 0.5, unit: "mm" },
-  { key: "top_mm", label: "上表面余量", kind: "float", default: 1.0, min: 0.0, max: 20.0, step: 0.1, unit: "mm" },
-  { key: "margin_mm", label: "侧向余量", kind: "float", default: 1.0, min: 0.0, max: 50.0, step: 0.5, unit: "mm" },
-  { key: "resolution_mm", label: "网格精度", kind: "float", default: 1.0, min: 0.2, max: 10.0, step: 0.1, unit: "mm" },
+  { key: "top_mm", label: "上表面余量", kind: "float", default: 2.0, min: 0.0, max: 20.0, step: 0.1, unit: "mm" },
+  { key: "cut_depth_mm", label: "切削深度", kind: "float", default: 5.0, min: 0.0, max: 50.0, step: 0.5, unit: "mm" },
+  { key: "margin_mm", label: "侧向余量", kind: "float", default: 2.0, min: 0.0, max: 50.0, step: 0.5, unit: "mm" },
+  { key: "resolution_mm", label: "网格精度", kind: "float", default: 1.5, min: 0.2, max: 10.0, step: 0.1, unit: "mm" },
   { key: "frame_budget", label: "动画帧数", kind: "int", default: 24, min: 4, max: 48, step: 4, unit: "帧" },
 ];
 

@@ -14,6 +14,7 @@ from toolpath_lab.core.tool import Tool, ToolKind
 from toolpath_lab.planning import run_plan
 from toolpath_lab.simulation import (
     MAX_GRID_CELLS,
+    MIN_FRAME_BUDGET,
     StockSettings,
     build_height_field,
     resample_points,
@@ -58,7 +59,9 @@ def decode_frames(payload: dict) -> np.ndarray:
 class HeightFieldTests(unittest.TestCase):
     def test_grid_covers_the_swept_area_with_the_margin(self) -> None:
         field = build_height_field(
-            straight_toolpath(), flat_tool(10.0), StockSettings(margin_mm=2.0, resolution_mm=1.0)
+            straight_toolpath(),
+            flat_tool(10.0),
+            StockSettings(margin_mm=2.0, resolution_mm=1.0, cut_depth_mm=0.0),
         )
         # 刀心到 ±20，刀具半径 5，再加 2 mm 余量。
         self.assertAlmostEqual(float(field.x_mm[0]), -27.0)
@@ -100,6 +103,17 @@ class StockSettingsTests(unittest.TestCase):
         with self.assertRaises(ParameterError):
             StockSettings(frame_budget=1)
 
+    def test_rejects_cut_depth_deeper_than_the_stock(self) -> None:
+        # 下刀量超过毛坯厚度就会把工件切穿，必须挡住。
+        with self.assertRaises(ParameterError):
+            StockSettings(depth_mm=5.0, cut_depth_mm=5.0)
+        with self.assertRaises(ParameterError):
+            StockSettings(depth_mm=5.0, cut_depth_mm=9.0)
+
+    def test_machining_plane_is_below_the_machining_face(self) -> None:
+        self.assertAlmostEqual(StockSettings(cut_depth_mm=0.0).machining_plane_mm, 0.0)
+        self.assertAlmostEqual(StockSettings(cut_depth_mm=4.0).machining_plane_mm, -4.0)
+
     def test_partial_override_keeps_other_defaults(self) -> None:
         settings = StockSettings.from_parameters({"resolution_mm": 2.5})
         self.assertAlmostEqual(settings.resolution_mm, 2.5)
@@ -109,7 +123,11 @@ class StockSettingsTests(unittest.TestCase):
 class CarveTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tool = flat_tool(10.0)
-        self.settings = StockSettings(top_mm=1.0, resolution_mm=0.5, margin_mm=1.0)
+        # 这些用例量的是"刀路本身切出什么形状"，所以切深设为 0（正好切平上表面余量），
+        # 免得混进整体下刀量。整体下刀量单独在 CutDepthTests 里测。
+        self.settings = StockSettings(
+            top_mm=1.0, cut_depth_mm=0.0, resolution_mm=0.5, margin_mm=1.0
+        )
 
     def _result(self, toolpath: Toolpath):
         return simulate_material_removal(toolpath, self.tool, self.settings)
@@ -142,20 +160,39 @@ class CarveTests(unittest.TestCase):
         self.assertTrue(bool((result.stock_top_mm - removed[untouched] == result.stock_top_mm).all()))
 
     def test_cutting_deeper_removes_more(self) -> None:
-        shallow = self._result(straight_toolpath(z_mm=0.0))
-        deep = self._result(straight_toolpath(z_mm=-3.0))
+        # 同样的刀路，只把"切削深度"加大，切掉的体积必须更多、最深值更大。
+        shallow = simulate_material_removal(
+            straight_toolpath(), self.tool, self.settings
+        )
+        deep = simulate_material_removal(
+            straight_toolpath(),
+            self.tool,
+            StockSettings(top_mm=1.0, cut_depth_mm=4.0, resolution_mm=0.5, margin_mm=1.0),
+        )
         self.assertGreater(deep.max_cut_depth_mm, shallow.max_cut_depth_mm)
         self.assertGreater(deep.removed_volume_mm3, shallow.removed_volume_mm3)
 
     def test_material_is_never_removed_below_the_floor(self) -> None:
-        settings = StockSettings(top_mm=1.0, depth_mm=2.0, resolution_mm=0.5)
+        settings = StockSettings(
+            top_mm=1.0, depth_mm=2.0, cut_depth_mm=0.0, resolution_mm=0.5
+        )
+        # 刀路故意扎到 z = -50：削料必须在毛坯底面停住，而不是跟着刀路切穿。
         toolpath = straight_toolpath(z_mm=-50.0)
         result = simulate_material_removal(toolpath, self.tool, settings)
         self.assertAlmostEqual(result.floor_mm, -2.0)
-        self.assertLessEqual(result.max_cut_depth_mm, 3.0 + 1e-9)  # 上表面余量 + 厚度
+        self.assertAlmostEqual(result.max_cut_depth_mm, 3.0, places=6)  # 上表面余量 + 厚度
         self.assertGreaterEqual(float(result.frame_at(0.0).min()), 0.0)
         top = result.stock_top_mm - result.final_removed_mm
         self.assertGreaterEqual(float(top.min()), result.floor_mm - 1e-9)
+        self.assertAlmostEqual(float(top.min()), result.floor_mm, places=6)
+
+    def test_cut_depth_never_reaches_below_the_floor(self) -> None:
+        # 下刀量再大，也只会停在毛坯底面，不会把工件切穿。
+        settings = StockSettings(top_mm=1.0, depth_mm=5.0, cut_depth_mm=4.0)
+        result = simulate_material_removal(straight_toolpath(), self.tool, settings)
+        top = result.stock_top_mm - result.final_removed_mm
+        self.assertGreaterEqual(float(top.min()), result.floor_mm - 1e-9)
+        self.assertAlmostEqual(float(top.min()), settings.machining_plane_mm, places=6)
 
     def test_removal_is_monotone_in_time(self) -> None:
         result = self._result(straight_toolpath())
@@ -201,7 +238,7 @@ class BallToolTests(unittest.TestCase):
         result = simulate_material_removal(
             straight_toolpath(z_mm=-1.0, half_length_mm=40.0),
             tool,
-            StockSettings(top_mm=1.0, resolution_mm=0.25),
+            StockSettings(top_mm=1.0, cut_depth_mm=0.0, resolution_mm=0.25),
         )
         column = result.columns // 2
         removed = result.final_removed_mm[:, column]
@@ -232,7 +269,7 @@ class FrameTests(unittest.TestCase):
             region=region,
             parameters={"mode": "zigzag", "stepover_mm": 15.0, "feed_mm_per_min": 600.0},
         ).toolpath
-        self.settings = StockSettings(resolution_mm=1.0, frame_budget=12)
+        self.settings = StockSettings(resolution_mm=1.0, frame_budget=12, cut_depth_mm=0.0)
 
     def test_frame_times_are_sorted_and_within_the_duration(self) -> None:
         result = simulate_material_removal(self.toolpath, flat_tool(10.0), self.settings)
@@ -265,6 +302,22 @@ class FrameTests(unittest.TestCase):
                 )
                 self.assertLessEqual(result.frame_count, budget)
 
+    def test_frame_count_is_capped_on_a_fine_grid(self) -> None:
+        # 网格细的时候帧数按格数预算收敛，避免载荷随精度平方增长。
+        fine = simulate_material_removal(
+            self.toolpath,
+            flat_tool(10.0),
+            StockSettings(resolution_mm=0.25, frame_budget=24),
+        )
+        coarse = simulate_material_removal(
+            self.toolpath, flat_tool(10.0), StockSettings(resolution_mm=1.5, frame_budget=24)
+        )
+        # 粗网格：用户要多少给多少。
+        self.assertEqual(coarse.frame_count, 24)
+        # 细网格：帧数被收窄，但不会低于动画可用的下限。
+        self.assertLess(fine.frame_count, coarse.frame_count)
+        self.assertGreaterEqual(fine.frame_count, MIN_FRAME_BUDGET)
+
     def test_short_toolpath_still_produces_frames(self) -> None:
         toolpath = straight_toolpath()
         result = simulate_material_removal(toolpath, flat_tool(10.0), self.settings)
@@ -292,7 +345,9 @@ class PayloadTests(unittest.TestCase):
         self.assertTrue(payload["enabled"])
         self.assertEqual(payload["encoding"]["type"], "uint16")
         self.assertEqual(payload["encoding"]["endian"], "little")
-        self.assertEqual(payload["encoding"]["offset_mm"], 0.0)
+        # 偏移取在底面以下，保证切削深度（负高度）也能被量化表示。
+        self.assertLess(payload["encoding"]["offset_mm"], payload["floor_mm"])
+        self.assertLessEqual(payload["encoding"]["step_mm"], 0.01)
         self.assertEqual(len(payload["times"]), len(payload["frames"]))
         self.assertEqual(len(payload["times"]), payload["statistics"]["frame_count"])
         self.assertEqual(payload["statistics"]["keyframe_count"], self.result.frame_count)
@@ -306,15 +361,22 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["times"][0], 0.0)
         self.assertEqual(payload["frames"][0], [])
         decoded = decode_frames(payload)
-        self.assertAlmostEqual(float(decoded[0].min()), payload["stock_top_mm"])
-        self.assertAlmostEqual(float(decoded[0].max()), payload["stock_top_mm"])
+        # 量化步长随 Z 跨度变化（这里是 0.02 mm 上下），给一个步长量级的容差。
+        self.assertAlmostEqual(float(decoded[0].min()), payload["stock_top_mm"], places=3)
+        self.assertAlmostEqual(float(decoded[0].max()), payload["stock_top_mm"], places=3)
 
     def test_frames_decode_to_the_simulation(self) -> None:
         decoded = decode_frames(self.payload)
-        expected = self.payload["stock_top_mm"] - np.vstack(
+        # 期望值按载荷声明的量化走一遍（而不是直接用原始高度），
+        # 免得把"量化到最近的格点"这点固有误差算成解码错误。
+        step = self.payload["encoding"]["step_mm"]
+        offset = self.payload["encoding"]["offset_mm"]
+        expected = np.vstack(
             [np.zeros_like(self.result.frames_mm[:1]), self.result.frames_mm]
         )
-        # 量化步长 0.01 mm，解码误差不应超过半个步长。
+        expected = np.round(
+            (self.payload["stock_top_mm"] - expected - offset) / step
+        ) * step + offset
         self.assertLessEqual(float(np.abs(decoded - expected).max()), 0.0051)
 
     def test_last_frame_reaches_the_floor(self) -> None:
@@ -347,6 +409,36 @@ class PayloadTests(unittest.TestCase):
         self.assertAlmostEqual(
             statistics["removed_volume_mm3"], self.result.removed_volume_mm3, places=2
         )
+
+
+class CutDepthTests(unittest.TestCase):
+    """切削深度：刀路的 Z 恒为 0（加工面），真正的下刀量由毛坯参数决定。"""
+
+    def test_default_settings_cut_below_the_machining_face(self) -> None:
+        tool = flat_tool(6.0)
+        settings = StockSettings()
+        result = simulate_material_removal(straight_toolpath(), tool, settings)
+        # 切深 = 上表面余量 + 下刀量
+        expected = settings.top_mm + settings.cut_depth_mm
+        self.assertAlmostEqual(result.max_cut_depth_mm, expected, places=6)
+        top = result.stock_top_mm - result.final_removed_mm
+        self.assertAlmostEqual(float(top.min()), -settings.cut_depth_mm, places=6)
+
+    def test_zero_cut_depth_only_removes_the_top_margin(self) -> None:
+        settings = StockSettings(top_mm=1.0, cut_depth_mm=0.0)
+        result = simulate_material_removal(straight_toolpath(), flat_tool(6.0), settings)
+        self.assertAlmostEqual(result.max_cut_depth_mm, 1.0, places=6)
+        top = result.stock_top_mm - result.final_removed_mm
+        self.assertAlmostEqual(float(top.min()), 0.0, places=6)
+
+    def test_cut_depth_does_not_modify_the_toolpath(self) -> None:
+        toolpath = straight_toolpath()
+        before = np.vstack([move.points for move in toolpath.moves]).copy()
+        simulate_material_removal(
+            toolpath, flat_tool(6.0), StockSettings(cut_depth_mm=8.0)
+        )
+        after = np.vstack([move.points for move in toolpath.moves])
+        self.assertTrue(bool((before == after).all()))
 
 
 class SamplingTests(unittest.TestCase):

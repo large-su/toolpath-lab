@@ -120,9 +120,10 @@ class CatalogTests(ApiTestCase):
         stock = json.loads(body)["stock"]
         self.assertEqual(
             [item["key"] for item in stock["parameters"]],
-            ["depth_mm", "top_mm", "margin_mm", "resolution_mm", "frame_budget"],
+            ["depth_mm", "top_mm", "cut_depth_mm", "margin_mm", "resolution_mm", "frame_budget"],
         )
         self.assertEqual(stock["defaults"]["frame_budget"], 24)
+        self.assertGreater(stock["defaults"]["cut_depth_mm"], 0)
         self.assertGreater(stock["simulation"]["max_grid_cells"], 0)
 
     def test_tool_kind_availability_is_published(self) -> None:

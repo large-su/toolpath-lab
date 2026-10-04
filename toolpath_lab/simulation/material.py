@@ -43,6 +43,10 @@ from toolpath_lab.core.tool import Tool
 MAX_GRID_CELLS = 200
 #: 一条刀轨至少要占多少格，否则坑的边缘会退化成楼梯状锯齿。
 CELLS_PER_PASS = 6.0
+#: 帧数 × 格数的预算：网格细的时候自动少留几帧，免得载荷随精度平方增长。
+FRAME_CELL_BUDGET = 90000
+#: 帧数下限：再省也要够动画不卡顿。
+MIN_FRAME_BUDGET = 8
 #: 一次仿真默认产生多少帧；帧越多动画越连续，载荷越大。
 DEFAULT_FRAME_BUDGET = 24
 FRAME_BUDGET_RANGE = (4, 48)
@@ -63,12 +67,15 @@ def stock_parameters() -> ParameterSet:
             spec("top_mm", "上表面余量", K.FLOAT, 2.0, minimum=0.0, maximum=20.0,
                  step=0.1, unit="mm", group="毛坯",
                  help="毛坯上表面高出加工面多少——留 0 会看不出刀路把材料削掉了"),
+            spec("cut_depth_mm", "切削深度", K.FLOAT, 5.0, minimum=0.0, maximum=50.0,
+                 step=0.5, unit="mm", group="毛坯",
+                 help="刀具切到加工面以下多深：0 = 正好切平上表面余量，数值越大坑越深越好看"),
             spec("margin_mm", "侧向余量", K.FLOAT, 2.0, minimum=0.0, maximum=50.0,
                  step=0.5, unit="mm", group="毛坯",
                  help="毛坯在刀路扫掠范围之外再放宽多少，用于显示未加工到的肩部"),
             spec("resolution_mm", "网格精度", K.FLOAT, 1.5, minimum=0.2, maximum=10.0,
                  step=0.1, unit="mm", group="毛坯",
-                 help="高度场单元边长；越小越细腻，仿真与传输也越重"),
+                 help="高度场单元边长上限；相邻刀轨太密时仿真会自动加密，不会退化成锯齿"),
             spec("frame_budget", "动画帧数", K.INT, DEFAULT_FRAME_BUDGET,
                  minimum=FRAME_BUDGET_RANGE[0], maximum=FRAME_BUDGET_RANGE[1],
                  step=4, unit="帧", group="毛坯",
@@ -83,6 +90,7 @@ class StockSettings:
 
     depth_mm: float = 20.0
     top_mm: float = 2.0
+    cut_depth_mm: float = 5.0
     margin_mm: float = 2.0
     resolution_mm: float = 1.5
     frame_budget: int = DEFAULT_FRAME_BUDGET
@@ -92,10 +100,14 @@ class StockSettings:
             raise ParameterError("毛坯厚度必须是有限正数")
         if not np.isfinite(self.top_mm) or self.top_mm < 0.0:
             raise ParameterError("毛坯上表面余量必须是非负数")
+        if not np.isfinite(self.cut_depth_mm) or self.cut_depth_mm < 0.0:
+            raise ParameterError("切削深度必须是非负数")
         if not np.isfinite(self.margin_mm) or self.margin_mm < 0.0:
             raise ParameterError("毛坯侧向余量必须是非负数")
         if not np.isfinite(self.resolution_mm) or self.resolution_mm <= 0.0:
             raise ParameterError("网格精度必须是有限正数")
+        if self.cut_depth_mm >= self.depth_mm:
+            raise ParameterError("切削深度必须小于毛坯厚度，否则会切穿")
         if not (FRAME_BUDGET_RANGE[0] <= int(self.frame_budget) <= FRAME_BUDGET_RANGE[1]):
             raise ParameterError(
                 f"动画帧数必须在 {FRAME_BUDGET_RANGE[0]} 到 {FRAME_BUDGET_RANGE[1]} 之间"
@@ -109,15 +121,28 @@ class StockSettings:
         return cls(
             depth_mm=float(values["depth_mm"]),
             top_mm=float(values["top_mm"]),
+            cut_depth_mm=float(values["cut_depth_mm"]),
             margin_mm=float(values["margin_mm"]),
             resolution_mm=float(values["resolution_mm"]),
             frame_budget=int(values["frame_budget"]),
         )
 
+    @property
+    def machining_plane_mm(self) -> float:
+        """刀具在毛坯坐标里的切削高度。
+
+        刀路里的 Z = 0 是"加工面"，真正的切深由毛坯设置里的 :attr:`cut_depth_mm`
+        决定（0 表示只切掉上表面余量，正值表示再往材料里下刀）。仿真把这条整体平移
+        加到刀路的 Z 上，所以切削深度看得见、但不会改动刀路本身。
+        """
+
+        return -float(self.cut_depth_mm)
+
     def describe(self) -> dict[str, Any]:
         return {
             "depth_mm": self.depth_mm,
             "top_mm": self.top_mm,
+            "cut_depth_mm": self.cut_depth_mm,
             "margin_mm": self.margin_mm,
             "resolution_mm": self.resolution_mm,
             "frame_budget": int(self.frame_budget),
@@ -149,6 +174,12 @@ class HeightField:
     @property
     def cell_count(self) -> int:
         return self.columns * self.rows
+
+    @property
+    def resolution_mm(self) -> float:
+        """网格步长（取较粗的那个方向）。"""
+
+        return max(_spacing(self.x_mm), _spacing(self.y_mm))
 
     @property
     def top_mm(self) -> NDArray[np.float64]:
@@ -264,10 +295,14 @@ def carve(
     y_mm: NDArray[np.float64] | float,
     z_mm: NDArray[np.float64] | float,
     tool: Tool,
+    z_offset_mm: float = 0.0,
 ) -> None:
     """让刀具扫过一串位置，就地削掉高于刀底的材料。
 
     约定与 planning 层一致：**刀路的 Z 就是切削点**（刀具最低点）的高度。
+    ``z_offset_mm`` 是整体下刀量（毛坯设置里的"切削深度"），只作用在仿真里，
+    不会改动刀路本身。
+
     对圆角半径为 rc 的刀具，底面是半径为 R 的圆盘加上半径 rc 的圆角环：离刀心
     ``d <= R - rc`` 的部分是平的，再往外的刀体按圆角圆弧**向上抬起**（所以那一圈
     材料残留得更高）。平底刀 rc = 0，于是退化成"半径 R 的平底圆盘"这一最常见的情况；
@@ -308,7 +343,7 @@ def carve(
             # 球头/圆鼻刀：半径以内面按圆角圆弧向上抬起。
             outer = np.clip(distance, inner, radius)
             offset = corner - np.sqrt(np.maximum(corner * corner - (outer - inner) ** 2, 0.0))
-        surface = float(z[index]) + offset
+        surface = float(z[index]) + z_offset_mm + offset
         # 半径以外的格子这一刀根本没碰到，用 -1 表示"不改变"，
         # 于是它既不会被切，也不会因为刀体抬起而误切旁边的材料。
         removal = np.where(
@@ -328,6 +363,7 @@ def carve_at_distance(
     stop_mm: float,
     tool: Tool,
     step_mm: float,
+    z_offset_mm: float = 0.0,
 ) -> None:
     """只扫掠折线上 ``[start_mm, stop_mm]`` 这一段弧长。
 
@@ -344,7 +380,7 @@ def carve_at_distance(
     inside = (cumulative > start_mm + _EPS) & (cumulative < stop_mm - _EPS)
     points = np.vstack([endpoints[:1], samples[inside], endpoints[1:]])
     resampled = resample_points(points, step_mm)
-    carve(target, resampled[:, 0], resampled[:, 1], resampled[:, 2], tool)
+    carve(target, resampled[:, 0], resampled[:, 1], resampled[:, 2], tool, z_offset_mm)
 
 
 def resample_points(points: NDArray[np.float64], step_mm: float) -> NDArray[np.float64]:
@@ -422,9 +458,15 @@ class MaterialRemoval:
         return float((self.final_removed_mm > 1e-6).mean())
 
     def frame_at(self, time_s: float) -> NDArray[np.float64]:
-        """任意时刻的高度场：在相邻两帧之间线性插值。"""
+        """任意时刻的高度场：在相邻两帧之间线性插值。
+
+        ``time_s`` 早于第一帧（例如播放头还没动）时返回未切削的毛坯，也就是全 0——
+        帧序列刻画的是"随时间被切掉多少"，起点理应是什么都没切。
+        """
 
         if self.frame_count == 0:
+            return np.zeros((self.rows, self.columns), dtype=np.float64)
+        if float(time_s) <= float(self.times_s[0]) + _EPS:
             return np.zeros((self.rows, self.columns), dtype=np.float64)
         if self.frame_count == 1:
             return self.frames_mm[0]
@@ -442,19 +484,24 @@ class MaterialRemoval:
         """紧凑的 JSON 形式。
 
         高度场按**刀尖/顶面在工件坐标里的 Z**量化成整数网格，每格两个字节
-        （UTF-16LE 码点），还原公式统一是 ``value * step_mm + offset_mm``，
-        offset_mm 就是工件坐标的 0 平面。第 0 帧是未切削的毛坯（量化值是常数，
-        不需要任何数据），之后每帧只存相对上一帧发生变化的格子——材料只减不增，
-        于是每帧的改动集中在当前刀轨扫过的那条带上，载荷比逐帧全量小得多。
-        每个游程是 ``[行号, 起始列, 值串]``：行号必须写进载荷，因为一行的变化
-        格子本身可以是断开的，解码端无法从"格数"反推行号。
+        （UTF-16LE 码点），还原公式统一是 ``value * step_mm + offset_mm``。
+        偏移取在"底面再往下 10%"处，于是加工面以下的负高度（= 切削深度）也有地方放，
+        不会在量化时被截成 0。第 0 帧是未切削的毛坯（量化值是常数，不需要任何数据），
+        之后每帧只存相对上一帧发生变化的格子——材料只减不增，于是每帧的改动集中在
+        当前刀轨扫过的那条带上，载荷比逐帧全量小得多。每个游程是
+        ``[行号, 起始列, 值串]``：行号必须写进载荷，因为一行的变化格子本身可以是
+        断开的，解码端无法从"格数"反推行号。
         """
 
-        step_mm = 0.01
-        offset_mm = 0.0
+        # 量化范围要覆盖从毛坯上表面到毛坯底面以下 10%，再铺满 16 位。
+        span = max(self.stock_top_mm - self.floor_mm, 1e-6)
+        step_mm = min(0.01, span * 1.1 / 65535.0)
+        offset_mm = self.floor_mm * 1.1
 
         def quantize(frame: NDArray[np.float64]) -> NDArray[np.int64]:
-            index = np.rint((np.clip(frame, 0.0, None) - offset_mm) / step_mm)
+            index = np.rint(
+                (np.clip(frame, offset_mm, None) - offset_mm) / step_mm
+            )
             return np.clip(index, 0, 65535).astype(np.int64)
 
         stock_index = int(quantize(np.array([[self.stock_top_mm]]))[0, 0])
@@ -563,6 +610,7 @@ def simulate_material_removal(
         settings = StockSettings(
             depth_mm=settings.depth_mm,
             top_mm=settings.top_mm,
+            cut_depth_mm=settings.cut_depth_mm,
             margin_mm=settings.margin_mm,
             resolution_mm=settings.resolution_mm,
             frame_budget=int(frame_budget),
@@ -570,10 +618,17 @@ def simulate_material_removal(
 
     stock_field = build_height_field(toolpath, tool, settings)
     duration = float(toolpath.estimated_time_s)
-    frames = max(int(settings.frame_budget), 2)
+    # 帧数是"至多"：网格细的时候载荷会随格数增长，所以按格数预算把帧数收一收。
+    # 网格粗（绝大多数情况）时用户要多少给多少；用户显式要得少也照办，不越过下限往上抬。
+    requested = max(int(settings.frame_budget), 2)
+    per_frame_budget = int(FRAME_CELL_BUDGET / max(stock_field.cell_count, 1))
+    frames = min(requested, max(per_frame_budget, MIN_FRAME_BUDGET)) if requested > MIN_FRAME_BUDGET else requested
     interval = duration / frames if duration > _EPS else 0.0
+    # 扫掠采样间距：球头/圆鼻刀没有可用的足迹半径，所以不能只看刀具，
+    # 还要跟网格步长挂钩，否则会漏掉本该切到的格子。
     step_mm = max(float(tool.footprint_radius_mm) / 4.0, MIN_SWEEP_STEP_MM)
-    step_mm = max(step_mm, settings.resolution_mm / 2.0)
+    step_mm = max(step_mm, stock_field.resolution_mm / 2.0)
+    z_offset = settings.machining_plane_mm
 
     notes: list[str] = []
     elapsed = 0.0
@@ -592,7 +647,9 @@ def simulate_material_removal(
         while total > _EPS and next_target > _EPS and next_target <= elapsed + total + 1e-9:
             fraction = float(np.clip((next_target - elapsed) / total, 0.0, 1.0))
             boundary = fraction * total
-            carve_at_distance(stock_field, samples, cumulative, cursor, boundary, tool, step_mm)
+            carve_at_distance(
+                stock_field, samples, cumulative, cursor, boundary, tool, step_mm, z_offset
+            )
             recorded_times.append(min(next_target, duration))
             recorded_frames.append(stock_field.removed_mm.copy())
             cursor = boundary
@@ -600,7 +657,9 @@ def simulate_material_removal(
             if len(recorded_frames) >= frames:
                 break
         if cursor < total - _EPS:
-            carve_at_distance(stock_field, samples, cumulative, cursor, total, tool, step_mm)
+            carve_at_distance(
+                stock_field, samples, cumulative, cursor, total, tool, step_mm, z_offset
+            )
         elapsed += total / move.feed_mm_per_min * 60.0
         if len(recorded_frames) >= frames:
             next_target = float("inf")
