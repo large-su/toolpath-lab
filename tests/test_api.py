@@ -100,14 +100,17 @@ class CatalogTests(ApiTestCase):
         status, body, _ = self.get("/api/catalog")
         payload = json.loads(body)
         self.assertEqual(status, 200)
-        self.assertEqual([item["id"] for item in payload["planners"]["list"]], ["raster"])
+        self.assertEqual(
+            [item["id"] for item in payload["planners"]["list"]],
+            ["raster", "spiral", "contour"],
+        )
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]), ["circle", "square"]
         )
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
         self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
-                         ["kind", "diameter_mm", "length_mm"])
+                         ["kind", "diameter_mm", "length_mm", "corner_radius_mm"])
 
     def test_catalog_reports_the_fixed_settings(self) -> None:
         _, body, _ = self.get("/api/catalog")
@@ -115,10 +118,16 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(fixed["safe_height_mm"], 5.0)
         self.assertEqual(fixed["rapid_feed_mm_per_min"], 5000.0)
 
-    def test_disabled_tool_kinds_are_published(self) -> None:
+    def test_all_tool_kinds_are_selectable(self) -> None:
         _, body, _ = self.get("/api/catalog")
         kinds = json.loads(body)["tool"]["parameters"][0]["choices"]
-        self.assertEqual([item["disabled"] for item in kinds], [False, True, True])
+        self.assertEqual([item["disabled"] for item in kinds], [False, False, False])
+
+    def test_corner_radius_parameter_is_gated_to_bull(self) -> None:
+        _, body, _ = self.get("/api/catalog")
+        parameters = json.loads(body)["tool"]["parameters"]
+        corner = next(item for item in parameters if item["key"] == "corner_radius_mm")
+        self.assertEqual(corner["visible_if"], {"kind": "bull"})
 
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -164,9 +173,33 @@ class PlanTests(ApiTestCase):
         self.assertEqual(parameters["feed_mm_per_min"], 600.0)
 
     def test_unknown_planner_is_a_bad_request(self) -> None:
-        status, payload, _ = self.plan({"planner": {"id": "spiral"}})
+        status, payload, _ = self.plan({"planner": {"id": "no_such_planner"}})
         self.assertEqual(status, 400)
-        self.assertIn("spiral", payload["error"])
+        self.assertIn("no_such_planner", payload["error"])
+
+    def test_spiral_and_contour_planners_are_plannable(self) -> None:
+        for planner_id in ("spiral", "contour"):
+            with self.subTest(planner_id=planner_id):
+                status, payload, _ = self.plan(
+                    {
+                        "region": {"shape": "circle", "parameters": {"diameter_mm": 60.0}},
+                        "planner": {"id": planner_id,
+                                    "parameters": {"stepover_mm": 6.0}},
+                    }
+                )
+                self.assertEqual(status, 200)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["request"]["planner"]["id"], planner_id)
+                self.assertGreater(payload["toolpath"]["statistics"]["pass_count"], 0)
+
+    def test_bull_tool_offset_uses_corner_radius(self) -> None:
+        # 圆鼻刀 D10 Rc2：足迹半径 3，比同直径平底刀（5）少偏置 2 mm
+        _, payload, _ = self.plan(
+            {"tool": {"kind": "bull", "diameter_mm": 10.0, "corner_radius_mm": 2.0}}
+        )
+        self.assertEqual(payload["tool"]["kind"], "bull")
+        self.assertEqual(payload["tool"]["corner_radius_mm"], 2.0)
+        self.assertEqual(payload["tool"]["footprint_radius_mm"], 3.0)
 
     def test_unknown_region_shape_is_a_bad_request(self) -> None:
         status, payload, _ = self.plan({"region": {"shape": "hexagon"}})

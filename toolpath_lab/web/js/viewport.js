@@ -252,29 +252,68 @@ export class Viewport {
     const flute = Math.min(length * 0.65, radius * 6);
     const holder = Math.max(length - flute, length * 0.2);
 
-    // 两段都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
-    // 黄色切削段对齐 UGNX 的刀具配色。
-    const cutting = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, flute, 64),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.tool, metalness: 0.5, roughness: 0.34,
-      })
-    );
+    // 黄色切削段对齐 UGNX 的刀具配色；按刀具类型区分刀尖形状：
+    // 平底刀=平端圆柱；球头刀=圆柱+球冠；圆鼻刀=圆柱+圆角环。
+    const cuttingMat = new THREE.MeshStandardMaterial({
+      color: COLORS.tool, metalness: 0.5, roughness: 0.34,
+    });
+    const shankMat = new THREE.MeshStandardMaterial({
+      color: COLORS.holder, metalness: 0.92, roughness: 0.24,
+    });
+    const cutting = [];
+    const kind = tool.kind || "flat";
+    const rc = Math.max(0, Math.min(tool.corner_radius_mm || 0, radius));
+
+    if (kind === "ball") {
+      const ballR = radius;
+      const sphere = new THREE.Mesh(new THREE.SphereGeometry(ballR, 48, 32), cuttingMat);
+      sphere.position.z = ballR;
+      cutting.push(sphere);
+      const fluteLen = Math.max(flute - ballR, radius * 0.5);
+      const cut = new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, fluteLen, 64), cuttingMat);
+      cut.rotation.x = Math.PI / 2;
+      cut.position.z = ballR + fluteLen / 2;
+      cutting.push(cut);
+    } else if (kind === "bull") {
+      const bottomR = Math.max(radius - rc, radius * 0.2);
+      const flatH = Math.max(rc * 0.5, 0.1);
+      const flat = new THREE.Mesh(
+        new THREE.CylinderGeometry(bottomR, bottomR, flatH, 48), cuttingMat);
+      flat.rotation.x = Math.PI / 2;
+      flat.position.z = flatH / 2;
+      cutting.push(flat);
+      if (rc > 1e-3) {
+        const corner = new THREE.Mesh(
+          new THREE.TorusGeometry(Math.max(bottomR - rc * 0.5, 0.05), rc * 0.75, 20, 64),
+          cuttingMat);
+        corner.position.z = flatH + rc * 0.5;
+        cutting.push(corner);
+      }
+      const fluteLen = Math.max(flute - flatH - rc, radius * 0.5);
+      const cut = new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, fluteLen, 64), cuttingMat);
+      cut.rotation.x = Math.PI / 2;
+      cut.position.z = flatH + rc + fluteLen / 2;
+      cutting.push(cut);
+    } else {
+      const cut = new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, flute, 64), cuttingMat);
+      cut.rotation.x = Math.PI / 2;
+      cut.position.z = flute / 2;
+      cutting.push(cut);
+    }
+
     const shank = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.holder, metalness: 0.92, roughness: 0.24,
-      })
-    );
-    for (const mesh of [cutting, shank]) {
+      new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48), shankMat);
+    shank.rotation.x = Math.PI / 2;
+    shank.position.z = flute + holder / 2;
+
+    for (const mesh of cutting.concat([shank])) {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.toolGroup.add(mesh);
     }
-    cutting.rotation.x = Math.PI / 2;
-    cutting.position.z = flute / 2;
-    shank.rotation.x = Math.PI / 2;
-    shank.position.z = flute + holder / 2;
     this.toolMesh = this.toolGroup;
     this.toolGroup.visible = this.display.showTool;
   }

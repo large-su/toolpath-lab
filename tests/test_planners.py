@@ -40,14 +40,23 @@ def _cut_moves(toolpath: Toolpath):
 
 
 class RegistryTests(unittest.TestCase):
-    def test_only_the_raster_strategy_is_registered(self) -> None:
-        self.assertEqual(PLANNERS.ids(), ["raster"])
+    def test_all_strategies_are_registered_in_ui_order(self) -> None:
+        self.assertEqual(PLANNERS.ids(), ["raster", "spiral", "contour"])
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:
         entry = planner_catalog()[0]
         keys = [item["key"] for item in entry["parameters"]]
         self.assertEqual(keys, ["mode", "stepover_mm", "direction_deg", "feed_mm_per_min"])
         self.assertEqual(entry["label"], "栅格刀路")
+
+    def test_spiral_and_contour_catalog_entries(self) -> None:
+        by_id = {entry["id"]: entry for entry in planner_catalog()}
+        self.assertEqual(by_id["spiral"]["label"], "螺旋")
+        self.assertEqual(
+            [item["key"] for item in by_id["spiral"]["parameters"]],
+            ["stepover_mm", "sample_step_mm", "feed_mm_per_min"],
+        )
+        self.assertEqual(by_id["contour"]["label"], "环切")
 
 
 class PassLayoutTests(unittest.TestCase):
@@ -193,6 +202,104 @@ class SafetyTests(unittest.TestCase):
             statistics["cut_length_mm"] + statistics["rapid_length_mm"] + link_length,
             places=6,
         )
+
+
+def _plan_new(planner_id: str, region=None, tool=None, parameters=None):
+    options = {"stepover_mm": 6.0, "sample_step_mm": 1.0, "feed_mm_per_min": 600.0}
+    options.update(parameters or {})
+    return run_plan(
+        planner_id=planner_id,
+        tool=tool or _tool(),
+        region=region or build_region("square", {"side_mm": 80.0}),
+        parameters=options,
+    )
+
+
+class SpiralPlannerTests(unittest.TestCase):
+    def test_spiral_produces_a_single_continuous_cut(self) -> None:
+        """螺旋是一刀走完：切削段只有一段（外加下刀/抬刀）。"""
+
+        toolpath = _plan_new("spiral").toolpath
+        cuts = _cut_moves(toolpath)
+        self.assertEqual(len(cuts), 1)
+        kinds = [move.kind for move in toolpath.moves]
+        self.assertEqual(kinds.count(MoveKind.RAPID), 2)
+        self.assertGreater(cuts[0].points.shape[0], 50)
+
+    def test_spiral_starts_near_the_center_and_grows_outward(self) -> None:
+        cut = _cut_moves(_plan_new("spiral").toolpath)[0]
+        radii = np.linalg.norm(cut.points[:, :2], axis=1)
+        self.assertLess(radii[0], 10.0)  # 起刀靠近中心
+        self.assertGreater(radii[-1], 30.0)  # 收尾逼近边界（80 mm 方形半宽 40）
+        self.assertGreater(radii[-1], radii[0])
+
+    def test_spiral_respects_tool_footprint(self) -> None:
+        """球头刀足迹为 0：切宽取小值时，起刀更靠中心、收尾更贴边界。"""
+
+        options = {"stepover_mm": 2.0, "sample_step_mm": 1.0, "feed_mm_per_min": 600.0}
+        flat = run_plan(
+            planner_id="spiral", tool=_tool(),
+            region=build_region("square", {"side_mm": 80.0}), parameters=options,
+        ).toolpath
+        ball = run_plan(
+            planner_id="spiral",
+            tool=Tool(ToolKind.BALL, diameter_mm=6.0, length_mm=30.0),
+            region=build_region("square", {"side_mm": 80.0}), parameters=options,
+        ).toolpath
+        flat_radii = np.linalg.norm(_cut_moves(flat)[0].points[:, :2], axis=1)
+        ball_radii = np.linalg.norm(_cut_moves(ball)[0].points[:, :2], axis=1)
+        # 平底刀起刀在足迹半径 3，球头刀在 max(0, ae/2)=1
+        self.assertLess(ball_radii[0], flat_radii[0])
+        self.assertGreater(ball_radii[-1], flat_radii[-1])
+
+    def test_spiral_on_a_circle_region(self) -> None:
+        toolpath = _plan_new(
+            "spiral", region=build_region("circle", {"diameter_mm": 60.0})
+        ).toolpath
+        cut = _cut_moves(toolpath)[0]
+        radii = np.linalg.norm(cut.points[:, :2], axis=1)
+        # 圆形区域 D60，平底 D6：外圈应落在半径 30 - 3 = 27 附近
+        self.assertAlmostEqual(float(radii.max()), 27.0, delta=1.5)
+
+
+class ContourPlannerTests(unittest.TestCase):
+    def test_contour_produces_concentric_rings(self) -> None:
+        toolpath = _plan_new("contour").toolpath
+        cuts = _cut_moves(toolpath)
+        self.assertGreaterEqual(len(cuts), 5)
+        # 每一环都是闭合的（首点回到末点附近）
+        for move in cuts:
+            self.assertLess(
+                float(np.linalg.norm(move.points[0] - move.points[-1])), 1e-6
+            )
+
+    def test_contour_rings_shrink_inward(self) -> None:
+        cuts = _cut_moves(_plan_new("contour").toolpath)
+        radii = [
+            float(np.linalg.norm(move.points[:, :2], axis=1).mean()) for move in cuts
+        ]
+        self.assertGreater(radii[0], radii[-1])
+        # 第一环贴边：80 mm 方形、足迹半径 3 → 边中点到中心 37（角点更远，√2·37）
+        first = np.linalg.norm(cuts[0].points[:, :2], axis=1)
+        self.assertAlmostEqual(float(first.min()), 37.0, delta=1.0)
+
+    def test_contour_alternates_ring_direction(self) -> None:
+        cuts = _cut_moves(_plan_new("contour").toolpath)
+        for index, move in enumerate(cuts[1:], start=1):
+            ring_start = move.points[0]
+            previous_end = cuts[index - 1].points[-1]
+            self.assertLess(
+                float(np.linalg.norm(ring_start - previous_end)),
+                float(np.linalg.norm(ring_start - cuts[index - 1].points[0])) + 1e-6,
+            )
+
+    def test_contour_on_a_circle_region(self) -> None:
+        toolpath = _plan_new(
+            "contour", region=build_region("circle", {"diameter_mm": 60.0})
+        ).toolpath
+        cuts = _cut_moves(toolpath)
+        first = np.linalg.norm(cuts[0].points[:, :2], axis=1)
+        self.assertAlmostEqual(float(first.max()), 27.0, delta=1.0)
 
 
 if __name__ == "__main__":
