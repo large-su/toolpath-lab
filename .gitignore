@@ -17,3 +17,6 @@ node_modules/
 
 # 本机工具产生的临时目录（例如 DSH 的文件权限修复记录）
 .dsh-acl-recovery/
+
+# 本地作业材料与效果截图，不随源码提交
+deliverables/
