@@ -7,8 +7,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形状的加工区域，生成栅格刀路，
-在三维窗口中显示工件、刀路与刀具，并按进给速度播放整个加工过程。
+ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形状的加工区域，生成栅格、螺旋、
+环切刀路，在三维窗口中显示工件、刀路与刀具，并按进给速度播放整个加工过程。
 
 后端是纯 Python（只依赖 numpy），前端是原生 ES 模块加 three.js，桌面窗口由 Electron 提供。
 刀具与区域都用参数描述，参数面板根据后端的参数声明自动生成。
@@ -17,12 +17,18 @@ ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形�
 
 ## 功能
 
-- **刀具**：平底刀，可设置直径与长度。刀具在加工面上的足迹半径决定刀路相对区域轮廓的偏置量。
+- **刀具**：平底刀、球头刀、圆鼻刀三类，可设置直径、长度；圆鼻刀另有刀尖圆角半径 Rc
+  （界面上仅在类型为圆鼻时显示）。刀具在加工面上的足迹半径决定刀路相对区域轮廓的偏置量：
+  平底 = R，球头 = 0，圆鼻 = R − Rc。
 - **区域**：方形（边长）与圆形（直径），以原点为中心，加工面为 XY 平面。
-- **刀路**：栅格刀路的两种模式
-  - **往复 Zigzag**：奇数刀反向，相邻两刀在端头直接连过去；
-  - **单向 One-way**：每刀同向，刀与刀之间抬刀到安全面再回到起点。
-- **参数**：切宽、走刀方向角、进给速度。安全高度、快移速度、边界处理方式等为固定值，见[配置常量](#配置常量)。
+- **刀路**：三种策略
+  - **栅格刀路**：**往复 Zigzag**（奇数刀反向，相邻两刀在端头直接连过去）与
+    **单向 One-way**（每刀同向，刀与刀之间抬刀到安全面再回到起点）两种模式；
+  - **螺旋 Spiral**：从区域中心连续向外螺旋，一刀走完，空行程少；用射线法求各角度上
+    边界允许的最大半径，外圈自动贴合区域形状；
+  - **环切 Contour**：沿区域轮廓逐圈向内等距偏置，相邻环反向以减少空行程。
+- **参数**：切宽、走刀方向角（栅格）、采样步长（螺旋 / 环切）、进给速度。安全高度、快移速度、
+  边界处理方式等为固定值，见[配置常量](#配置常量)。
 - **三维视图**：工件实体、区域轮廓、刀路（切削 / 连接 / 快移分色）、刀具实体、已走轨迹、实时阴影。
 - **播放**：按每段运动自己的进给速度做时间参数化，支持播放 / 暂停、拖动进度，并给出切削长度与预计工时。
 - **导出**：NC 程序（G-code，G21 / G90 / G17 加 G0 / G1 带 F）。
@@ -129,7 +135,7 @@ curl -X POST http://127.0.0.1:8770/api/export/gcode \
 ```
 toolpath_lab/
   core/        领域层：参数声明、刀具、区域、刀路与运动段模型
-  planning/    策略层：Planner 基类与注册表、平面多边形几何、栅格刀路
+  planning/    策略层：Planner 基类与注册表、平面多边形几何、栅格/螺旋/环切刀路
   simulation/  时间层：按进给速度把刀路参数化为时间轴
   export/      G-code 导出
   server/      标准库 HTTP 服务：接口路由、请求校验、能力目录、静态文件
@@ -152,7 +158,7 @@ docs/          架构与扩展文档
 | --- | --- | --- |
 | 安全高度 | 5 mm | `toolpath_lab/planning/base.py` |
 | 快移速度 | 5000 mm/min | `toolpath_lab/planning/base.py` |
-| 边界处理 | 刀路相对区域轮廓内缩一个刀具足迹半径 | `toolpath_lab/planning/raster.py` |
+| 边界处理 | 刀路相对区域轮廓内缩一个刀具足迹半径 | 各策略模块（`raster.py` / `spiral.py` / `contour.py`） |
 | 每刀采样 | 两个端点（加工面为平面） | `toolpath_lab/planning/raster.py` |
 
 把它们改成可在界面上调整的参数，做法见 [docs/extending.md](docs/extending.md)。
@@ -160,9 +166,10 @@ docs/          架构与扩展文档
 ## 扩展
 
 - **新增刀路策略**：继承 `Planner`，声明参数并实现 `plan()`，然后注册。
-  [examples/plugins/contour_planner.py](examples/plugins/contour_planner.py) 是一个可直接使用的
-  环切（等距轮廓）实现，复制到 `toolpath_lab/planning/` 并在 `__init__.py` 中导入一行即可启用。
-- **新增区域形状**：实现一个返回逆时针边界多边形的 `boundary()`，栅格刀路与三维显示会自动适配。
+  主程序里的 [toolpath_lab/planning/spiral.py](toolpath_lab/planning/spiral.py)（螺旋）是从零实现的
+  完整参考；[toolpath_lab/planning/contour.py](toolpath_lab/planning/contour.py)（环切）由
+  [examples/plugins/contour_planner.py](examples/plugins/contour_planner.py) 启用而来。
+- **新增区域形状**：实现一个返回逆时针边界多边形的 `boundary()`，三种刀路策略与三维显示会自动适配。
 - **新增导出格式**：在 `export/` 中写一个纯函数，并在 HTTP 路由中加一个分支。
 - 完整说明见 [docs/extending.md](docs/extending.md)，开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

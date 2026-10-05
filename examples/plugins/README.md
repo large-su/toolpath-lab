@@ -1,13 +1,14 @@
 # 示例插件
 
-这里放的是可以作为参考实现直接使用的刀路策略。主程序内置栅格刀路（往复与单向），
-本目录提供其它策略的完整实现，复制进 `toolpath_lab/planning/` 即可启用。
+这里放的是可以作为参考实现直接使用的刀路策略。主程序内置栅格、螺旋、环切三种刀路
+（`toolpath_lab/planning/` 下的 `raster.py` / `spiral.py` / `contour.py`），
+本目录保留其它策略的完整实现作为扩展模板，复制进 `toolpath_lab/planning/` 即可启用。
 
 | 插件 | 内容 |
 | --- | --- |
-| `contour_planner.py` | 环切（等距轮廓）策略，自带多边形等距偏置几何 |
+| `contour_planner.py` | 环切（等距轮廓）策略，自带多边形等距偏置几何；已按下方步骤启用为 `planning/contour.py` |
 
-## 启用方式
+## 启用方式（以 contour_planner.py 为例，主程序中已完成）
 
 ```bash
 cp examples/plugins/contour_planner.py toolpath_lab/planning/contour.py

@@ -8,8 +8,8 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
 ToolpathLab is a toolpath planning base: given a cutting tool and a regular machining region, it
-generates raster toolpaths, shows the workpiece, the toolpath and the cutter in a 3D window, and
-plays the whole process back at the programmed feed rate.
+generates raster, spiral and contour toolpaths, shows the workpiece, the toolpath and the cutter in
+a 3D window, and plays the whole process back at the programmed feed rate.
 
 The backend is plain Python (numpy is the only dependency), the front-end is native ES modules with
 a vendored three.js, and the desktop window is provided by Electron. Tools and regions are described
@@ -19,14 +19,20 @@ by parameters, and the parameter panel is generated from the backend's parameter
 
 ## Features
 
-- **Tool**: flat end mill with diameter and length. Its footprint radius on the machining plane
-  defines how far the toolpath is offset from the region contour.
+- **Tool**: flat end mill, ball nose and bull nose, with diameter and length; the bull nose adds a
+  corner radius Rc (shown only when that kind is selected). The footprint radius on the machining
+  plane defines how far the toolpath is offset from the region contour: flat = R, ball = 0,
+  bull = R − Rc.
 - **Region**: square (side) and circle (diameter), centred at the origin, machined on the XY plane.
-- **Toolpaths**: two raster modes
-  - **zigzag** - every other pass runs in the opposite direction and consecutive passes are linked;
-  - **one-way** - all passes run in the same direction, retracting to the safe plane between passes.
-- **Parameters**: stepover, pass direction and feed rate. Safe height, rapid feed and boundary
-  handling are constants (see "Configuration constants").
+- **Toolpaths**: three strategies
+  - **raster** - **zigzag** (every other pass runs in the opposite direction and consecutive passes
+    are linked) and **one-way** (all passes run in the same direction, retracting to the safe plane
+    between passes);
+  - **spiral** - one continuous outward spiral from near the centre, with few air moves; a ray cast
+    finds the boundary's allowed radius at each angle so the outer lap follows the region shape;
+  - **contour** - constant-offset rings walked inward from the boundary, alternating direction.
+- **Parameters**: stepover, pass direction (raster), sample step (spiral / contour) and feed rate.
+  Safe height, rapid feed and boundary handling are constants (see "Configuration constants").
 - **3D view**: workpiece, region contour, toolpath (cut / link / rapid colour coded), cutter solid,
   traversed path and live shadows.
 - **Playback**: time is parameterised by each move's own feed rate; play / pause, scrubbing, cutting
@@ -132,7 +138,7 @@ than the region) return `422`, with the reason in the `error` field.
 
 ```
 toolpath_lab/core/        domain: parameter specs, tool, region, move/toolpath model
-toolpath_lab/planning/    strategies: Planner base + registry, planar geometry, raster toolpaths
+toolpath_lab/planning/    strategies: Planner base + registry, planar geometry, raster/spiral/contour toolpaths
 toolpath_lab/simulation/  feed-rate based time parameterisation
 toolpath_lab/export/      G-code writer
 toolpath_lab/server/      standard library HTTP API, request validation, static files
@@ -150,7 +156,7 @@ the window - so the planning code runs headless. See [docs/architecture.md](docs
 | --- | --- | --- |
 | Safe height | 5 mm | `toolpath_lab/planning/base.py` |
 | Rapid feed | 5000 mm/min | `toolpath_lab/planning/base.py` |
-| Boundary handling | inset the contour by the tool footprint radius | `toolpath_lab/planning/raster.py` |
+| Boundary handling | inset the contour by the tool footprint radius | `raster.py` / `spiral.py` / `contour.py` |
 | Pass sampling | two end points (the machining plane is flat) | `toolpath_lab/planning/raster.py` |
 
 To expose them as adjustable parameters, see [docs/extending.md](docs/extending.md).
@@ -158,10 +164,11 @@ To expose them as adjustable parameters, see [docs/extending.md](docs/extending.
 ## Extending
 
 - **A new strategy**: subclass `Planner`, declare its parameters, implement `plan()` and register it.
-  [examples/plugins/contour_planner.py](examples/plugins/contour_planner.py) is a working contour
-  (constant offset) strategy: copy it into `toolpath_lab/planning/` and import it once.
-- **A new region shape**: implement `boundary()` returning a counter-clockwise polygon; clipping and
-  the 3D view adapt automatically.
+  [toolpath_lab/planning/spiral.py](toolpath_lab/planning/spiral.py) is a complete from-scratch
+  reference; [toolpath_lab/planning/contour.py](toolpath_lab/planning/contour.py) was enabled from
+  [examples/plugins/contour_planner.py](examples/plugins/contour_planner.py).
+- **A new region shape**: implement `boundary()` returning a counter-clockwise polygon; all three
+  strategies and the 3D view adapt automatically.
 - **A new export format**: add a pure function under `export/` and a branch in the HTTP router.
 
 Full details: [docs/extending.md](docs/extending.md); conventions: [CONTRIBUTING.md](CONTRIBUTING.md).

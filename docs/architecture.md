@@ -42,7 +42,9 @@ planning ── simulation ┘
 - `base.py`：`PlanningContext`（刀具 + 区域 + 参数）与 `Planner` 基类；固定的安全高度与快移速度也在这里；
 - `geometry2d.py`：`scanline_intervals`（直线与多边形求交、偶奇配对）与多边形规范化——
   栅格刀路只靠这一个几何操作就能支持任意形状；
-- `raster.py`：往复与单向两种模式。
+- `raster.py`：往复与单向两种模式；
+- `spiral.py`：从中心向外的连续螺旋，自带射线求交几何；
+- `contour.py`：等距偏置环切，自带多边形偏置几何（启用自 examples/plugins/contour_planner.py）。
 
 ### simulation —— 时间层
 

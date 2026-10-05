@@ -5,15 +5,17 @@
 
 ## 1. 新增一个刀路策略（推荐从这里开始）
 
-最完整的例子就在仓库里：examples/plugins/contour_planner.py（环切，自带它需要的等距偏置几何）。
-复制进主程序即可：
+主程序现在内置三种策略，都是照这个套路写成的，可以直接当参考：
 
-```bash
-cp examples/plugins/contour_planner.py toolpath_lab/planning/contour.py
-```
+- `toolpath_lab/planning/spiral.py`（螺旋）：从零实现的完整例子，含自备几何（射线求交）；
+- `toolpath_lab/planning/contour.py`（环切）：由 examples/plugins/contour_planner.py 启用而来，
+  自带多边形等距偏置几何；
+- `toolpath_lab/planning/raster.py`（栅格）：最经典的填充策略。
+
+启用一个新策略只需要两步：把模块放进 `toolpath_lab/planning/`，再到
+`toolpath_lab/planning/__init__.py` 里导入一行（导入顺序即界面排列顺序）：
 
 ```python
-# toolpath_lab/planning/__init__.py
 from toolpath_lab.planning import contour as _contour  # noqa: F401
 ```
 
@@ -27,10 +29,10 @@ from toolpath_lab.planning.registry import PLANNERS
 
 
 @PLANNERS.register
-class SpiralPlanner(Planner):
-    id = "spiral"                  # 接口里的标识
-    label = "螺旋(示例)"            # 界面上的名字
-    description = "从外向内螺旋走刀"
+class WaterlinePlanner(Planner):
+    id = "waterline"               # 接口里的标识
+    label = "等高线(示例)"          # 界面上的名字
+    description = "沿等高线逐层走刀"
     parameters = ParameterSet((
         spec("stepover_mm", "切宽 ae", K.FLOAT, 6.0, minimum=0.5, maximum=50.0,
              step=0.5, unit="mm", group="刀路"),
