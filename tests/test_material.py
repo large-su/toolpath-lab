@@ -13,6 +13,8 @@ from toolpath_lab.core.region import build_region
 from toolpath_lab.core.tool import Tool, ToolKind
 from toolpath_lab.planning import run_plan
 from toolpath_lab.simulation import (
+    FRAME_CELL_BUDGET,
+    FRAME_LAG_DIAMETERS,
     MAX_GRID_CELLS,
     MIN_FRAME_BUDGET,
     StockSettings,
@@ -327,6 +329,66 @@ class FrameTests(unittest.TestCase):
         # 细网格：帧数被收窄，但不会低于动画可用的下限。
         self.assertLess(fine.frame_count, coarse.frame_count)
         self.assertGreaterEqual(fine.frame_count, MIN_FRAME_BUDGET)
+
+    def test_frame_spacing_keeps_the_surface_close_to_the_tool(self) -> None:
+        """帧必须够密，否则表面会明显落后于刀具。
+
+        这是"刀在左边、坑在右边"那个问题的根因：帧只按用户给的固定数量取，
+        稀疏到每帧之间刀具走过半刀，看起来就像切削位置和刀具对不上。
+        判据用**每帧刀具走过的路程**，对切宽、刀具、模式都不敏感。
+        """
+
+        region = build_region("square", {"side_mm": 80.0})
+        for mode, stepover in (("zigzag", 6.0), ("one_way", 10.0)):
+            with self.subTest(mode=mode):
+                toolpath = run_plan(
+                    planner_id="raster",
+                    tool=flat_tool(6.0),
+                    region=region,
+                    parameters={"mode": mode, "stepover_mm": stepover, "feed_mm_per_min": 600.0},
+                ).toolpath
+                result = simulate_material_removal(
+                    toolpath, flat_tool(6.0), StockSettings(frame_budget=256)
+                )
+                # 帧数至少要有"格数预算允许的那么多"：frames >= FRAME_CELL_BUDGET / 格数。
+                # 用户上限与格数预算都可以把帧数压低，但不该压到比格数预算还少。
+                allowed = int(FRAME_CELL_BUDGET / (result.columns * result.rows))
+                self.assertGreaterEqual(result.frame_count, min(256, max(allowed, MIN_FRAME_BUDGET)))
+                # 每帧刀具走过的路程必须小到看不出错位。
+                # 阈值取 4×目标值：格数预算最多会把帧数压到目标的三分之一左右。
+                # 修好之前这里是每帧 46 mm（固定 24 帧），一眼能看出刀具与坑错位。
+                per_frame = toolpath.total_length_mm / result.frame_count
+                self.assertLessEqual(per_frame, 4.0 * FRAME_LAG_DIAMETERS * 6.0 + 1e-6)
+
+    def test_frame_count_follows_the_toolpath_length(self) -> None:
+        """帧数由刀路长度决定（上限之内），而不是固定值。
+
+        判据只用单调性：刀路越长（切宽越小）帧数必须越多。
+        修好之前帧数是固定值，这条会直接失败——而固定帧数正是"长刀路每帧走半刀、
+        刀具与已切区域看起来对不上"的根因。
+        """
+
+        # 用较小的区域与刀具，让格数预算不成为约束方，才检验得到长度规则本身。
+        region = build_region("square", {"side_mm": 40.0})
+        counts = {}
+        for stepover in (6.0, 4.0, 3.0):
+            toolpath = run_plan(
+                planner_id="raster",
+                tool=flat_tool(3.0),
+                region=region,
+                parameters={"mode": "zigzag", "stepover_mm": stepover, "feed_mm_per_min": 600.0},
+            ).toolpath
+            result = simulate_material_removal(
+                toolpath,
+                flat_tool(3.0),
+                StockSettings(resolution_mm=2.0, frame_budget=1024),
+            )
+            counts[stepover] = result.frame_count
+            # 每帧刀具走过的路程必须远小于一刀的长度（约 37 mm）。
+            self.assertLess(toolpath.total_length_mm / result.frame_count, 20.0)
+        # 刀路更长（切宽更小）帧数必须更多——固定帧数会在这里直接失败。
+        self.assertGreater(counts[4.0], counts[6.0])
+        self.assertGreater(counts[3.0], counts[4.0])
 
     def test_short_toolpath_still_produces_frames(self) -> None:
         toolpath = straight_toolpath()

@@ -44,12 +44,17 @@ MAX_GRID_CELLS = 200
 #: 一条刀轨至少要占多少格，否则坑的边缘会退化成楼梯状锯齿。
 CELLS_PER_PASS = 6.0
 #: 帧数 × 格数的预算：网格细的时候自动少留几帧，免得载荷随精度平方增长。
-FRAME_CELL_BUDGET = 90000
+#: 与 FRAME_LAG_DIAMETERS 一起决定"表面能多紧跟刀具"：预算 / 格数 = 可用帧数。
+FRAME_CELL_BUDGET = 600000
 #: 帧数下限：再省也要够动画不卡顿。
 MIN_FRAME_BUDGET = 8
-#: 一次仿真默认产生多少帧；帧越多动画越连续，载荷越大。
-DEFAULT_FRAME_BUDGET = 24
-FRAME_BUDGET_RANGE = (4, 48)
+#: 用户要的帧数上限（实际帧数还受刀路长度与格数预算约束）。
+DEFAULT_FRAME_BUDGET = 96
+FRAME_BUDGET_RANGE = (4, 1024)
+#: 相邻两帧之间允许刀具走过的距离，以**刀具直径**为单位。
+#: 它决定"表面能多紧跟刀具"：0.35×直径时默认参数下滞后约 10 mm，肉眼不会觉得
+#: 刀具与已切区域错位；这个指标与切宽无关，所以细切宽也不会退化。
+FRAME_LAG_DIAMETERS = 0.35
 #: 扫掠采样的最小间距：再密也只会重复覆盖同一批网格单元。
 MIN_SWEEP_STEP_MM = 0.25
 #: 坐标系容差。
@@ -78,8 +83,8 @@ def stock_parameters() -> ParameterSet:
                  help="高度场单元边长上限；相邻刀轨太密时仿真会自动加密，不会退化成锯齿"),
             spec("frame_budget", "动画帧数", K.INT, DEFAULT_FRAME_BUDGET,
                  minimum=FRAME_BUDGET_RANGE[0], maximum=FRAME_BUDGET_RANGE[1],
-                 step=4, unit="帧", group="毛坯",
-                 help="仿真保留多少个中间状态；界面在帧之间做线性插值"),
+                 step=8, unit="帧", group="毛坯",
+                 help="仿真保留多少个中间状态（还受刀路长度与网格密度约束）；界面在帧之间插值"),
         )
     )
 
@@ -621,11 +626,17 @@ def simulate_material_removal(
 
     stock_field = build_height_field(toolpath, tool, settings)
     duration = float(toolpath.estimated_time_s)
-    # 帧数是"至多"：网格细的时候载荷会随格数增长，所以按格数预算把帧数收一收。
-    # 网格粗（绝大多数情况）时用户要多少给多少；用户显式要得少也照办，不越过下限往上抬。
+    # 帧数决定"表面能多紧跟刀具"，所以要按**刀路总长**算，而不是固定一个数：
+    # 每 FRAME_LAG_DIAMETERS × 刀径的路程放一个帧，滞后就与切宽、刀具都无关。
+    # 用总长（含快移）而不是切削长度，否则快移多的刀路（单向模式、球头刀）帧数会偏少。
+    lag_mm = max(FRAME_LAG_DIAMETERS * float(tool.diameter_mm), 0.5)
+    path_length = float(toolpath.total_length_mm)
+    by_lag = int(np.ceil(path_length / lag_mm)) if path_length > 0 else 0
     requested = max(int(settings.frame_budget), 2)
+    wanted = max(by_lag, MIN_FRAME_BUDGET) if requested > MIN_FRAME_BUDGET else requested
     per_frame_budget = int(FRAME_CELL_BUDGET / max(stock_field.cell_count, 1))
-    frames = min(requested, max(per_frame_budget, MIN_FRAME_BUDGET)) if requested > MIN_FRAME_BUDGET else requested
+    frames = min(requested, wanted, max(per_frame_budget, MIN_FRAME_BUDGET))
+    frames = max(frames, 2)
     interval = duration / frames if duration > _EPS else 0.0
     # 扫掠采样间距：球头/圆鼻刀没有可用的足迹半径，所以不能只看刀具，
     # 还要跟网格步长挂钩，否则会漏掉本该切到的格子。
@@ -634,21 +645,30 @@ def simulate_material_removal(
     z_offset = settings.machining_plane_mm
 
     notes: list[str] = []
-    elapsed = 0.0
     recorded_times: list[float] = []
     recorded_frames: list[NDArray[np.float64]] = []
     next_target = interval if interval > _EPS else 0.0
 
+    # 帧时刻是均匀的时间栅格：t_k = (k+1) * interval。
+    # 扫掠时按"每个运动段消费掉多少时间"推进，凡是落在本段内的栅格点就切一刀并记一帧。
+    # 关键是帧的时刻始终等于它对应的扫掠位置（本段内按比例换算），
+    # 否则表面会跑在刀具前面——那正是之前"刀在左、坑在右"的原因。
+    clock = 0.0
     for move in toolpath.moves:
         samples = resample_points(move.points, step_mm)
         distances = np.linalg.norm(np.diff(samples, axis=0), axis=1)
         cumulative = np.concatenate(([0.0], np.cumsum(distances)))
         total = float(cumulative[-1])
-        # 在帧边界处把这段运动切开：先扫到边界、记一帧，再继续扫下一段。
-        # 这样每一帧都是"当时真实切出来的形状"，而不是每刀跳一次。
+        move_duration = total / move.feed_mm_per_min * 60.0
+        move_end = clock + move_duration
         cursor = 0.0
-        while total > _EPS and next_target > _EPS and next_target <= elapsed + total + 1e-9:
-            fraction = float(np.clip((next_target - elapsed) / total, 0.0, 1.0))
+        while (
+            total > _EPS
+            and next_target > 0.0
+            and next_target <= move_end + 1e-9
+            and len(recorded_frames) < frames
+        ):
+            fraction = float(np.clip((next_target - clock) / move_duration, 0.0, 1.0))
             boundary = fraction * total
             carve_at_distance(
                 stock_field, samples, cumulative, cursor, boundary, tool, step_mm, z_offset
@@ -657,29 +677,27 @@ def simulate_material_removal(
             recorded_frames.append(stock_field.removed_mm.copy())
             cursor = boundary
             next_target += interval
-            if len(recorded_frames) >= frames:
-                break
         if cursor < total - _EPS:
             carve_at_distance(
                 stock_field, samples, cumulative, cursor, total, tool, step_mm, z_offset
             )
-        elapsed += total / move.feed_mm_per_min * 60.0
+        clock = move_end
         if len(recorded_frames) >= frames:
             next_target = float("inf")
 
     if not recorded_frames:
         # 刀路太短（或时间几乎为零）：至少给一帧，界面才不会空着。
-        recorded_times.append(elapsed)
+        recorded_times.append(clock)
         recorded_frames.append(stock_field.removed_mm.copy())
         notes.append("刀路时长过短，仿真只保留了一帧结果")
 
     # 最后一帧必须是终态：把与终态时刻重合（或更晚）的那一帧去掉，只留终态。
-    while recorded_times and recorded_times[-1] >= elapsed - _EPS:
+    while recorded_times and recorded_times[-1] >= clock - _EPS:
         recorded_times.pop()
         recorded_frames.pop()
 
     final = stock_field.removed_mm
-    times_array = np.array(recorded_times + [elapsed], dtype=np.float64)
+    times_array = np.array(recorded_times + [clock], dtype=np.float64)
     frames_array = np.stack(recorded_frames + [final]).astype(np.float64)
 
     cut_cells = int(np.count_nonzero(final > 1e-6))

@@ -2,7 +2,9 @@
 
 from toolpath_lab.simulation.material import (
     CELLS_PER_PASS,
+    DEFAULT_FRAME_BUDGET,
     FRAME_CELL_BUDGET,
+    FRAME_LAG_DIAMETERS,
     MAX_GRID_CELLS,
     MIN_FRAME_BUDGET,
     HeightField,
@@ -18,7 +20,9 @@ from toolpath_lab.simulation.timeline import Timeline, TimelineState, build_time
 
 __all__ = [
     "CELLS_PER_PASS",
+    "DEFAULT_FRAME_BUDGET",
     "FRAME_CELL_BUDGET",
+    "FRAME_LAG_DIAMETERS",
     "MAX_GRID_CELLS",
     "MIN_FRAME_BUDGET",
     "HeightField",

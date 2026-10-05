@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 from toolpath_lab.server.app import ToolpathLabHandler, create_server
+from toolpath_lab.simulation import DEFAULT_FRAME_BUDGET
 
 
 class ApiTestCase(unittest.TestCase):
@@ -122,7 +123,7 @@ class CatalogTests(ApiTestCase):
             [item["key"] for item in stock["parameters"]],
             ["depth_mm", "top_mm", "cut_depth_mm", "margin_mm", "resolution_mm", "frame_budget"],
         )
-        self.assertEqual(stock["defaults"]["frame_budget"], 24)
+        self.assertEqual(stock["defaults"]["frame_budget"], DEFAULT_FRAME_BUDGET)
         self.assertGreater(stock["defaults"]["cut_depth_mm"], 0)
         self.assertGreater(stock["simulation"]["max_grid_cells"], 0)
 
