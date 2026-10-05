@@ -127,6 +127,13 @@ function lineOpacity(dashed, showStock) {
   return dashed ? RAPID_DIM_WITH_STOCK : PATH_DIM_WITH_STOCK;
 }
 
+//: 表面相对播放时刻的超前量占帧间隔的比例。
+//:
+//: 表面按关键帧插值，因此最多落后刀具"一个帧间隔"的路程。这个滞后会让人看到怪现象：
+//: 往复加工换行时刀具已经掉头，槽却还在朝原来的方向长——看起来"刀和切削方向相反"。
+//: 把表面整体推进半个帧间隔，刀具就始终落在它刚切出的位置上。
+const SURFACE_LEAD_RATIO = 0.5;
+
 function polylineGeometry(polylines, dashed = false) {
   const positions = [];
   for (const points of polylines) {
@@ -398,7 +405,16 @@ export class Viewport {
   }
 
   setSimulationTime(timeSeconds) {
-    this._updateStockSurface(Math.max(0, timeSeconds));
+    const stock = this.stockSimulation;
+    let time = Math.max(0, timeSeconds);
+    // 扣掉关键帧插值带来的固有滞后（见 SURFACE_LEAD_RATIO）。
+    // 只能在"还没到终态"时提前，否则会把终态提前放出来。
+    if (stock && stock.times.length > 1) {
+      const last = stock.times[stock.times.length - 1];
+      const interval = (last - stock.times[0]) / (stock.times.length - 1);
+      time = Math.min(last, time + interval * SURFACE_LEAD_RATIO);
+    }
+    this._updateStockSurface(time);
   }
 
   // ---------------------------------------------------------------- 结果
