@@ -91,14 +91,26 @@ function decodeStockFrames(payload) {
 
 //: 被切掉的表面按深度染色：坑底偏冷偏暗，原始上表面是浅灰。
 //: 几何上坑底和上表面都是水平面、受光相同，只靠明暗分不出来，所以用颜色补足可读性。
-const CUT_TINT = { r: 0.42, g: 0.58, b: 0.72 };
+//:
+//: 染色方案刻意做得**饱和且分界干净**：没切到的地方一律纯白，切过的地方由浅蓝到深蓝。
+//: 这样"哪里被切过"在画面上是纯色块，不依赖光照与视角——刀是否站在被切区域里，
+//: 一眼就能判断，不必靠推断。
+const CUT_TINT = { r: 0.06, g: 0.24, b: 0.85 };
+//: 低于这个已切深度就算"切到了"，颜色立即开始偏蓝（避免浅切被当成未切）。
+const CUT_EPSILON_MM = 0.05;
 
 function stockVertexColor(height, stockTop, floor, target) {
   if (!target) return 1;
+  const removed = stockTop - height;
+  if (removed <= CUT_EPSILON_MM) {
+    // 未切削：纯白，和坑形成最强对比。
+    target[0] = 1; target[1] = 1; target[2] = 1;
+    return target[0];
+  }
   const span = Math.max(stockTop - floor, 1e-6);
-  const depth = Math.min(Math.max((stockTop - height) / span, 0), 1);
-  // 只给"切下去"的部分上色，未切削处保持原色。
-  const wash = Math.min(depth * 2.6, 1);
+  // 一被切到就跳到 0.45，保证浅切也明显可见。
+  const depth = Math.min(Math.max(removed / span, 0), 1);
+  const wash = 0.45 + 0.55 * Math.min(depth * 4.0, 1);
   target[0] = 1 - wash * (1 - CUT_TINT.r);
   target[1] = 1 - wash * (1 - CUT_TINT.g);
   target[2] = 1 - wash * (1 - CUT_TINT.b);
@@ -380,7 +392,12 @@ export class Viewport {
     const tint = [0, 0, 0];
 
     for (let row = 0; row < rows; row += 1) {
-      const base = (rows - 1 - row) * rowStride;
+      // 行序必须与仿真网格一致：仿真的第 0 行在 y = y_min（负端）。
+      // 平面几何的顶行对应本地 +高度/2，而网格带 scale.y = -1，
+      // 所以本地顶行正好落在世界 y_min —— 即第 0 行要用 base = row。
+      // 之前写成 (rows - 1 - row) 让切削结果沿 Y 镜像，
+      // 于是"刀在左边、坑在右边"：刀具坐标没错，是曲面画反了。
+      const base = row * rowStride;
       const source = row * columns;
       for (let column = 0; column < columns; column += 1) {
         const cell = source + column;
@@ -414,7 +431,98 @@ export class Viewport {
       const interval = (last - stock.times[0]) / (stock.times.length - 1);
       time = Math.min(last, time + interval * SURFACE_LEAD_RATIO);
     }
+    this._lastSurfaceTime = time;
     this._updateStockSurface(time);
+    this._updateToolProbe();
+  }
+
+  // 诊断用的"探针"：从刀尖竖直往下画一条线，落到**高度场在该处的真实高度**上，
+  // 再画一个十字标。它指到哪里，那里就是刀现在真正切着的位置。
+  // 它的用途是让"刀与已切区域是否同步"这件事在画面上一眼可见，不必靠推断。
+  _buildToolProbe() {
+    if (this.probeGroup) return;
+    const color = 0xff3df0;
+    const material = new THREE.LineBasicMaterial({
+      color, transparent: true, opacity: 0.95, depthTest: false,
+    });
+    const drop = new THREE.LineSegments(new THREE.BufferGeometry(), material);
+    const cross = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95, depthTest: false })
+    );
+    // 刀具的真实切削范围：刀尖平面上、直径等于刀具直径的圆环。
+    // 它盖住哪里，那里此刻就该被切掉——用它来判断"已切区域"是否跟得上刀具。
+    const ring = new THREE.LineLoop(
+      this._circleGeometry(Math.max(this.tool?.radius_mm ?? 3, 0.5), 64),
+      new THREE.LineBasicMaterial({ color: 0x22ffd5, transparent: true, opacity: 0.9, depthTest: false })
+    );
+    drop.renderOrder = 3;
+    cross.renderOrder = 3;
+    ring.renderOrder = 4;
+    this.probeGroup = new THREE.Group();
+    this.probeGroup.add(drop, cross, ring);
+    this.probeDrop = drop;
+    this.probeCross = cross;
+    this.probeRing = ring;
+    this.scene.add(this.probeGroup);
+  }
+
+  _circleGeometry(radius, segments) {
+    const geometry = new THREE.BufferGeometry();
+    const points = [];
+    for (let index = 0; index < segments; index += 1) {
+      const angle = (index / segments) * Math.PI * 2;
+      points.push(new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius, 0));
+    }
+    geometry.setFromPoints(points);
+    return geometry;
+  }
+
+  _updateToolProbe() {
+    const stock = this.stockSimulation;
+    if (!stock || !this.probeDrop) {
+      if (this.probeGroup) this.probeGroup.visible = false;
+      return;
+    }
+    const columns = stock.columns;
+    const rows = stock.rows;
+    const x0 = stock.x_range_mm[0];
+    const x1 = stock.x_range_mm[1];
+    const y0 = stock.y_range_mm[0];
+    const y1 = stock.y_range_mm[1];
+    const position = this.toolGroup.position;
+    // 夹到网格范围内，才能取到对应格子的高度。
+    const px = Math.min(Math.max(position.x, x0), x1);
+    const py = Math.min(Math.max(position.y, y0), y1);
+    const column = Math.round((px - x0) / (x1 - x0) * (columns - 1));
+    const row = Math.round((py - y0) / (y1 - y0) * (rows - 1));
+    const cell = row * columns + column;
+    const frameIndex = Math.min(
+      this._stockFrameIndex >= 0 ? this._stockFrameIndex : 0,
+      this.stockFrames.length - 1
+    );
+    const frame = this.stockFrames[frameIndex];
+    if (!frame || cell < 0 || cell >= frame.length) {
+      this.probeGroup.visible = false;
+      return;
+    }
+    const surfaceZ = frame[cell] * stock.encoding.step_mm + stock.encoding.offset_mm;
+    // 竖直落线：从刀尖高度一直到该处表面
+    const top = Math.max(position.z, surfaceZ) + 2;
+    this.probeDrop.geometry.setFromPoints([
+      new THREE.Vector3(px, py, top),
+      new THREE.Vector3(px, py, surfaceZ),
+    ]);
+    // 十字标：贴在表面上
+    const arm = Math.max(stock.resolution_mm * 2.5, 3);
+    this.probeCross.geometry.setFromPoints([
+      new THREE.Vector3(px - arm, py, surfaceZ), new THREE.Vector3(px + arm, py, surfaceZ),
+      new THREE.Vector3(px, py - arm, surfaceZ), new THREE.Vector3(px, py + arm, surfaceZ),
+    ]);
+    // 切削范围圆环放在刀尖平面上，代表"此刻应该被切掉的范围"。
+    const tipZ = position.z;
+    this.probeRing.position.set(position.x, position.y, tipZ);
+    this.probeGroup.visible = this.display.showStock === true;
   }
 
   // ---------------------------------------------------------------- 结果
@@ -471,6 +579,7 @@ export class Viewport {
       this.bounds.expandByPoint(new THREE.Vector3(0, 0, toolLength * 0.5));
     }
     this._lastTraversed = -1;
+    this._buildToolProbe();
     this.setDisplayOptions(this.display);
     this._autoFrame();
   }
