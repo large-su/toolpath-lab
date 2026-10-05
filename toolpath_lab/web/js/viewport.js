@@ -66,8 +66,8 @@ function liftPaths(polylines) {
 
 // ------------------------------------------------------------------ 高度场
 // 材料切除仿真把毛坯离散成一张高度场，载荷里每帧只带"相对上一帧变化的格子"。
-// 每个游程是 [行号, 起始列, 值串]：值串每两个字节是一个格子的量化值（UTF-16LE
-// 码点，低字节在前），还原公式是 value * step_mm + offset_mm。
+// 每个游程是 [行号, 起始列, 值串]：值串里**每两个字符是一个格子**（一个小端
+// uint16，低字节在前），还原公式是 value * step_mm + offset_mm。
 function decodeStockFrames(payload) {
   const { rows, columns, encoding, stock_top_mm: stockTop } = payload;
   const state = new Uint16Array(rows * columns);
@@ -79,12 +79,30 @@ function decodeStockFrames(payload) {
       const base = row * columns + start;
       const count = packed.length >> 1;
       for (let index = 0; index < count; index += 1) {
-        state[base + index] = packed.charCodeAt(index);
+        // 一个格子占两个码点：低位字节在前。
+        state[base + index] =
+          packed.charCodeAt(index * 2) + (packed.charCodeAt(index * 2 + 1) << 8);
       }
     }
     frames.push(state.slice());
   }
   return frames;
+}
+
+//: 被切掉的表面按深度染色：坑底偏冷偏暗，原始上表面是浅灰。
+//: 几何上坑底和上表面都是水平面、受光相同，只靠明暗分不出来，所以用颜色补足可读性。
+const CUT_TINT = { r: 0.42, g: 0.58, b: 0.72 };
+
+function stockVertexColor(height, stockTop, floor, target) {
+  if (!target) return 1;
+  const span = Math.max(stockTop - floor, 1e-6);
+  const depth = Math.min(Math.max((stockTop - height) / span, 0), 1);
+  // 只给"切下去"的部分上色，未切削处保持原色。
+  const wash = Math.min(depth * 2.6, 1);
+  target[0] = 1 - wash * (1 - CUT_TINT.r);
+  target[1] = 1 - wash * (1 - CUT_TINT.g);
+  target[2] = 1 - wash * (1 - CUT_TINT.b);
+  return target[0];
 }
 
 function frameIndexFor(times, time) {
@@ -168,15 +186,21 @@ export class Viewport {
     this.controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
     this.renderer.domElement.addEventListener("contextmenu", (event) => event.preventDefault());
 
-    this.scene.add(new THREE.HemisphereLight(0xb9e9ff, 0x111513, 1.5));
-    this.keyLight = new THREE.DirectionalLight(0xffffff, 2.6);
+    // 半球光负责整体环境色，但强度要压低：它太强时坑的内壁和顶面亮度几乎一样，
+    // 削出来的形状就没有立体感了。
+    this.scene.add(new THREE.HemisphereLight(0xb9e9ff, 0x111513, 0.85));
+    this.keyLight = new THREE.DirectionalLight(0xffffff, 2.4);
     this.keyLight.position.set(220, -320, 620);
     this.keyLight.castShadow = true;
     this.keyLight.shadow.mapSize.set(1024, 1024);
     this.keyLight.shadow.bias = -0.0005;
     this.keyLight.shadow.normalBias = 0.6;
     this.scene.add(this.keyLight);
-    const rim = new THREE.DirectionalLight(0x52d8c5, 1.4);
+    // 压低角度的侧光：专门照亮坑的竖直内壁，让"挖下去"这件事看得出来。
+    this.sideLight = new THREE.DirectionalLight(0xffffff, 1.15);
+    this.sideLight.position.set(-420, -180, 120);
+    this.scene.add(this.sideLight);
+    const rim = new THREE.DirectionalLight(0x52d8c5, 1.2);
     rim.position.set(-520, 420, 220);
     this.scene.add(rim);
 
@@ -200,6 +224,7 @@ export class Viewport {
     this.stockSimulation = null;   //: 高度场仿真的载荷（含编码参数）
     this.stockFrames = [];         //: 解码后的逐帧顶面高度（量化整数）
     this.stockMesh = null;
+    this.stockShell = null;        //: 侧壁 + 底面（不随削料变化）
     this.stockGeometry = null;
     this._stockFrameIndex = -1;
 
@@ -233,6 +258,7 @@ export class Viewport {
     this.stockSimulation = null;
     this.stockFrames = [];
     this.stockMesh = null;
+    this.stockShell = null;
     this.stockGeometry = null;
     this._stockFrameIndex = -1;
     if (!stock || !stock.enabled || !stock.columns || !stock.rows) return;
@@ -252,8 +278,13 @@ export class Viewport {
       geometry,
       new THREE.MeshStandardMaterial({
         color: COLORS.stock, metalness: 0.12, roughness: 0.78,
-        side: THREE.DoubleSide,
+        side: THREE.DoubleSide, vertexColors: true,
       })
+    );
+    // 顶点色由高度决定：切得越深越偏冷偏暗，用来补足"水平面之间没有明暗差"的问题。
+    geometry.setAttribute(
+      "color",
+      new THREE.Float32BufferAttribute(new Float32Array(geometry.attributes.position.count * 3).fill(1), 3)
     );
     // 平面的行是从上往下排的；网格首行对应 y_min，所以对 y 翻转一次。
     mesh.scale.set(1, -1, 1);
@@ -269,7 +300,47 @@ export class Viewport {
     this.stockGroup.add(mesh);
     this.stockMesh = mesh;
     this.stockGeometry = geometry;
+    this._buildStockShell(stock);
     this._updateStockSurface(stock.times[0]);
+  }
+
+  // 毛坯的外壳：四周侧壁 + 底面（**不含顶面**）。
+  // 只画一张上表面是不够的——削掉材料之后，俯视会直接看到穿透过去的黑暗背景，
+  // 看起来像"一张漂浮的平面"而不是"被挖掉一块的材料"。
+  // 顶面必须留给高度场网格：外壳自己再铺一层顶面，就会重新把坑盖住。
+  _buildStockShell(stock) {
+    const [x0, x1] = stock.x_range_mm;
+    const [y0, y1] = stock.y_range_mm;
+    const top = stock.stock_top_mm;
+    const floor = stock.floor_mm;
+
+    const quad = (a, b, c, d) => [...a, ...b, ...c, ...a, ...c, ...d];
+    const positions = [
+      // 南墙 y = y0
+      ...quad([x0, y0, floor], [x1, y0, floor], [x1, y0, top], [x0, y0, top]),
+      // 北墙 y = y1
+      ...quad([x1, y1, floor], [x0, y1, floor], [x0, y1, top], [x1, y1, top]),
+      // 西墙 x = x0
+      ...quad([x0, y1, floor], [x0, y0, floor], [x0, y0, top], [x0, y1, top]),
+      // 东墙 x = x1
+      ...quad([x1, y0, floor], [x1, y1, floor], [x1, y1, top], [x1, y0, top]),
+      // 底面 z = floor
+      ...quad([x0, y0, floor], [x1, y0, floor], [x1, y1, floor], [x0, y1, floor]),
+    ];
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    const shell = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: COLORS.stock, metalness: 0.12, roughness: 0.78,
+        side: THREE.DoubleSide,
+      })
+    );
+    shell.castShadow = false;
+    shell.receiveShadow = true;
+    this.stockGroup.add(shell);
+    this.stockShell = shell;
   }
 
   // 每帧只改顶点高度；法线只在跨到下一个关键帧时重算一次，省掉大部分开销。
@@ -295,6 +366,11 @@ export class Viewport {
     // 每个顶点 3 个浮点数（x, y, z），所以一行的跨距是"列数 × 3"，
     // 而 z 在本行的偏移是"列号 × 3 + 2"。
     const rowStride = columns * 3;
+    const color = geometry.attributes.color;
+    const colors = color ? color.array : null;
+    const top = stock.stock_top_mm;
+    const floor = stock.floor_mm;
+    const tint = [0, 0, 0];
 
     for (let row = 0; row < rows; row += 1) {
       const base = (rows - 1 - row) * rowStride;
@@ -302,10 +378,19 @@ export class Viewport {
       for (let column = 0; column < columns; column += 1) {
         const cell = source + column;
         const removed = start[cell] + ratio * (end[cell] - start[cell]);
-        array[base + column * 3 + 2] = removed * step + offset;
+        const height = removed * step + offset;
+        array[base + column * 3 + 2] = height;
+        if (colors) {
+          stockVertexColor(height, top, floor, tint);
+          const at = base + column * 3;
+          colors[at] = tint[0];
+          colors[at + 1] = tint[1];
+          colors[at + 2] = tint[2];
+        }
       }
     }
     position.needsUpdate = true;
+    if (color) color.needsUpdate = true;
     if (index !== this._stockFrameIndex) {
       this._stockFrameIndex = index;
       geometry.computeVertexNormals();
@@ -464,13 +549,15 @@ export class Viewport {
 
   setDisplayOptions(options) {
     this.display = Object.assign({}, this.display, options || {});
-    this.workpieceGroup.visible = this.display.showWorkpiece;
     this.stockGroup.visible = this.display.showStock && this.stockGroup.children.length > 0;
+    // 毛坯显示时收起"工件参考块"：它顶面在加工面（z = 0），而坑底被切到加工面以下，
+    // 于是它会像一块盖板盖在坑上，把削出来的形状全遮住。
+    this.workpieceGroup.visible = this.display.showWorkpiece && !this.stockGroup.visible;
+    this.contourGroup.visible = this.display.showWorkpiece && !this.stockGroup.visible;
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.toolGroup.visible = this.display.showTool;
     if (this.rapidLine) this.rapidLine.visible = this.display.showRapid;
-    this.contourGroup.visible = this.display.showWorkpiece;
     // 材料切除开关直接决定刀路线条的浓淡，所以每次都要跟着更新。
     const dim = this.display.showStock && this.stockGroup.children.length > 0;
     for (const entry of this.lineMaterials) {

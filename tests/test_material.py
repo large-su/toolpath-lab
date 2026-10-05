@@ -38,7 +38,13 @@ def straight_toolpath(
 
 
 def decode_frames(payload: dict) -> np.ndarray:
-    """按载荷声明的规则还原高度场（与前端 viewport.js 的实现保持一致）。"""
+    """按载荷声明的规则还原高度场（与前端 viewport.js 的实现保持一致）。
+
+    值串里**每两个字符是一个格子**：一个小端 uint16，低位字节在前。
+    这里刻意逐字节拼，而不是 `np.frombuffer(dtype='<u2')`——后者要求字符串长度是
+    偶数，也没有把"两个字符一格"这件事写明白；更重要的是，前端就是这么读的，
+    参照实现必须逐字对应，否则两边同时读错也不会被发现。
+    """
 
     rows = payload["rows"]
     columns = payload["columns"]
@@ -49,7 +55,11 @@ def decode_frames(payload: dict) -> np.ndarray:
     frames = []
     for runs in payload["frames"]:
         for row, start, packed in runs:
-            values = np.frombuffer(packed.encode("latin-1"), dtype="<u2")
+            codes = np.frombuffer(packed.encode("latin-1"), dtype=np.uint8).astype(np.int64)
+            assert codes.size % 2 == 0, "值串必须是整数字节"
+            low = codes[0::2]
+            high = codes[1::2]
+            values = low + (high << 8)
             assert start + values.size <= columns, "游程超出行宽"
             state[row, start:start + values.size] = values
         frames.append(state.astype(np.float64) * step + offset)
@@ -383,6 +393,30 @@ class PayloadTests(unittest.TestCase):
         decoded = decode_frames(self.payload)
         self.assertGreaterEqual(float(decoded[-1].min()), self.payload["floor_mm"] - 1e-6)
         self.assertLessEqual(float(decoded[-1].max()), self.payload["stock_top_mm"] + 1e-6)
+
+    def test_decoded_heights_match_the_real_geometry(self) -> None:
+        """不只看往返一致，还要和**真实几何**对上。
+
+        编码与解码如果用同一个错误公式，往返测试会照样通过——这里用模拟实际算出的
+        刀尖高度做基准，把这类"两边一起错"的情况挡住。
+        """
+
+        payload = self.payload
+        decoded = decode_frames(payload)
+        # 把结果换算回"已切深度"再和模拟比对
+        removed = payload["stock_top_mm"] - decoded
+        expected = np.vstack(
+            [np.zeros_like(self.result.frames_mm[:1]), self.result.frames_mm]
+        )
+        self.assertLessEqual(float(np.abs(removed - expected).max()), 0.02)
+        # 最深一刀 = 上表面余量 + 切削深度；越界的索引会在这里露出来
+        self.assertAlmostEqual(
+            float(removed[-1].max()),
+            self.result.settings.top_mm + self.result.settings.cut_depth_mm,
+            places=2,
+        )
+        # 载荷里任何一个格子都不允许低于毛坯底面
+        self.assertGreaterEqual(float(decoded.min()), payload["floor_mm"] - 1e-6)
 
     def test_runs_stay_inside_their_row(self) -> None:
         columns = self.payload["columns"]

@@ -2,7 +2,7 @@
 // 这里负责把它们渲染出来。新增一个区域形状或策略，刷新页面就会出现，不用改本文件。
 
 const DISPLAY_OPTIONS = [
-  { key: "showWorkpiece", label: "工件" },
+  { key: "showWorkpiece", label: "工件参考块", hint: "毛坯显示时自动收起，避免盖住削出来的形状" },
   { key: "showStock", label: "材料切除", color: "var(--teal)" },
   { key: "showPath", label: "刀路", color: "var(--orange)" },
   { key: "showRapid", label: "快移", color: "var(--cyan)" },
@@ -231,7 +231,9 @@ export class ParameterPanel {
       }
       const text = document.createElement("span");
       text.textContent = option.label;
+      if (option.hint) text.title = option.hint;
       row.appendChild(text);
+      if (option.hint) row.title = option.hint;
       section.appendChild(row);
     }
     return section;

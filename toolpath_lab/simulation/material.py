@@ -493,14 +493,16 @@ class MaterialRemoval:
         断开的，解码端无法从"格数"反推行号。
         """
 
-        # 量化范围要覆盖从毛坯上表面到毛坯底面以下 10%，再铺满 16 位。
+        # 量化范围覆盖从毛坯上表面到毛坯底面，再往下留 10% 余量。
         span = max(self.stock_top_mm - self.floor_mm, 1e-6)
         step_mm = min(0.01, span * 1.1 / 65535.0)
         offset_mm = self.floor_mm * 1.1
 
-        def quantize(frame: NDArray[np.float64]) -> NDArray[np.int64]:
+        def quantize(height: NDArray[np.float64]) -> NDArray[np.int64]:
+            """把**绝对顶面高度**（工件坐标 Z）量化成索引。"""
+
             index = np.rint(
-                (np.clip(frame, offset_mm, None) - offset_mm) / step_mm
+                (np.clip(height, offset_mm, None) - offset_mm) / step_mm
             )
             return np.clip(index, 0, 65535).astype(np.int64)
 
@@ -508,7 +510,8 @@ class MaterialRemoval:
         encoded: list[list[str]] = [[]]
         previous = np.full((self.rows, self.columns), stock_index, dtype=np.int64)
         for frame in self.frames_mm:
-            # frames_mm 存的是"已切深度"，换算成绝对顶面高度再量化。
+            # frames_mm 存的是"已切深度"，先换算成绝对顶面高度再量化。
+            # 注意别把切深本身丢进 quantize：切深 0 会被当成"低于底面"，量出错误的小索引。
             current = quantize(self.stock_top_mm - frame)
             encoded.append(_encode_cells(np.flatnonzero(current != previous), current))
             previous = current
