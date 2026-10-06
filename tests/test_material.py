@@ -240,6 +240,97 @@ class CarveTests(unittest.TestCase):
         self.assertTrue(bool((before == after).all()))
 
 
+class BullToolTests(unittest.TestCase):
+    """圆鼻刀：刀底是"平盘 + 圆角环"，必须落在平底刀与球头刀之间。
+
+    注意剖面的方向：沿 X 的直线刀路，刀痕出现在**垂直于走刀方向的 Y** 上。
+    沿 X 取样是没用的——那是走刀方向，形状不变。
+    """
+
+    def _profile(self, tool: Tool, plane_mm: float = -1.0):
+        """返回 (到刀路的横向距离 |y|, 切深) 剖面。"""
+
+        result = simulate_material_removal(
+            straight_toolpath(z_mm=plane_mm, half_length_mm=30.0),
+            tool,
+            StockSettings(top_mm=1.0, cut_depth_mm=0.0, resolution_mm=0.15),
+        )
+        # 取中段一列（避开端头），沿 Y 读剖面
+        column = int(np.argmin(np.abs(result.x_mm - 0.0)))
+        depth = result.final_removed_mm[:, column]
+        distance = np.abs(result.y_mm)
+        return distance, depth
+
+    def test_bull_leaves_a_rounded_edge_while_flat_does_not(self) -> None:
+        flat = Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=30.0)
+        bull = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=30.0, corner_radius_mm=2.0)
+
+        flat_distance, flat_depth = self._profile(flat)
+        bull_distance, bull_depth = self._profile(bull)
+
+        # 平底刀在接近半径处仍是满深
+        flat_edge = flat_depth[np.abs(flat_distance - (flat.radius_mm - 0.2)) < 0.25]
+        # 圆鼻刀在同一位置已经抬起来
+        bull_edge = bull_depth[np.abs(bull_distance - (bull.radius_mm - 0.2)) < 0.25]
+        self.assertGreater(flat_edge.size, 0)
+        self.assertGreater(bull_edge.size, 0)
+        self.assertGreater(float(flat_edge.min()), float(bull_edge.max()) + 0.5)
+
+    def test_bull_corner_profile_matches_the_arc(self) -> None:
+        """圆角区各点的抬起量应符合圆角圆弧公式。
+
+        网格是离散的：取到的格点不一定正好落在目标距离上，
+        所以理论值要用**该格点的实际 |y|** 算，否则误差里混进了网格步长。
+        """
+
+        radius = 5.0
+        corner = 2.0
+        inner = radius - corner
+        tool = Tool(ToolKind.BULL, diameter_mm=2 * radius, length_mm=30.0,
+                    corner_radius_mm=corner)
+        distance, depth = self._profile(tool)
+        target = float(depth.max())
+
+        checked = 0
+        for wanted in np.linspace(inner + 0.4, radius - 0.4, 5):
+            index = int(np.argmin(np.abs(distance - wanted)))
+            actual_d = float(distance[index])
+            actual = target - float(depth[index])
+            theory = corner - np.sqrt(max(corner * corner - (actual_d - inner) ** 2, 0.0))
+            self.assertAlmostEqual(actual, theory, delta=0.1)
+            checked += 1
+        self.assertEqual(checked, 5)
+
+    def test_bull_stays_between_flat_and_ball(self) -> None:
+        """同样参数下，边缘抬起量：平底刀 < 圆鼻刀 < 球头刀。"""
+
+        def edge_lift(tool: Tool) -> float:
+            distance, depth = self._profile(tool)
+            target = float(depth.max())
+            index = int(np.argmin(np.abs(distance - (tool.radius_mm - 0.15))))
+            return target - float(depth[index])
+
+        flat = Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=30.0)
+        bull = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=30.0, corner_radius_mm=2.0)
+        ball = Tool(ToolKind.BALL, diameter_mm=10.0, length_mm=30.0)
+        self.assertLess(edge_lift(flat), edge_lift(bull))
+        self.assertLess(edge_lift(bull), edge_lift(ball))
+
+    def test_bull_footprint_drives_the_path_offset(self) -> None:
+        """足迹半径 = R − Rc，刀路偏置量与之一致。"""
+
+        tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=30.0, corner_radius_mm=2.0)
+        self.assertAlmostEqual(tool.footprint_radius_mm, 3.0)
+        toolpath = run_plan(
+            planner_id="raster",
+            tool=tool,
+            region=build_region("square", {"side_mm": 40.0}),
+            parameters={"mode": "zigzag", "stepover_mm": 4.0, "feed_mm_per_min": 600.0},
+        ).toolpath
+        points = np.vstack([move.points for move in toolpath.moves])
+        self.assertAlmostEqual(float(np.abs(points[:, 0]).max()), 20.0 - 3.0, places=6)
+
+
 class BallToolTests(unittest.TestCase):
     def test_ball_tool_leaves_a_round_bottom(self) -> None:
         tool = Tool(ToolKind.BALL, diameter_mm=10.0, length_mm=30.0)

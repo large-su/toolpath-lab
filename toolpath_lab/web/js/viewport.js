@@ -614,9 +614,14 @@ export class Viewport {
     });
 
     // 切削段：圆柱按长度留出刀底所占的那一截，底部再补上真正的刀底形状。
+    // 圆鼻刀的刀底是"平盘 + 圆角环"，用旋转体（LatheGeometry）一次成形；
     // 球头刀的刀底是半球，所以圆柱要从球心以上开始，否则刀会"长"出球面外。
     const isBall = tool.kind === "ball";
-    const bottom = isBall ? radius : 0;          // 刀底占用的高度
+    const isBull = tool.kind === "bull";
+    const corner = isBull
+      ? Math.min(Math.max(Number(tool.corner_radius_mm) || 0, 0), radius)
+      : 0;
+    const bottom = isBall ? radius : (isBull ? corner : 0);  // 刀底占用的高度
     const body = Math.max(flute - bottom, radius * 0.5);
     const meshes = [];
     const cutting = new THREE.Mesh(
@@ -635,6 +640,26 @@ export class Viewport {
       ball.rotation.x = -Math.PI / 2;
       ball.position.z = radius;
       meshes.push(ball);
+    } else if (isBull && corner > 1e-6) {
+      // 圆鼻刀刀底：内圈是半径 (R − Rc) 的平盘，外圈是半径 Rc 的圆角环。
+      // 沿 Z 轴的母线取 [平盘底 → 四分之一圆弧 → 圆柱面]，再绕 Z 旋转成实体。
+      // LatheGeometry 的母线点在 (x=半径, y=沿轴高度) 平面内，绕 Y 轴旋转，
+      // 因此母线的 y 就是刀具的 z，最后把整个旋转体转成"刀轴朝 Z"。
+      const inner = Math.max(radius - corner, 0);
+      const profile = [new THREE.Vector2(0, 0), new THREE.Vector2(inner, 0)];
+      const steps = 24;
+      for (let step = 1; step <= steps; step += 1) {
+        const angle = (step / steps) * (Math.PI / 2);
+        profile.push(new THREE.Vector2(
+          inner + corner * Math.sin(angle),
+          corner * (1 - Math.cos(angle))
+        ));
+      }
+      const bottomMesh = new THREE.Mesh(
+        new THREE.LatheGeometry(profile, 64), material
+      );
+      bottomMesh.rotation.x = Math.PI / 2;
+      meshes.push(bottomMesh);
     } else {
       // 平底刀：封一层薄薄的底盖，让它看起来是实体而不是缺面的壳。
       const cap = new THREE.Mesh(

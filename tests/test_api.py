@@ -108,7 +108,7 @@ class CatalogTests(ApiTestCase):
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
         self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
-                         ["kind", "diameter_mm", "length_mm"])
+                         ["kind", "diameter_mm", "corner_radius_mm", "length_mm"])
 
     def test_catalog_reports_the_fixed_settings(self) -> None:
         _, body, _ = self.get("/api/catalog")
@@ -130,8 +130,8 @@ class CatalogTests(ApiTestCase):
     def test_tool_kind_availability_is_published(self) -> None:
         _, body, _ = self.get("/api/catalog")
         kinds = json.loads(body)["tool"]["parameters"][0]["choices"]
-        # 平底刀与球头刀可选，圆鼻刀仍是"待拓展"。
-        self.assertEqual([item["disabled"] for item in kinds], [False, False, True])
+        # 平底刀、球头刀、圆鼻刀三种形态都已可选。
+        self.assertEqual([item["disabled"] for item in kinds], [False, False, False])
 
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
