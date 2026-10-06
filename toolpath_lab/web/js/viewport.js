@@ -9,6 +9,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "../vendor/OrbitControls.js";
 import { RoomEnvironment } from "../vendor/RoomEnvironment.js";
+import { MaterialSimulation } from "./material.js";
 
 const COLORS = {
   background: 0x071014,
@@ -154,6 +155,10 @@ export class Viewport {
     this.toolMesh = null;
     this.traceLine = null;
     this.rapidLine = null;
+    this.materialSimulation = null;
+    this.materialSurface = null;
+    this.materialOptions = { enabled: true, resolutionMm: 0.5, stockAllowanceMm: 2.0 };
+    this.currentPayload = null;
 
     this.resize();
     if (typeof ResizeObserver !== "undefined") {
@@ -181,6 +186,7 @@ export class Viewport {
 
   // ---------------------------------------------------------------- 结果
   setResult(payload) {
+    this.currentPayload = payload;
     this._clear(this.workpieceGroup);
     this._clear(this.contourGroup);
     this._clear(this.pathGroup);
@@ -192,8 +198,11 @@ export class Viewport {
     const span = Math.max(xMax - xMin, yMax - yMin);
 
     const thickness = this._thickness(span);
-    this.workpieceGroup.add(this._workpiece(region, thickness));
-    this.contourGroup.add(this._contour(region.boundary));
+    this._buildWorkpiece(payload, thickness);
+    this.contourGroup.add(this._contour(
+      region.boundary,
+      this.materialSimulation ? this.materialOptions.stockAllowanceMm : 0
+    ));
     this._rebuildGrid(span, thickness);
 
     const groups = { cut: [], link: [], rapid: [] };
@@ -231,6 +240,41 @@ export class Viewport {
     this._lastTraversed = -1;
     this.setDisplayOptions(this.display);
     this._autoFrame();
+  }
+
+  setMaterialSimulationOptions(options) {
+    this.materialOptions = Object.assign({}, this.materialOptions, options || {});
+    if (!this.currentPayload) return null;
+    const region = this.currentPayload.region;
+    const [xMin, xMax] = region.bounds_mm[0];
+    const [yMin, yMax] = region.bounds_mm[1];
+    const span = Math.max(xMax - xMin, yMax - yMin);
+    this._buildWorkpiece(this.currentPayload, this._thickness(span));
+    return this.materialSimulation ? this.materialSimulation.resolutionMm : null;
+  }
+
+  _buildWorkpiece(payload, thickness) {
+    this._clear(this.workpieceGroup);
+    this.materialSimulation = null;
+    this.materialSurface = null;
+    if (this.materialOptions.enabled && payload.tool && payload.tool.kind === "flat"
+      && payload.timeline?.positions?.length) {
+      const topZMm = this.materialOptions.stockAllowanceMm;
+      this.materialSimulation = new MaterialSimulation({
+      boundary: payload.region.boundary,
+      bounds: payload.region.bounds_mm,
+      radiusMm: payload.tool.radius_mm,
+      bottomZMm: -thickness,
+      timeline: payload.timeline,
+      resolutionMm: this.materialOptions.resolutionMm,
+      topZMm,
+      });
+      this.workpieceGroup.add(this._stockShell(payload.region, thickness, topZMm));
+      this.materialSurface = this._heightfieldSurface(this.materialSimulation);
+      this.workpieceGroup.add(this.materialSurface);
+    } else {
+      this.workpieceGroup.add(this._workpiece(payload.region, thickness));
+    }
   }
 
   // 只在"工件尺寸变了"或第一次出结果时重新取景：
@@ -319,6 +363,15 @@ export class Viewport {
 
   setPlayhead(position, traversedSegments) {
     this.toolGroup.position.set(position[0], position[1], position[2]);
+    if (this.materialSimulation && this.materialSurface
+      && this.materialSimulation.update(traversedSegments)) {
+      const attribute = this.materialSurface.geometry.getAttribute("position");
+      this.materialSimulation.writeHeightsTo(attribute.array);
+      attribute.needsUpdate = true;
+      this.materialSurface.geometry.computeVertexNormals();
+      this.materialSurface.geometry.computeBoundingBox();
+      this.materialSurface.geometry.computeBoundingSphere();
+    }
     if (this.traceLine && traversedSegments !== this._lastTraversed) {
       this._lastTraversed = traversedSegments;
       this.traceLine.geometry.setDrawRange(0, Math.max(0, traversedSegments) * 2);
@@ -401,18 +454,22 @@ export class Viewport {
     return Math.min(Math.max(span * 0.09, 4), 24);
   }
 
-  _workpiece(region, thickness) {
+  _workpiece(region, thickness, topZMm = 0) {
     const material = new THREE.MeshStandardMaterial({
       color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
     });
     if (region.id === "circle") {
       const radius = (region.bounds_mm[0][1] - region.bounds_mm[0][0]) / 2;
-      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, thickness, 128), material);
+      const stockHeight = thickness + topZMm;
+      const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, stockHeight, 128), material
+      );
       mesh.rotation.x = Math.PI / 2;
-      mesh.position.z = -thickness / 2;
+      mesh.position.z = (topZMm - thickness) / 2;
       mesh.receiveShadow = true;
       return mesh;
     }
+
     if (region.id === "ellipse") {
       const shape = new THREE.Shape();
       const boundary = region.boundary;
@@ -424,23 +481,76 @@ export class Viewport {
       });
       shape.closePath();
       const geometry = new THREE.ExtrudeGeometry(shape, {
-        depth: thickness,
+        depth: thickness + topZMm,
         bevelEnabled: false,
       });
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.z = -thickness ;
+      mesh.position.z = -thickness;
       mesh.receiveShadow = true;
       return mesh;
     }
     const side = region.bounds_mm[0][1] - region.bounds_mm[0][0];
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(side, side, thickness), material);
-    mesh.position.z = -thickness /2;
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(side, side, thickness + topZMm), material
+    );
+    mesh.position.z = (topZMm - thickness) / 2;
     mesh.receiveShadow = true;
     return mesh;
   }
 
-  _contour(boundary) {
-    const points = boundary.map((point) => new THREE.Vector3(point[0], point[1], PATH_LIFT_MM * 2));
+  _stockShell(region, thickness, topZMm) {
+    const mesh = this._workpiece(region, thickness, topZMm);
+    mesh.updateMatrix();
+    const originalGeometry = mesh.geometry;
+    const source = originalGeometry.index
+      ? originalGeometry.toNonIndexed()
+      : originalGeometry.clone();
+    const sourcePositions = source.getAttribute("position");
+    const positions = [];
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    for (let index = 0; index + 2 < sourcePositions.count; index += 3) {
+      a.fromBufferAttribute(sourcePositions, index).applyMatrix4(mesh.matrix);
+      b.fromBufferAttribute(sourcePositions, index + 1).applyMatrix4(mesh.matrix);
+      c.fromBufferAttribute(sourcePositions, index + 2).applyMatrix4(mesh.matrix);
+      const normalZ = b.clone().sub(a).cross(c.clone().sub(a)).normalize().z;
+      if (normalZ > 0.95) continue;
+      positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+    }
+    source.dispose();
+    originalGeometry.dispose();
+    mesh.geometry = new THREE.BufferGeometry();
+    mesh.geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    mesh.geometry.computeVertexNormals();
+    mesh.position.set(0, 0, 0);
+    mesh.rotation.set(0, 0, 0);
+    mesh.scale.set(1, 1, 1);
+    mesh.receiveShadow = true;
+    return mesh;
+  }
+
+  _heightfieldSurface(simulation) {
+    const { positions, indices } = simulation.surfaceData();
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
+        side: THREE.DoubleSide,
+      })
+    );
+    mesh.receiveShadow = true;
+    mesh.castShadow = true;
+    return mesh;
+  }
+
+  _contour(boundary, stockTopZMm = 0) {
+    const z = stockTopZMm + PATH_LIFT_MM * 2;
+    const points = boundary.map((point) => new THREE.Vector3(point[0], point[1], z));
     const geometry = new THREE.BufferGeometry().setFromPoints(points);
     return new THREE.LineLoop(
       geometry,

@@ -39,6 +39,7 @@ export class ParameterPanel {
     this.root = options.root;
     this.catalog = options.catalog;
     this.onChange = options.onChange || (() => {});
+    this.onValidationError = options.onValidationError || (() => {});
     this.onDisplayChange = options.onDisplayChange || (() => {});
     this.state = {
       tool: clone(this.catalog.tool.defaults),
@@ -276,10 +277,22 @@ export class ParameterPanel {
       });
     }
     number.addEventListener("change", () => {
+      if (number.value.trim() === "") return;
       let next = Number(number.value);
       if (!Number.isFinite(next)) return;
-      if (spec.min !== null && spec.min !== undefined) next = Math.max(spec.min, next);
-      if (spec.max !== null && spec.max !== undefined) next = Math.min(spec.max, next);
+      const unit = spec.unit ? ` ${spec.unit}` : "";
+      if (spec.min !== null && spec.min !== undefined && next < spec.min) {
+        this.onValidationError(
+          `${spec.label} 不能小于 ${spec.min}${unit}（输入 ${number.value}${unit}）`
+        );
+        return;
+      }
+      if (spec.max !== null && spec.max !== undefined && next > spec.max) {
+        this.onValidationError(
+          `${spec.label} 不能大于 ${spec.max}${unit}（输入 ${number.value}${unit}）`
+        );
+        return;
+      }
       number.value = formatNumber(next);
       if (slider) slider.value = String(next);
       onChange(next);

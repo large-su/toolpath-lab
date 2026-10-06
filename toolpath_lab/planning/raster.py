@@ -56,7 +56,7 @@ class RasterPlanner(Planner):
                 Choice("zigzag", "往复 Zigzag"),
                 Choice("one_way", "单向 One-way"),
             )),
-            spec("stepover_mm", "切宽 ae", K.FLOAT, 6.0, minimum=0.5, maximum=100.0,
+            spec("stepover_mm", "切宽 ae", K.FLOAT, 3.0, minimum=0.5, maximum=100.0,
                  step=0.5, unit="mm", group="刀路", help="相邻两条刀线的间距"),
             spec("direction_deg", "走刀方向", K.FLOAT, 0.0, minimum=0.0, maximum=180.0,
                  step=5.0, unit="°", group="刀路", help="扫描线的行进方向；切宽方向与之垂直"),
@@ -85,6 +85,11 @@ class RasterPlanner(Planner):
         )
         offset = context.tool.footprint_radius_mm
         self._warn_if_stepover_too_large(context, stepover)
+        if offset > 0.0:
+            context.warn(
+                f"栅格刀路端点会越过区域边界 {offset:g} mm，"
+                "上机前请确认毛坯余量、夹具和机床行程"
+            )
 
         boundary = context.boundary
         u_axis = direction_2d(float(context.parameters["direction_deg"]))
@@ -96,8 +101,8 @@ class RasterPlanner(Planner):
         passes: list[tuple[float, float, float]] = []
         for level in levels:
             for interval in scanline_intervals(planar, float(level)):
-                start = interval.start + offset
-                end = interval.end - offset
+                start = interval.start - offset
+                end = interval.end + offset
                 if end - start <= 1e-6:
                     continue
                 passes.append((start, end, float(level)))
@@ -166,10 +171,10 @@ class RasterPlanner(Planner):
 
     @staticmethod
     def _warn_if_stepover_too_large(context: PlanningContext, stepover: float) -> None:
-        if stepover > context.tool.diameter_mm:
+        if stepover >= context.tool.diameter_mm:
             context.warn(
-                f"切宽 {stepover:g} mm 大于刀具直径 {context.tool.diameter_mm:g} mm，"
-                "两刀之间会留下未切除的残余"
+                f"切宽 {stepover:g} mm 不小于刀具直径 {context.tool.diameter_mm:g} mm，"
+                "仿真中可能出现残留脊；建议使用更小切宽并留有搭接"
             )
 
     @staticmethod
@@ -180,6 +185,6 @@ class RasterPlanner(Planner):
         return (
             f"{_MODE_LABELS[mode]}走刀，共 {pass_count} 刀，"
             f"切宽 {stepover:g} mm，走刀方向 {direction:g}°",
-            f"边界内缩一个刀具半径（本刀 R{context.tool.footprint_radius_mm:g} mm），"
+            f"走刀端点沿刀路方向越过区域边界一个刀具半径（本刀 R{context.tool.footprint_radius_mm:g} mm），"
             "安全高度 5 mm、快移 5000 mm/min 为固定值",
         )

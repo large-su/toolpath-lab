@@ -380,6 +380,60 @@ input[type="checkbox"] {
   background: var(--teal-soft);
 }
 
+.material-toolbar {
+  position: absolute;
+  top: 54px;
+  left: 14px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(7, 16, 20, 0.86);
+  color: var(--text-dim);
+  font-size: 10px;
+  backdrop-filter: blur(10px);
+}
+
+.material-toggle,
+.material-resolution {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.material-toggle input {
+  accent-color: var(--teal);
+}
+
+.material-resolution input {
+  width: 76px;
+}
+
+.material-allowance {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.material-allowance input {
+  width: 76px;
+}
+
+.material-resolution output {
+  min-width: 54px;
+  color: var(--teal);
+  font: 9px var(--mono);
+}
+
+.material-toolbar input:disabled {
+  opacity: 0.4;
+}
+
 /* ---------------------------------------------------------------- 统计 */
 .stats {
   position: absolute;

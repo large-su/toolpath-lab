@@ -164,6 +164,19 @@ class ContourPlanner(Planner):
                  step=0.1, unit="mm", group="刀路"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
+            spec(
+                "SAFE_HEIGHT_MM",
+                "安全高度 H",
+                K.FLOAT,
+                5.0,
+                minimum=0.5,
+                maximum=50,
+                step=0.5,
+                unit="mm",
+                group="刀路",
+            ),
+            spec("RAPID_FEED_MM_PER_MIN", "快速进给速度 V", K.FLOAT, 5000.0, minimum=100.0,
+                 maximum=50000.0, step=100.0, unit="mm/min", group="刀路"),
         )
     )
 

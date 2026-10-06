@@ -12,6 +12,9 @@
 
 3. 重启程序——界面"刀路"分组里就会出现"环切(示例插件)"，参数控件自动生成。
 
+首圈在区域外侧留出刀具半径加采样步长的清角余量，以清除矩形角部；使用前需确认机床行程、
+夹具与毛坯允许刀具中心越过区域边界。
+
 **当前限制**：偏置量超过局部内切半径时，环会断开；本实现每个偏置层只保留一条环，
 因此凹形状的窄颈区域会提前结束。需要覆盖这类区域时，可改为每层输出多条环
 （Toolpath 的运动段模型本身支持）。
@@ -188,9 +191,19 @@ class ContourPlanner(Planner):
             float(context.parameters["sample_step_mm"]), "采样步长 sample_step_mm"
         )
         boundary = context.boundary
-        distance = context.tool.footprint_radius_mm
+        radius = context.tool.footprint_radius_mm
+        if radius > 0.0:
+            context.warn(
+                f"环切起始轨迹会越过区域边界约 {radius + sample_step:g} mm，"
+                "用于清除方形角部；上机前请确认毛坯余量、夹具和机床行程"
+            )
 
         rings: list[NDArray[np.float64]] = []
+        if radius > 0.0:
+            outer_ring = offset_polygon(boundary, -(radius + sample_step))
+            if outer_ring is not None:
+                rings.append(outer_ring)
+        distance = 0.0
         while True:
             ring = offset_polygon(boundary, distance)
             if ring is None or abs(signed_area(ring)) < _MIN_RING_AREA_MM2:

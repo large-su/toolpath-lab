@@ -53,19 +53,52 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("SAFE_HEIGHT_MM", keys)
         self.assertIn("RAPID_FEED_MM_PER_MIN", keys)
         self.assertEqual(entry["label"], "栅格刀路")
+        stepover = next(item for item in entry["parameters"] if item["key"] == "stepover_mm")
+        self.assertEqual(stepover["default"], 3.0)
 
 
 class PassLayoutTests(unittest.TestCase):
+    def test_default_stepover_overlaps_half_of_the_default_tool_diameter(self) -> None:
+        outcome = run_plan(
+            planner_id="raster",
+            tool=_tool(),
+            region=build_region("square", {"side_mm": 80.0}),
+        )
+        passes = _cut_moves(outcome.toolpath)
+        levels = sorted({round(float(move.points[0][1]), 6) for move in passes})
+        self.assertTrue(all(gap <= 3.0 + 1e-6 for gap in np.diff(levels)))
+
     def test_pass_count_follows_stepover_and_tool_radius(self) -> None:
         # 80 mm 方形，刀具 D6（足迹半径 3），切宽 6 → v 从 -37 到 37，13 个间隔 + 末刀对齐 = 14
         toolpath = _plan().toolpath
         self.assertEqual(toolpath.pass_count, 14)
 
-    def test_passes_are_inside_the_contour_by_the_tool_radius(self) -> None:
+    def test_passes_cover_the_region_edge_with_tool_radius_overtravel(self) -> None:
         passes = _cut_moves(_plan().toolpath)
         levels = sorted({round(float(move.points[0][1]), 6) for move in passes})
         self.assertAlmostEqual(levels[0], -37.0, places=6)
         self.assertAlmostEqual(levels[-1], 37.0, places=6)
+        self.assertAlmostEqual(float(passes[0].points[0][0]), -43.0, places=6)
+        self.assertAlmostEqual(float(passes[0].points[-1][0]), 43.0, places=6)
+
+    def test_raster_cutter_sweep_reaches_all_sampled_square_stock_points(self) -> None:
+        from toolpath_lab.simulation import HeightField
+
+        outcome = run_plan(
+            planner_id="raster",
+            tool=_tool(),
+            region=build_region("square", {"side_mm": 80.0}),
+        )
+        stock = HeightField(
+            build_region("square", {"side_mm": 80.0}).boundary(),
+            resolution_mm=1.0,
+            top_z_mm=2.0,
+            bottom_z_mm=-5.0,
+        )
+
+        stock.simulate_toolpath(outcome.toolpath, radius_mm=3.0)
+
+        self.assertTrue(np.all(stock.heights_mm[stock.inside] <= 0.0))
 
     def test_each_pass_has_two_points_on_the_machining_plane(self) -> None:
         for move in _cut_moves(_plan().toolpath):
@@ -180,6 +213,36 @@ class SafetyTests(unittest.TestCase):
     def test_large_stepover_is_warned_about(self) -> None:
         outcome = _plan({"stepover_mm": 20.0})
         self.assertTrue(any("切宽" in warning for warning in outcome.warnings))
+
+    def test_stepover_equal_to_tool_diameter_warns_about_lack_of_overlap(self) -> None:
+        outcome = _plan({"stepover_mm": 6.0})
+        self.assertTrue(any("残留脊" in warning for warning in outcome.warnings))
+
+    def test_edge_overtravel_is_reported_for_machine_clearance_check(self) -> None:
+        outcome = _plan()
+        self.assertTrue(any("越过区域边界 3 mm" in warning for warning in outcome.warnings))
+
+    def test_contour_cutter_clears_square_corners(self) -> None:
+        from toolpath_lab.simulation import HeightField
+
+        region = build_region("square", {"side_mm": 80.0})
+        outcome = run_plan(
+            planner_id="contour",
+            tool=_tool(),
+            region=region,
+            parameters={"stepover_mm": 3.0, "sample_step_mm": 0.5},
+        )
+        stock = HeightField(
+            region.boundary(),
+            resolution_mm=0.5,
+            top_z_mm=2.0,
+            bottom_z_mm=-5.0,
+        )
+
+        stock.simulate_toolpath(outcome.toolpath, radius_mm=3.0)
+
+        self.assertTrue(np.all(stock.heights_mm[stock.inside] <= 0.0))
+        self.assertTrue(any("用于清除方形角部" in warning for warning in outcome.warnings))
 
     def test_notes_describe_the_configuration(self) -> None:
         notes = _plan({"mode": "one_way", "stepover_mm": 6.0}).toolpath.notes

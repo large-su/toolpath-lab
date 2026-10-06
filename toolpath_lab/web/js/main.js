@@ -11,6 +11,11 @@ const dom = {
   panel: document.getElementById("panel"),
   viewport: document.getElementById("viewport"),
   viewToolbar: document.getElementById("view-toolbar"),
+  materialEnabled: document.getElementById("material-enabled"),
+  materialResolution: document.getElementById("material-resolution"),
+  materialResolutionValue: document.getElementById("material-resolution-value"),
+  materialAllowance: document.getElementById("material-allowance"),
+  materialAllowanceValue: document.getElementById("material-allowance-value"),
   stats: document.getElementById("stats"),
   banner: document.getElementById("banner"),
   generate: document.getElementById("btn-generate"),
@@ -60,6 +65,7 @@ async function boot() {
   playback.onStateChange = (state) => renderPlaybar(state);
   buildViewToolbar();
   wireAppearanceToolbar();
+  wireMaterialToolbar();
   window.addEventListener("resize", () => viewport.resize());
   window.addEventListener("keydown", (event) => {
     const tag = document.activeElement ? document.activeElement.tagName : "";
@@ -80,6 +86,7 @@ async function boot() {
     root: dom.panel,
     catalog: catalog,
     onChange: scheduleRegenerate,
+    onValidationError: showBanner,
     onDisplayChange: (options) => viewport.setDisplayOptions(options),
   });
   viewport.setDisplayOptions(panel.displayOptions());
@@ -136,6 +143,33 @@ function wireAppearanceToolbar() {
   }
 }
 
+function wireMaterialToolbar() {
+  const updateSimulation = () => {
+    const effectiveResolution = viewport.setMaterialSimulationOptions({
+      enabled: dom.materialEnabled.checked,
+      resolutionMm: Number(dom.materialResolution.value),
+      stockAllowanceMm: Number(dom.materialAllowance.value),
+    });
+    updateMaterialResolutionLabel(effectiveResolution);
+    dom.materialAllowanceValue.textContent = Number(dom.materialAllowance.value).toFixed(1) + " mm";
+  };
+  dom.materialEnabled.addEventListener("change", updateSimulation);
+  dom.materialResolution.addEventListener("input", updateSimulation);
+  dom.materialAllowance.addEventListener("input", updateSimulation);
+}
+
+function updateMaterialResolutionLabel(effectiveResolution) {
+  const selected = Number(dom.materialResolution.value);
+  if (lastResult && lastResult.tool.kind !== "flat") {
+    dom.materialResolutionValue.textContent = "仅支持平底刀";
+  } else if (effectiveResolution && effectiveResolution > selected * 1.05) {
+    dom.materialResolutionValue.textContent = selected.toFixed(1)
+      + " mm (实际 " + effectiveResolution.toFixed(1) + ")";
+  } else {
+    dom.materialResolutionValue.textContent = selected.toFixed(1) + " mm";
+  }
+}
+
 function wireButtons() {
   dom.generate.addEventListener("click", () => regenerate());
   dom.exportButton.addEventListener("click", exportGcode);
@@ -170,6 +204,15 @@ async function regenerate() {
     lastResult = result;
     viewport.setResult(result);
     viewport.setTool(result.tool);
+    const simulationAvailable = result.tool.kind === "flat"
+      && Boolean(result.timeline && result.timeline.positions && result.timeline.positions.length);
+    dom.materialEnabled.disabled = !simulationAvailable;
+    dom.materialResolution.disabled = !simulationAvailable;
+    dom.materialAllowance.disabled = !simulationAvailable;
+    dom.materialAllowanceValue.textContent = Number(dom.materialAllowance.value).toFixed(1) + " mm";
+    updateMaterialResolutionLabel(
+      viewport.materialSimulation ? viewport.materialSimulation.resolutionMm : null
+    );
     playback.load(result.timeline);
     renderStats(result);
     if (result.warnings && result.warnings.length) showBanner(result.warnings.join("；"));

@@ -39,6 +39,22 @@
             <button type="button" data-appearance="white">白色背景</button>
             <button type="button" data-appearance="grid" class="active">网格地面</button>
           </div>
+          <div class="material-toolbar" role="group" aria-label="材料切除仿真">
+            <label class="material-toggle">
+              <input id="material-enabled" type="checkbox" checked />
+              材料切除
+            </label>
+            <label class="material-resolution">
+              网格
+              <input id="material-resolution" type="range" min="0.5" max="4" step="0.5" value="0.5" />
+              <output id="material-resolution-value">0.5 mm</output>
+            </label>
+            <label class="material-allowance">
+              毛坯余量
+              <input id="material-allowance" type="range" min="0" max="10" step="0.5" value="2" />
+              <output id="material-allowance-value">2.0 mm</output>
+            </label>
+          </div>
           <div class="stats" id="stats"></div>
           <div class="banner hidden" id="banner"></div>
         </div>
