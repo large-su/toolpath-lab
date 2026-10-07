@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlsplit
 
 from toolpath_lab import __version__
 from toolpath_lab.core.errors import ParameterError, PlanningError, RegistryError
-from toolpath_lab.export import toolpath_to_gcode
+from toolpath_lab.export import toolpath_to_dxf, toolpath_to_gcode
 from toolpath_lab.server.catalog import catalog_payload
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.server.service import execute_plan
@@ -113,6 +113,8 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             return json_response(result.to_payload())
         if path == "/api/export/gcode" and method == "POST":
             return self._export_gcode(self._read_json())
+        if path == "/api/export/dxf" and method == "POST":
+            return self._export_dxf(self._read_json())
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
 
     def _export_gcode(self, payload: Mapping[str, Any] | None) -> Response:
@@ -127,6 +129,19 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             content,
             content_type="text/plain; charset=utf-8",
             filename=f"toolpath_{result.request.planner_id}_{stamp}.nc",
+        )
+
+    def _export_dxf(self, payload: Mapping[str, Any] | None) -> Response:
+        result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        content = toolpath_to_dxf(
+            result.toolpath,
+            description="\n".join(result.request.header_lines()),
+        )
+        return text_response(
+            content,
+            content_type="application/dxf; charset=utf-8",
+            filename=f"toolpath_{result.request.planner_id}_{stamp}.dxf",
         )
 
     # -- 静态文件 ----------------------------------------------------------

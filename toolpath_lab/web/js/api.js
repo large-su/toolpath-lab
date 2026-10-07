@@ -49,3 +49,25 @@ export async function downloadGcode(payload) {
   URL.revokeObjectURL(url);
   return name;
 }
+
+export async function downloadDxf(payload) {
+  const response = await fetch("/api/export/dxf", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = /filename="?([^"]+)"?/.exec(disposition);
+  const name = match ? match[1] : "toolpath.dxf";
+  const url = URL.createObjectURL(blob);
+  const el = document.createElement("a");
+  el.href = url;
+  el.download = name;
+  document.body.appendChild(el);
+  el.click();
+  el.remove();
+  URL.revokeObjectURL(url);
+  return name;
+}
