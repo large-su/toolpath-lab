@@ -101,7 +101,8 @@ class CatalogTests(ApiTestCase):
         payload = json.loads(body)
         self.assertEqual(status, 200)
         self.assertEqual(
-            [item["id"] for item in payload["planners"]["list"]], ["raster", "contour"]
+            [item["id"] for item in payload["planners"]["list"]],
+            ["raster", "contour", "adaptive_contour"],
         )
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]),

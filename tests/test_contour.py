@@ -56,7 +56,7 @@ def _transitions(toolpath: Toolpath):
 
 class RegistrationTests(unittest.TestCase):
     def test_contour_is_registered_after_raster(self) -> None:
-        self.assertEqual(PLANNERS.ids(), ["raster", "contour"])
+        self.assertEqual(PLANNERS.ids(), ["raster", "contour", "adaptive_contour"])
 
     def test_catalog_exposes_the_contour_parameters(self) -> None:
         entry = {item["id"]: item for item in planner_catalog()}["contour"]

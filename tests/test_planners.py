@@ -42,7 +42,7 @@ def _cut_moves(toolpath: Toolpath):
 class RegistryTests(unittest.TestCase):
     def test_registered_strategies_are_listed_in_import_order(self) -> None:
         # 顺序 = planning/__init__.py 的导入顺序 = 界面上的排列顺序。
-        self.assertEqual(PLANNERS.ids(), ["raster", "contour"])
+        self.assertEqual(PLANNERS.ids(), ["raster", "contour", "adaptive_contour"])
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:
         entry = planner_catalog()[0]
