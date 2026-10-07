@@ -18,6 +18,23 @@ three.module.js、three.core.js、OrbitControls.js、RoomEnvironment.js 四个�
 
 ## 提交前自检
 
+一条命令跑完：
+
+```bash
+python selfcheck.py                # node 不在 PATH 上时跳过前端语法检查
+python selfcheck.py --node <路径>  # 用自带的 node 跑前端与桌面壳语法
+```
+
+它依次做四件事，全过才返回 0：
+
+1. `python -m unittest discover -s tests` 必须全绿；
+2. `python examples/headless_plan.py` 能跑（库路径仍然可用），并写出 NC 文件；
+3. `node --check` 检查 `electron/main.mjs` 与 `toolpath_lab/web/js/*.js`（目录里的模块自动覆盖）；
+4. **HTTP 冒烟**：临时在随机端口起一个服务，把每个区域形状、每个策略、两种导出与
+   400 / 404 / 422 错误路径都走一遍，跑完关掉。
+
+想单独跑某一步，对应的命令是：
+
 ```bash
 python -m unittest discover -s tests        # 必须全绿
 python examples/headless_plan.py            # 库路径仍然可用

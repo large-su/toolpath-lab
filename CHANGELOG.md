@@ -6,6 +6,19 @@
 
 ### 工程
 
+- **新增 `selfcheck.py`：一条命令跑完 CONTRIBUTING 的提交前自检**。CONTRIBUTING 里原本是手敲
+  四条命令、再加"改了界面就打开窗口点一遍"，现在 `python selfcheck.py` 依次做四件事，全过才
+  返回 0：
+  1. 单元测试（`python -m unittest discover -s tests`），并报出用例数与耗时；
+  2. headless 示例能跑并写出 NC 文件（库路径仍然可用）；
+  3. `node --check` 检查 `electron/main.mjs` 与 `toolpath_lab/web/js/*.js`（目录里的模块自动
+     覆盖，新增前端文件不会被漏掉；PATH 上找不到 node 时跳过并说明，可用 `--node` 指定）；
+  4. **HTTP 冒烟**：临时在随机端口起服务，把**每个区域形状**、**每个策略**（统计与覆盖率是否
+     合理、notes 是否非空一并检查）、CSV 行数与刀点数是否一致、NC 是否含 M30、以及 400 / 404 /
+     422 错误路径和静态首页都走一遍，跑完关掉——这一项把此前每轮手工做的接口验证自动化了。
+  失败时退出码 1 并列出失败项与该项的输出（实测把 `web/js/api.js` 改坏后能正确报出
+  SyntaxError 与失败项名，恢复后再次全绿）。CONTRIBUTING 的「提交前自检」一节改为以它为主，
+  同时保留四条单独命令，便于只跑某一步。
 - **按 CONTRIBUTING / docs/extending.md 的要求把文档字符串与注释统一成英文**（用户可见文案仍是
   中文）：这两份文档都在「代码约定」里写了"代码注释与文档字符串用英文"，但仓库里 46 个 Python
   文件中有 134 个文档字符串、56 条注释是中文（连原有的 core / simulation / export / server
