@@ -4,6 +4,26 @@
 
 ## [未发布]
 
+### 工程
+
+- **按 CONTRIBUTING / docs/extending.md 的要求把文档字符串与注释统一成英文**（用户可见文案仍是
+  中文）：这两份文档都在「代码约定」里写了"代码注释与文档字符串用英文"，但仓库里 46 个 Python
+  文件中有 134 个文档字符串、56 条注释是中文（连原有的 core / simulation / export / server
+  也一样），等于这条要求全仓库都没做到。本轮先把 **planning 层与大头文件**转换完：
+  `planning/geometry2d.py`、`coverage.py`、`base.py`、`contour.py`、`adaptive.py`、`raster.py`
+  ——11,926 个中文字降到 5,809 个（约 51%）。转换过程中用"AST 去掉文档字符串后逐文件比对"
+  证明**代码一行没动**（唯一例外是 `geometry2d.py`：`Callable` 只在注解里用过却没导入，靠
+  `from __future__ import annotations` 侥幸没报错，顺手补上了导入）。
+- **新增 `tests/test_conventions.py`（5 项）**：把这两条约定变成机器检查。
+  - 没有中文文档字符串/注释的硬性检查，**外带一份 `_PENDING_ENGLISH` 待转换清单**——
+    新文件一律不许违规，转换完一个就要从清单里划掉一个；清单里的文件若已经没有了中文
+    （转换完忘了划掉、或路径写错）测试也会失败。清单只减不增，剩余工作量就写在仓库里。
+  - 另一半检查：能力目录里的 label / help / choices 必须含中文，三个策略的 notes 与
+    warnings 也必须含中文（`contour` 不用警告表达不可行，它抛 PlanningError，测试里写明了）。
+- **修过时文档**：`docs/extending.md` §1 还写着"环切自带它需要的等距偏置几何"（偏置几何早已
+  搬到 `planning/geometry2d.py`）、"仓库里有两个可以直接读的完整例子"（现在是三个，多了自适应
+  环切）；§5 的约定现在指向 `tests/test_conventions.py`。
+
 ### 性能
 
 - **偏置几何的三处剪枝**（都是可证明不改变结果，`tests/test_geometry2d.py` 的 `PrefilterTests`
@@ -157,7 +177,7 @@
   `surface` 分组与不存在的 `rectangle` 形状、`core/parameters.py` 指向的 `docs/parameters.md`
   ——这些都是简化版本里已经删掉的能力，文档不该继续承诺。
 
-### 工程
+### 测试
 
 - 新增 `tests/test_motion_parameters.py`（20 项）：参数声明与默认值、两个策略都吃
   `safe_height_mm` / `rapid_feed_mm_per_min`、0 高度不抬刀、快移速度只影响时间不影响长度、

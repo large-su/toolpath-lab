@@ -5,8 +5,11 @@
 
 ## 1. 新增一个刀路策略（推荐从这里开始）
 
-仓库里有两个可以直接读的完整例子：内置的 [contour.py](../toolpath_lab/planning/contour.py)（环切，
-自带它需要的等距偏置几何）与同源的模板 [examples/plugins/contour_planner.py](../examples/plugins/contour_planner.py)。
+仓库里有三个可以直接读的完整例子：[raster.py](../toolpath_lab/planning/raster.py)（栅格，最短的
+一条路径）、[contour.py](../toolpath_lab/planning/contour.py)（环切）与
+[adaptive.py](../toolpath_lab/planning/adaptive.py)（自适应环切：继承环切策略、只重写 `plan()`，
+演示"策略套策略"）。偏置几何现在放在 `planning/geometry2d.py`，不再写在策略里；只做单环的旧版
+模板见 [examples/plugins/contour_planner.py](../examples/plugins/contour_planner.py)。
 新增一个策略只要两步——放一个模块，再在 `planning/__init__.py` 里导入一行：
 
 ```python
@@ -192,5 +195,7 @@ def toolpath_to_xxx(toolpath: Toolpath, *, decimals: int = 3, **options) -> str:
 - 单位：毫米、秒、度；角度只在 API 边界出现，核心内部用弧度；
 - 坐标：右手系、Z 轴向上、XY 是加工平面；数组一律 float64；
 - 错误：参数问题抛 ParameterError（HTTP 400），几何不可行抛 PlanningError（HTTP 422）；
-- 用户可见文案用中文（放在 label / help），代码注释与文档字符串用英文；
+- 用户可见文案用中文（放在 label / help），代码注释与文档字符串用英文
+  （这两条由 `tests/test_conventions.py` 机器检查；还没转换的旧文件列在那里的 `_PENDING_ENGLISH`
+  里，清单只会变短）；
 - 每个新能力都要补测试，`python -m unittest discover -s tests` 必须全绿。

@@ -1,19 +1,25 @@
-"""刀路覆盖率分析：这条刀路把区域切干净了没有。
+"""Toolpath coverage analysis: does this toolpath machine the region completely?
 
-平面加工最容易出问题的往往不是"路径形状对不对"，而是"有没有漏掉一块"：切宽大于刀具直径会
-留下残余条带，边界处理选成"贴轮廓"会切出区域，环切在窄区域里可能剩中心一块没走到。
-这里把"刀具扫过的面积"和"区域面积"比一遍，给出未切除面积、比例，以及未切除连通块的位置。
+In flat machining the usual problem is not the shape of the path but a piece that was missed: a
+stepover larger than the tool diameter leaves residual strips, "follow the contour" boundary mode
+machines outside the region, and contouring a narrow region can leave the centre untouched. This
+module compares "the area the tool swept" against "the area of the region" and reports the uncut
+area, its ratio, and where the uncut patches are.
 
-做法：在区域包围盒上布一层网格，逐格判断
+How it works: lay a grid over the region's bounding box and decide cell by cell
 
-1. 格心是否在区域内——复用栅格刀路那套扫描线区间；
-2. 格心到任意一段**去材料**的运动（切削 / 连接，快移不算）的距离是否 <= 刀具足迹半径。
+1. whether the cell centre is inside the region -- reusing the scanline intervals of the raster
+   strategy;
+2. whether the cell centre is within the tool's footprint radius of any **material removing** move
+   (cut or link; rapids do not remove material).
 
-刀具按足迹半径当作圆盘：平底刀在平面上的扫掠就是这样（球头 / 圆鼻刀将来启用时，
-这里的半径要跟着改）。加工面固定是 Z = 0，所以只算平面距离。
+The tool is treated as a disc of its footprint radius: that is what a flat end mill sweeps on a
+flat face (once ball or bull nose tools are enabled, this radius has to change with the tool).
+The machining plane is fixed at Z = 0, so only planar distances matter.
 
-放在 planning 层是因为它和策略共用同一套平面几何（`geometry2d`），而分层约定要求
-`planning` / `simulation` / `export` 只依赖 `core`——把几何再抄一份到别的层并不划算。
+It lives in the planning layer because it shares the planar geometry (`geometry2d`) with the
+strategies, and the layering rule says `planning` / `simulation` / `export` may only depend on
+`core` -- copying the geometry into another layer would not pay off.
 """
 
 from __future__ import annotations
@@ -35,22 +41,25 @@ from toolpath_lab.planning.geometry2d import (
     signed_area,
 )
 
-#: 默认网格边长（mm）：太小会拖慢一次规划，太大又看不出小块漏切。
+#: Default cell size (mm): too small slows a plan down, too large hides small missed spots.
 DEFAULT_CELL_MM = 0.5
-#: 网格格数上限：大区域会自动放大格边长，保证一次分析的开销有界。
+#: Upper bound on the number of cells: large regions grow the cell size so the cost stays bounded.
 MAX_CELLS = 400_000
-#: 最多报告几块未切除区域（其余只计入总数）。
+#: How many uncut patches are reported individually (the rest only count towards the total).
 MAX_PATCHES = 8
-#: 最多输出多少个未切除矩形（给三维叠加显示用）：成片漏切通常是几个大矩形，够用了。
+#: How many uncut rectangles are emitted for the 3D overlay: a missed band is usually a few big
+#: rectangles, and that is enough.
 MAX_RECTS = 800
-#: 未切除面积占比超过这个值才提醒：圆刀在方形的尖角处、曲线区域的多边形逼近处总会留一点点，
-#: 那是几何必然，不该每次都弹提醒。真正要提醒的是"成片漏切"（切宽过大、环切剩中心）。
+#: Only warn above this uncut ratio: a round tool always leaves a little at the sharp corners of a
+#: square and where a curve is approximated by chords, which is unavoidable geometry and should not
+#: pop up a warning every time. What deserves a warning is a whole missed band (too large a
+#: stepover, contouring that leaves the centre).
 WARN_UNCUT_RATIO = 0.02
 
 
 @dataclass(frozen=True, slots=True)
 class UncutPatch:
-    """一块没切到的区域（都是网格量级的位置，够用来定位问题）。"""
+    """One patch that was not machined (positions are grid-accurate, enough to locate the problem)."""
 
     area_mm2: float
     centre_mm: tuple[float, float]
@@ -66,7 +75,7 @@ class UncutPatch:
 
 @dataclass(frozen=True, slots=True)
 class Coverage:
-    """一次覆盖率分析的结果。"""
+    """Result of one coverage analysis."""
 
     cell_mm: float
     region_area_mm2: float
@@ -90,7 +99,7 @@ class Coverage:
             "ratio": round(self.ratio, 6),
             "patch_count": self.patch_count,
             "patches": [patch.describe() for patch in self.patches],
-            # 未切除格子合并成的矩形（x0, y0, x1, y1，mm），给三维叠加显示用
+            # Uncut cells merged into rectangles (x0, y0, x1, y1 in mm) for the 3D overlay
             "uncut_rects": [
                 [round(value, 4) for value in rect] for rect in self.uncut_rects
             ],
@@ -99,14 +108,14 @@ class Coverage:
 
 
 def _grid_step(polygon: NDArray[np.float64], cell_mm: float) -> float:
-    """按区域面积把格边长限制在合理范围：大区域自动放大，免得格数爆掉。"""
+    """Keep the cell size sensible for the region area: large regions grow it, cells stay bounded."""
 
     area = max(abs(signed_area(polygon)), 1.0)
     return max(float(cell_mm), sqrt(area / MAX_CELLS))
 
 
 def _cutting_segments(toolpath: Toolpath) -> list[tuple[NDArray[np.float64], NDArray[np.float64]]]:
-    """去材料的运动段（切削与连接）；快移不切材料，不参与覆盖。"""
+    """Material removing segments (cut and link); rapids do not remove material and never count."""
 
     segments: list[tuple[NDArray[np.float64], NDArray[np.float64]]] = []
     for move in toolpath.moves:
@@ -123,7 +132,7 @@ def _inside_mask(
     ys: NDArray[np.float64],
     xs: NDArray[np.float64],
 ) -> NDArray[np.bool_]:
-    """逐行用扫描线区间标记"格心落在区域内"。"""
+    """Mark "cell centre inside the region" row by row, using scanline intervals."""
 
     mask = np.zeros((ys.shape[0], xs.shape[0]), dtype=bool)
     for row, y in enumerate(ys):
@@ -139,7 +148,7 @@ def _covered_mask(
     ys: NDArray[np.float64],
     cell_mm: float,
 ) -> NDArray[np.bool_]:
-    """刀具扫过的格子：每段运动只处理它外扩一个半径后的那小块网格。"""
+    """Cells swept by the tool: every move only touches the small grid block around it."""
 
     covered = np.zeros((ys.shape[0], xs.shape[0]), dtype=bool)
     if radius <= 0.0 or not segments:
@@ -172,7 +181,10 @@ def _covered_mask(
 
 
 def _label_patches(uncut: NDArray[np.bool_]) -> list[tuple[int, int, int, int, int]]:
-    """把未切除格子按行切成游程并合并相邻行，返回 (面积格数, 行起, 行止, 列起, 列止)。"""
+    """Split uncut cells into row runs and union adjacent rows.
+
+    Returns (cell count, first row, last row, first column, last column) per patch.
+    """
 
     rows = uncut.shape[0]
     runs: list[tuple[int, int, int]] = []
@@ -228,10 +240,11 @@ def _label_patches(uncut: NDArray[np.bool_]) -> list[tuple[int, int, int, int, i
 def _merge_rectangles(
     uncut: NDArray[np.bool_], limit: int
 ) -> tuple[list[tuple[int, int, int, int]], bool]:
-    """把未切除格子贪心合并成尽量少的矩形，返回格坐标 (列起, 行起, 列止, 行止) 与是否被截断。
+    """Greedily merge uncut cells into as few rectangles as possible.
 
-    先按行扫出连续段，再尽量往下扩；成片漏切（条带、中心残留）因此会变成几个大矩形，
-    载荷小、画起来也简单。
+    Returns grid coordinates (first column, first row, last column, last row) and whether the limit
+    truncated the list. Row runs are extended downwards as far as possible, so a whole missed band
+    becomes a few big rectangles: small payload, easy to draw.
     """
 
     rows, columns = uncut.shape
@@ -264,7 +277,7 @@ def measure_coverage(
     cell_mm: float = DEFAULT_CELL_MM,
     max_rects: int = MAX_RECTS,
 ) -> Coverage:
-    """量一下这条刀路在给定区域上切干净了没有。"""
+    """Measure whether this toolpath machines the given region completely."""
 
     polygon = ensure_ccw(region.boundary())
     x_min, x_max, y_min, y_max = bounding_box(polygon)
@@ -326,7 +339,7 @@ def measure_coverage(
 
 
 def coverage_warnings(coverage: Coverage) -> list[str]:
-    """未切除得比较多时给一条提醒（和策略的提醒一起显示在界面上）。"""
+    """Warn when a lot is left uncut (shown together with the strategy's own warnings)."""
 
     if coverage.uncut_area_mm2 <= 0.0:
         return []

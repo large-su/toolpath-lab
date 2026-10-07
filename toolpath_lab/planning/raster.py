@@ -1,21 +1,24 @@
-"""栅格（平行扫描线）刀路。
+"""Raster (parallel scanline) toolpath.
 
-两种模式：
+Two modes:
 
-- **往复 Zigzag**：奇数刀反向，相邻两刀在端头直接连过去，效率高；
-- **单向 One-way**：每刀都朝同一个方向，刀与刀之间抬刀到安全面再回到起点，
-  慢一些，但每一刀的切削状态一致（顺铣/逆铣方向固定）。
+- **Zigzag**: every other pass runs the other way and neighbouring passes are joined at their ends,
+  which is efficient;
+- **One-way**: every pass runs the same way, and between passes the tool retracts to the safe height
+  and comes back to the start; slower, but the cutting conditions are identical for every pass
+  (climb/conventional stays fixed).
 
-做法很简单，也是这个基座最值得读的一段代码：
+The recipe is simple, and this is the piece of the base worth reading first:
 
-1. 把区域轮廓旋转到"走刀坐标系"：u 沿走刀方向，v 垂直于它；
-2. 在 v 方向每隔一个切宽布一条刀线；
-3. 每条刀线用扫描线求交，得到它在区域内部的区间（圆形是弦，方形是整条）；
-4. 区间两端各内缩一个刀具足迹半径，得到这一刀的起点和终点；
-5. 按模式决定方向与刀间连接，补上下刀和抬刀。
+1. rotate the region outline into the "cutting frame": u along the cutting direction, v across it;
+2. lay one pass line every stepover in v;
+3. intersect every pass line with the region (scanline), giving the intervals inside it (a chord for
+   a circle, the full width for a square);
+4. shrink both ends of an interval by the tool's footprint radius to get the pass's start and end;
+5. let the mode decide the direction and the connection between passes, then add plunge and retract.
 
-一刀只有两个点，因为加工面是平面——这正是"基座"该有的样子：想加工曲面时，
-再把每条刀线按采样步长离散即可。
+A pass has only two points because the machining plane is flat -- which is exactly what a base
+should look like: to machine a curved surface, discretise each pass line at the sampling step.
 """
 
 from __future__ import annotations
@@ -39,19 +42,22 @@ from toolpath_lab.planning.registry import PLANNERS
 
 _MODE_LABELS = {"zigzag": "往复", "one_way": "单向"}
 
-#: 边界处理方式 → 说明文案。
-#: 不提供"外扩（负偏置）"：扫描线在轮廓外取不到区间，负偏置会让 v 方向的刀线被静默丢掉，
-#: 结果是 u 方向切出轮廓、v 方向却留下一条不对称的未切带——那不是"外扩"，是错的。
-#: 想少切一圈就用 stock_allowance_mm（沿轮廓留余量），它的几何是自洽的。
+#: Boundary handling -> wording.
+#: "Offset outwards (negative offset)" is deliberately not offered: a scanline cannot produce
+#: intervals outside the outline, so a negative offset silently drops the v-direction pass lines,
+#: leaving the cut outside the region in u while an asymmetric uncut band remains in v -- that is
+#: not "offsetting outwards", it is simply wrong. To leave material, use stock_allowance_mm (an
+#: allowance along the outline), whose geometry is self-consistent.
 _BOUNDARY_LABELS = {"inset": "内缩一个刀具半径", "none": "贴轮廓（不内缩）"}
 
-#: 末刀余量小于切宽的多少倍时补一刀，保证区域被切满。
+#: Add one more pass when the leftover at the last pass is below this fraction of the stepover, so
+#: the region really gets machined out.
 _ALIGN_TOLERANCE = 0.05
 
 
 @PLANNERS.register
 class RasterPlanner(Planner):
-    """平行扫描线，往复或单向。"""
+    """Parallel scanlines, zigzag or one-way."""
 
     id: ClassVar[str] = "raster"
     label: ClassVar[str] = "栅格刀路"
@@ -139,10 +145,10 @@ class RasterPlanner(Planner):
             notes=self._notes(context, mode, stepover, len(passes)),
         )
 
-    # -- 内部步骤 ----------------------------------------------------------
+    # -- internal steps ----------------------------------------------------
     @staticmethod
     def _boundary_offset(context: PlanningContext) -> float:
-        """边界处理方式 + 边界余量 → 刀路相对区域轮廓的偏置量（正值内缩，0 表示贴轮廓）。"""
+        """Boundary mode plus allowance -> offset of the path from the outline (positive insets)."""
 
         mode = str(context.parameters.get("boundary_mode", "inset"))
         if mode == "none":
@@ -165,7 +171,7 @@ class RasterPlanner(Planner):
     def _pass_levels(
         v_values: np.ndarray, stepover: float, offset: float
     ) -> np.ndarray:
-        """按切宽在 v 方向布刀，两端各内缩一个刀具足迹半径。"""
+        """Lay passes across v at the stepover, insetting both ends by the tool footprint radius."""
 
         v_start = float(v_values.min()) + offset
         v_end = float(v_values.max()) - offset

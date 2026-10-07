@@ -1,43 +1,58 @@
-"""刀路策略用到的平面多边形工具。
+"""Planar polygon helpers used by the toolpath strategies.
 
-这里有两个"重活"：
+Two heavy lifting jobs live here:
 
-- `scanline_intervals`：把一条直线与多边形求交，按偶奇规则配对成若干"内部区间"。栅格刀路
-  就是靠它在一刀之内找出从哪里切到哪里，方形、圆形、U 形、以及将来任何形状都用同一套代码；
-- `offset_loops`：多边形向内偏置，并且保留**每层可能出现的多条环**。环切靠它逐圈向内；
-  凹形状的细颈被偏置吃掉之后会把形状切成几块，这时必须输出多条互不相连的环。
+- `scanline_intervals`: intersect a straight line with a polygon and pair the crossings by the
+  even-odd rule into "inside" intervals. The raster strategy uses it to find where a pass starts
+  and ends, so squares, circles, U shapes and any future shape share one code path.
+- `offset_loops`: offset a polygon inwards and keep **every loop a layer may produce**. The
+  contour strategy walks inwards ring by ring; once a narrow neck is eaten away by the offset the
+  shape splits into several pieces, and each piece has to come out as its own loop.
 
-向内偏置（侵蚀）的做法，四步：
+Inward offsetting (erosion) happens in four steps:
 
-1. **图元**：每条边向内平移一个偏置量得到线段，两端各留一点延长量（见 `_MARGIN_FACTOR`——
-   斜接点几乎总落在线段之内，延长只是数值余量）；每个**凹角**补半径等于偏置量的圆弧并离散成弦。
-   凸角不需要圆弧——侵蚀里凸角就是尖的，斜接点由两条平移线的交点自然给出；凹角才必须是圆弧。
-   为什么用"边 + 凹角圆弧"就够了：区域内部任一点到边界的最近点，要么落在某条边上，
-   要么落在某个凹角顶点上，凸角永远不会是最近点（它到两边的距离都不大于到它的距离）。
-2. **求交切分**：把每条线段在所有交点处切开，交点坐标两边共用，于是"斜接点""圆弧切进来的
-   那一点"都成了共享节点——这一步是能不能接成环的关键。
-3. **取等距线**：只留下"在多边形内部、且到边界距离 ≈ 偏置量"的子段。更靠里的是区域内部，
-   不是偏置区域的边界；延长出来的部分是无效的，在这里被滤掉。
-4. **接环**：把端点并成节点后按"转角最小"接成闭环——偏置曲线穿过这种节点时就是直着过去的。
+1. **Primitives**: shift every edge inwards by the offset distance to get a segment, leaving a
+   small extension at both ends (see `_MARGIN_FACTOR` -- a miter point almost always falls inside
+   the segment, so the extension is only numerical slack); then add a circular arc of radius equal
+   to the offset distance at every **reflex** corner and discretise it into chords. Convex corners
+   need no arc: in an erosion the convex corner stays sharp and the miter point falls out of the
+   intersection of the two shifted lines. "Edges plus reflex arcs" is enough because the nearest
+   boundary point of any interior point either lies on an edge or on a reflex vertex -- a convex
+   vertex is never the nearest point (it is no farther from the two adjacent edges than from
+   itself).
+2. **Split at intersections**: cut every segment at all of its crossings, sharing the intersection
+   coordinates between both sides, so "miter point" and "point where an arc joins" become shared
+   nodes. This is what makes chaining into loops possible at all.
+3. **Keep the equidistant pieces**: only keep sub-segments that are "inside the polygon and at a
+   distance ~ offset distance from the boundary". Anything further in is interior, not offset
+   boundary; the extended parts are invalid and get filtered out here.
+4. **Chain into loops**: merge the endpoints into nodes and chain by "smallest turn" -- the offset
+   curve goes straight through such a node.
 
-性能上做了三处"先便宜后贵"的剪枝，都是可证明不改变结果的（`tests/test_geometry2d.py` 的
-`PrefilterTests` 逐位钉住）：
+Three "cheap before expensive" prunings keep this fast. All of them are provably result
+preserving, and `PrefilterTests` in `tests/test_geometry2d.py` pins them bit for bit:
 
-- 两两求交只比较**包围盒同格**的线段对（相交的线段包围盒必然重叠，所以不会漏）；
-- 判"到边界距离 ≈ 偏置量"时先用**支撑直线**筛掉一批边（点到线段的距离 ≥ 点到其直线的距离，
-  所以最近边一定在候选里）；
-- 切分之前先筛掉**不合法**的交点（合法性只在合法交点处变化，其余交点切出来的两段状态相同）。
+- only compare segment pairs whose **bounding boxes share a grid cell** (intersecting segments
+  always overlap in their boxes, so nothing is missed);
+- when testing "distance to the boundary ~ offset distance", first drop edges via their
+  **supporting lines** (the distance to a segment is never smaller than the distance to its line,
+  so the nearest edge always survives);
+- drop **invalid crossings** before splitting (validity only changes at valid crossings, so the two
+  pieces cut at an invalid crossing have the same status).
 
-大偏置量是压力最大的情形：平移线段比偏置周长还长，互相穿得厉害（直径 80 的圆、偏置 33 时
-180 条线段有 1800 个交点、3780 个子段，其中只有 180 个合法）。这三处剪枝让圆形环切一次规划
-从 0.76 s 降到 0.22 s，且输出逐位不变。
+Large offsets are the worst case: the shifted segments are longer than the offset perimeter and
+cross each other heavily (an 80 mm circle discretised into 180 edges offset by 33 produces 1800
+crossings and 3780 sub-segments, only 180 of which are valid). The three prunings bring one contour
+plan of that circle from 0.76 s down to 0.22 s with bit-identical output.
 
-偏置与重采样本来写在环切策略里（examples/plugins/contour_planner.py 保留了一份单环的旧版），
-按当时的约定"需要时再抄进主程序"，现在抄进来了。
+Offsetting and resampling used to live in the contour strategy (examples/plugins/contour_planner.py
+keeps a single-loop copy of that old version); following the convention "copy it into the main
+program when you need it", they now live here.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from math import atan2, ceil, cos, floor, pi, sin
 from typing import NamedTuple
 
@@ -45,33 +60,41 @@ import numpy as np
 from numpy.typing import NDArray
 
 _EPS = 1e-9
-#: 长度小于这个值的线段直接丢掉（mm），避免量化噪声变出一堆零长度图元。
+#: Segments shorter than this (mm) are dropped, so quantisation noise cannot create zero-length
+#: primitives.
 _MIN_PIECE_MM = 1e-9
-#: 凹角圆弧离散时允许的最大圆心角（弧度）：弦长再小也不至于把圆弧切得太碎。
+#: Largest central angle (radians) allowed when discretising a reflex arc: chords never get
+#: absurdly short even for small radii.
 _MAX_ARC_STEP_RAD = 0.35
-#: 少于这么多条边时不去筛交点：形状简单时交点本来就少，筛一遍的固定开销反而更贵。
+#: Below this edge count the crossings are not filtered: simple shapes have few crossings anyway,
+#: and one filtering pass costs more than it saves.
 _CROSSING_FILTER_MIN_EDGES = 32
-#: 平移线段两端延长的倍数（×偏置量）。延长只是**数值余量**，不是正确性的开关：
-#: 斜接点落在平移线段之外的那个凸角，它两侧的边长 L 必然小于需要的延长 d·tan(转角/2)，
-#: 于是这一点附近的材料宽度最大只有 2L·sin(内角/2) < 2d——也就是比刀具还窄，早就被整个
-#: 侵蚀掉了，那条边根本不该出现在偏置边界上。所以这里给一个小余量就够了。
+#: How far the shifted segments are extended at both ends, as a multiple of the offset distance.
+#: The extension is **numerical slack**, not a correctness switch: at a convex corner whose miter
+#: point falls outside the shifted segment, the two adjacent edges are necessarily shorter than the
+#: required reach d*tan(turn/2), so the material there is at most 2L*sin(interior/2) < 2d wide --
+#: narrower than the tool, fully eroded away, and that edge should not appear on the offset
+#: boundary at all. A small margin therefore suffices.
 _MARGIN_FACTOR = 4.0
-#: 节点量化的网格（mm）：端点吸附到交点之后坐标已经严格一致，这里只吸收浮点噪声。
+#: Quantisation grid (mm) for nodes: endpoints are snapped to intersections so their coordinates
+#: already match exactly; this only absorbs floating point noise.
 _NODE_GRID_MM = 1e-6
-#: 直线段的等距线容差（相对偏置量）：直线段本来没有离散误差，容差只吸收浮点噪声；
-#: 容差留大了会把斜接点外侧那一小截延长线也当成合法段，接环时就走错路。
+#: Tolerance for the equidistant line of a straight segment, relative to the offset distance. A
+#: straight segment has no discretisation error, so the tolerance only absorbs floating point
+#: noise; too loose a tolerance also accepts the bit of extension outside a miter point and makes
+#: the chaining take a wrong turn.
 _LINE_TOLERANCE_RATIO = 1e-7
 
 
 class Interval(NamedTuple):
-    """一条扫描线落在区域内部的区间。"""
+    """One scanline interval lying inside the region."""
 
     start: float
     end: float
 
 
 def signed_area(polygon: NDArray[np.float64]) -> float:
-    """多边形有向面积，逆时针为正。"""
+    """Signed polygon area, positive for counter-clockwise winding."""
 
     x = polygon[:, 0]
     y = polygon[:, 1]
@@ -79,7 +102,7 @@ def signed_area(polygon: NDArray[np.float64]) -> float:
 
 
 def ensure_ccw(polygon: NDArray[np.float64]) -> NDArray[np.float64]:
-    """去掉重复点并保证逆时针。"""
+    """Drop repeated points and make the winding counter-clockwise."""
 
     points = np.asarray(polygon, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 2 or points.shape[0] < 3:
@@ -98,7 +121,7 @@ def ensure_ccw(polygon: NDArray[np.float64]) -> NDArray[np.float64]:
 
 
 def bounding_box(polygon: NDArray[np.float64]) -> tuple[float, float, float, float]:
-    """(x_min, x_max, y_min, y_max)。"""
+    """Return (x_min, x_max, y_min, y_max)."""
 
     points = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
     return (
@@ -110,9 +133,10 @@ def bounding_box(polygon: NDArray[np.float64]) -> tuple[float, float, float, flo
 
 
 def scanline_intervals(polygon: NDArray[np.float64], level: float) -> list[Interval]:
-    """直线 y = level 落在多边形内部的区间，按 x 递增排列。
+    """Intervals of the line y = level that lie inside the polygon, ordered by x.
 
-    用偶奇规则：凹多边形会得到多段，一条刀线因此可以变成几段独立刀轨。
+    Uses the even-odd rule, so a concave polygon yields several intervals and one pass can become
+    several independent toolpaths.
     """
 
     x0 = polygon[:, 0]
@@ -131,9 +155,9 @@ def scanline_intervals(polygon: NDArray[np.float64], level: float) -> list[Inter
     return [Interval(float(a), float(b)) for a, b in pairs if b - a > _EPS]
 
 
-# ---------------------------------------------------------------- 多边形工具
+# ---------------------------------------------------------------- polygon helpers
 def inward_normals(polygon: NDArray[np.float64]) -> NDArray[np.float64]:
-    """每条边的单位左法向（逆时针多边形时指向内部）。"""
+    """Unit left normal of every edge (points inwards for a counter-clockwise polygon)."""
 
     edge = np.roll(polygon, -1, axis=0) - polygon
     length = np.linalg.norm(edge, axis=1, keepdims=True)
@@ -144,7 +168,7 @@ def inward_normals(polygon: NDArray[np.float64]) -> NDArray[np.float64]:
 def boundary_edges(
     polygon: NDArray[np.float64],
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    """预先算好各边的起点、方向向量与长度平方：批量测距时反复用得到。"""
+    """Pre-compute each edge's start, direction vector and squared length for batch distance work."""
 
     start = np.asarray(polygon, dtype=np.float64)
     edge = np.roll(start, -1, axis=0) - start
@@ -156,7 +180,7 @@ def distance_to_edges(
     points: NDArray[np.float64],
     edges: tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]],
 ) -> NDArray[np.float64]:
-    """每个点到多边形各边的最近距离（边已经预先算好）。"""
+    """Distance from every point to the nearest polygon edge (edges pre-computed)."""
 
     start, edge, squared = edges
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)[:, None, :]
@@ -168,7 +192,7 @@ def distance_to_edges(
 def distance_to_boundary(
     points: NDArray[np.float64], polygon: NDArray[np.float64]
 ) -> NDArray[np.float64]:
-    """每个点到多边形各边的最近距离。"""
+    """Distance from every point to the nearest polygon edge."""
 
     return distance_to_edges(points, boundary_edges(polygon))
 
@@ -176,9 +200,10 @@ def distance_to_boundary(
 def point_in_polygon(
     points: NDArray[np.float64], polygon: NDArray[np.float64]
 ) -> NDArray[np.bool_]:
-    """射线法判断每个点是否在多边形内部。
+    """Ray casting test per point.
 
-    正好落在边界上的点结果未定义（两种都可能），调用方不要依赖它。
+    Points exactly on the boundary have an undefined result (both answers occur); callers must not
+    rely on it.
     """
 
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
@@ -201,7 +226,7 @@ def on_offset_boundary(
     *,
     tolerance: float,
 ) -> NDArray[np.bool_]:
-    """点是否落在偏置区域的边界上：在多边形内部，且到边界的距离约等于偏置量。"""
+    """Whether points lie on the offset boundary: inside the polygon and about `distance` away."""
 
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
     inside = point_in_polygon(pts, polygon)
@@ -209,7 +234,7 @@ def on_offset_boundary(
     return inside & (gaps <= tolerance)
 
 
-# ---------------------------------------------------------------- 向内偏置
+# ---------------------------------------------------------------- inward offset
 def offset_primitives(
     polygon: NDArray[np.float64],
     distance: float,
@@ -217,13 +242,16 @@ def offset_primitives(
     chord_mm: float = 0.5,
     margin_factor: float = _MARGIN_FACTOR,
 ) -> list[tuple[NDArray[np.float64], NDArray[np.float64], bool]]:
-    """偏置图元：`(起点, 终点, 是不是圆弧的弦)`。
+    """Offset primitives: `(start, end, is_arc_chord)`.
 
-    每条边向内平移一个偏置量得到线段，凸角两端各按 `偏置量 × tan(转角/2)` 延长一点（再截到
-    `_MARGIN_FACTOR` 倍）。这个延长只是数值余量：斜接点是相邻两条平移线的交点，只有它落在
-    线段之外时才需要延长，而那种角的局部材料必然比刀具还窄、整块会被侵蚀掉（见 `_MARGIN_FACTOR`
-    的说明）。按顶点逐个算而不是统一延长一大截，是因为统一延长会让曲线形状凭空多出一堆交点。
-    凹角端不需要延长：那里由圆弧接头补上，圆弧的端点正好落在平移线段的端点上。
+    Every edge is shifted inwards by the offset distance; at a convex corner both ends are extended
+    by `distance * tan(turn / 2)` (capped at `_MARGIN_FACTOR` times the distance). That extension is
+    numerical slack only: a miter point is the intersection of two adjacent shifted lines, it needs
+    the extension only when it falls outside the segment, and such a corner is necessarily narrower
+    than the tool and eroded away completely (see `_MARGIN_FACTOR`). The reach is computed per
+    vertex rather than extending everything by a large fixed amount, because a uniform extension
+    makes curved shapes sprout a pile of useless crossings. Reflex ends need no extension: the arc
+    join covers them, and the arc endpoints land exactly on the shifted segment endpoints.
     """
 
     count = polygon.shape[0]
@@ -233,7 +261,7 @@ def offset_primitives(
     next_edge = np.roll(polygon, -1, axis=0) - polygon
     cross = previous_edge[:, 0] * next_edge[:, 1] - previous_edge[:, 1] * next_edge[:, 0]
     dot = np.sum(previous_edge * next_edge, axis=1)
-    turn = np.arctan2(cross, dot)  # 带符号的转角：正 = 左转 = 凸角
+    turn = np.arctan2(cross, dot)  # signed turn: positive = left turn = convex corner
     limit = margin_factor * distance
     reach = np.where(
         turn > 0.0,
@@ -260,7 +288,7 @@ def offset_primitives(
 
     for index in range(count):
         if turn[index] >= 0.0:
-            # 凸角：斜接点由两条平移线段的交点自然给出，不需要圆弧。
+            # Convex corner: the miter point comes out of the two shifted lines, no arc needed.
             continue
         center = polygon[index]
         n_prev = previous_normal[index]
@@ -283,13 +311,15 @@ def offset_primitives(
 
 
 def snap_to_nodes(points: list[NDArray[np.float64]], snap: float):
-    """返回一个函数：把点吸附到最近的给定节点（距离不超过 snap），否则原样返回。
+    """Return a function that snaps a point to the nearest given node within `snap`, else returns it.
 
-    圆弧是离散成弦的，它的端点与"圆弧和相邻线段的交点"可能差几个 1e-4 mm；不吸附过去，
-    这几条链就接不上（数值上差一点点，但接环靠的就是坐标一致）。
+    An arc is discretised into chords, so its endpoints may differ from "the intersection of the arc
+    with the neighbouring segment" by a few 1e-4 mm. Without snapping, those chains never join
+    (the difference is tiny numerically, but chaining relies on exactly equal coordinates).
 
-    这里是逐点查的，所以桶里存元组、比较用纯浮点：曲线形状一次要吸附几千个点，
-    换成 numpy 的逐元素调用光开销就比计算本身大。
+    The lookup is per point, so buckets hold plain tuples and comparisons use plain floats: a curved
+    shape snaps thousands of points at a time, and element-wise numpy calls would cost more than the
+    arithmetic itself.
     """
 
     cell = max(snap, _EPS)
@@ -320,18 +350,20 @@ def split_at_intersections(
     snap: float = 0.0,
     keep_crossing: Callable[[NDArray[np.float64]], NDArray[np.bool_]] | None = None,
 ) -> list[tuple[NDArray[np.float64], NDArray[np.float64], bool]]:
-    """把所有线段在交点处切开；交点坐标两边共用，因此之后的节点是严格重合的。
+    """Cut every segment at its intersections; both sides share the coordinates they meet at.
 
-    传了 snap 就把端点吸附到最近的交点上（距离不超过 snap）：圆弧离散点与交点之间
-    那点零头只有靠这一步才能消掉，否则链会在那里断开。
+    Passing `snap` snaps endpoints to the nearest intersection within that distance: the leftover
+    between an arc discretisation point and an intersection only disappears this way, otherwise the
+    chain breaks there.
 
-    `keep_crossing` 用来在切分之前先筛掉一批交点，见 `_crossing_filter`：合法与不合法
-    的分界只可能发生在合法的交点上，其余交点切出来的两段状态相同，切不切都不影响结果。
-    曲线形状在大偏置量下交点极多（直径 80 的圆、偏置 33 时有 1800 个），先筛再切能少一个
-    数量级的子段。
+    `keep_crossing` filters crossings before splitting, see `_crossing_filter`: the transition
+    between valid and invalid can only happen at a valid crossing, and the two pieces cut at an
+    invalid crossing have the same status, so cutting there changes nothing. Curved shapes have a
+    huge number of crossings at large offsets (an 80 mm circle offset by 33 has 1800 of them), and
+    filtering first removes an order of magnitude of sub-segments.
 
-    另外只比较**包围盒落在同一个格子**里的线段对：相交的线段包围盒必然重叠，
-    分桶只可能多给候选，不会漏。
+    Only segment pairs whose **bounding boxes share a grid cell** are compared: intersecting segments
+    always overlap in their boxes, so bucketing can only produce extra candidates, never miss one.
     """
 
     count = len(pieces)
@@ -392,7 +424,8 @@ def split_at_intersections(
 def _squared_distance(
     first: NDArray[np.float64], second: NDArray[np.float64]
 ) -> float:
-    """两点距离的平方：逐段的长度比较用平方就够，省掉几千次 numpy 调用。"""
+    """Squared distance between two points: comparing lengths piece by piece only needs the square,
+    which saves thousands of numpy calls."""
 
     delta_x = float(first[0]) - float(second[0])
     delta_y = float(first[1]) - float(second[1])
@@ -402,11 +435,12 @@ def _squared_distance(
 def _candidate_pairs(
     starts: NDArray[np.float64], ends: NDArray[np.float64]
 ) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
-    """按包围盒分桶，给出可能相交的线段对（i < j，按 (i, j) 排序）。
+    """Bucket by bounding box and return the possibly intersecting pairs (i < j, sorted by (i, j)).
 
-    分桶只可能**多给**候选，不会漏掉真正的交点：两条线段若相交，它们的包围盒必然重叠，
-    因而至少落在同一个格子里。按 (i, j) 排序是为了让交点、进而让后面的吸附顺序与
-    「全量两两比较」完全一致。
+    Bucketing can only produce **extra** candidates, never miss a real crossing: two intersecting
+    segments necessarily overlap in their boxes and therefore share at least one cell. Sorting by
+    (i, j) keeps the crossing order -- and with it the snapping order -- identical to the
+    "compare everything pairwise" version.
     """
 
     count = starts.shape[0]
@@ -430,8 +464,9 @@ def _candidate_pairs(
             continue
         rows = np.array(members, dtype=np.int64)
         left, right = np.triu_indices(rows.size, 1)
-        # 编码成 i * count + j 再去重：一格里可能挤着上百条线段（大偏置量下所有平移线段
-        # 都缩到中心），用 Python 的 set 逐个 add 会变成热点，numpy 去重则是一次排序。
+        # Encode as i * count + j and deduplicate: one cell can hold a hundred segments (at large
+        # offsets all shifted segments shrink towards the centre), where adding them to a Python set
+        # one by one becomes the hot spot while numpy deduplication is a single sort.
         found.append(np.minimum(rows[left], rows[right]) * count
                      + np.maximum(rows[left], rows[right]))
     if not found:
@@ -446,14 +481,15 @@ def _crossing_filter(
     distance: float,
     slack: float,
 ):
-    """返回一个判断"这个交点是否落在偏置边界上"的函数，用来在切分之前筛交点。
+    """Return a predicate telling whether a crossing lies on the offset boundary, to pre-filter.
 
-    为什么可以先筛：子段的合法性在一段之内是均匀的，而状态发生变化的地方一定是交点；
-    如果交点两侧的子段都合法，那么交点本身也合法（距离是连续的）。所以**不合法**的交点
-    两侧状态相同，切不切都不影响结果；只有合法的交点是真正的分界点。
+    Why filtering first is sound: the validity of a sub-segment is uniform along it, and the status
+    can only change at a crossing; if both pieces at a crossing are valid then the crossing itself is
+    valid too (distance is continuous). So an **invalid** crossing has the same status on both sides
+    and cutting there or not makes no difference -- only valid crossings are real transitions.
 
-    这里用较宽的那个容差，宁可多留一些交点也不会漏掉真正的分界点（多切几刀只是多做几次
-    判定，结果不变）。
+    The looser of the two tolerances is used here: keeping a few extra crossings only costs a few
+    extra tests, while dropping a real transition would change the result.
     """
 
     def keep(points: NDArray[np.float64]) -> NDArray[np.bool_]:
@@ -477,14 +513,16 @@ def _nearest_edge_distance(
     *,
     chunk: int = 64,
 ) -> NDArray[np.float64]:
-    """点到多边形各边的最近距离，但先用"支撑直线"筛掉一大批边。
+    """Distance from every point to the nearest edge, after dropping edges via their supporting lines.
 
-    点到线段的距离 ≥ 点到它所在直线的距离，所以凡是到线段的距离 ≈ target 的边，它到直线的
-    距离必然 ≤ target + slack。先算便宜的距离（直线）再算贵的（线段），结果与全量计算一致：
-    每一点的真正最近边一定在候选里，而候选里多出来的边只会让最小值更接近真值。
+    The distance to a segment is never smaller than the distance to the line it lies on, so any edge
+    whose segment distance is ~ target also has a line distance <= target + slack. Computing the
+    cheap distance (line) before the expensive one (segment) gives the same result as computing
+    everything: the true nearest edge of every point is among the candidates, and extra candidates
+    only move the minimum closer to its true value.
 
-    这里按**小块**处理：候选边取的是整块里出现过候选的列，块一大这个并集就退化成全部边，
-    精确那一遍就白省了。
+    Work happens in **small blocks**: the candidate columns are the union over the whole block, and a
+    large block makes that union degenerate into all edges, wasting the whole saving.
     """
 
     start, edge, squared = edges
@@ -514,17 +552,21 @@ def _valid_subsegments(
     line_tolerance: float,
     chord_tolerance: float,
 ) -> list[tuple[NDArray[np.float64], NDArray[np.float64]]]:
-    """只留下确实落在偏置区域边界上的子段。
+    """Keep only the sub-segments that really lie on the offset boundary.
 
-    直线段与圆弧的弦用不同容差：弦的中点天然比半径近一个矢高，容差要盖住它；
-    直线段没有这个误差，容差必须很紧，否则斜接点外那一小截延长线也会被当成边界。
+    Straight segments and arc chords use different tolerances: the midpoint of a chord is naturally
+    one sagitta closer than the radius and the tolerance has to cover that, while a straight segment
+    has no such error and needs a tight tolerance -- otherwise the bit of extension outside a miter
+    point is accepted as boundary too.
 
-    每个子段只查中点就够了：子段是按交点切开的，整段要么都在等距线上、要么都不在；
-    圆弧的弦则是中点偏得最多（矢高），中点过了全段就都过。
+    Testing the midpoint of every sub-segment is enough: sub-segments are cut at crossings, so a
+    whole piece is either on the equidistant line or not; for an arc chord the midpoint deviates the
+    most (the sagitta), so if it passes the whole chord passes.
 
-    曲线形状一次会切出几千个子段，而其中绝大部分其实落在别的边更近的地方（大偏置量下
-    平移线段比偏置周长还长，互相穿过）。所以这里按块批量判、边向量只算一次，
-    并且先用支撑直线筛一遍边（见 `_nearest_edge_distance`）。
+    A curved shape cuts out thousands of sub-segments, and most of them actually lie closer to some
+    other edge (at large offsets the shifted segments are longer than the offset perimeter and cross
+    each other). So the test is batched, the edge vectors are computed once, and the edges are
+    pre-filtered by their supporting lines (see `_nearest_edge_distance`).
     """
 
     if not subsegments:
@@ -549,8 +591,9 @@ def _valid_subsegments(
         near = gaps <= tolerances[begin:finish]
         if not near.any():
             continue
-        # 先算距离（便宜，能筛掉九成以上），再对留下来的点判内外：区域外面的点同样可能
-        # 正好离边界 d，所以这一步不能省，只是不用对每个点都算。
+        # Distance first (cheap, drops more than nine out of ten), then the inside test for the
+        # survivors: a point outside the region can be exactly d away from the boundary too, so the
+        # test cannot be skipped, only skipped for most points.
         inside = np.zeros(finish - begin, dtype=bool)
         survivors = np.flatnonzero(near)
         inside[survivors] = point_in_polygon(block[survivors], polygon)
@@ -564,10 +607,11 @@ def _valid_subsegments(
 
 
 def _node_labels(points: NDArray[np.float64], grid: float = _NODE_GRID_MM) -> NDArray[np.int64]:
-    """按网格把点归成节点，返回每个点的节点编号。
+    """Group points into nodes on a grid and return each point's node id.
 
-    交点坐标在两条线段之间是严格共用的，所以这里只是把浮点噪声归到一起；
-    用字典而不是两两比较，曲线形状（几百条线段）才不会退化成 O(n²)。
+    Both sides of an intersection share their coordinates exactly, so this only lumps floating point
+    noise together; using a dict instead of comparing all pairs keeps curved shapes (hundreds of
+    segments) from degenerating into O(n^2).
     """
 
     keys = np.round(points / grid).astype(np.int64)
@@ -581,11 +625,12 @@ def _node_labels(points: NDArray[np.float64], grid: float = _NODE_GRID_MM) -> ND
 def _chain_loops(
     pieces: list[tuple[NDArray[np.float64], NDArray[np.float64]]],
 ) -> list[NDArray[np.float64]]:
-    """把子段接成闭环。
+    """Chain sub-segments into closed loops.
 
-    一个节点上有多条出路时选"转角最小"的那条——偏置曲线穿过交点时就是直着过去的。
-    接不上的链直接丢弃：那说明几何退化（子段落在偏置边界之外，或者比刀具还窄的区域
-    被整体侵蚀掉了），这种链本来就不该出现在刀路里。
+    When a node offers several ways out, take the one with the **smallest turn** -- the offset curve
+    goes straight through such a node. Chains that do not close are dropped: they mean degenerate
+    geometry (a sub-segment outside the offset boundary, or a region narrower than the tool that got
+    eroded away completely), and such a chain should not appear in a toolpath.
     """
 
     if not pieces:
@@ -597,8 +642,9 @@ def _chain_loops(
     start_labels = labels[: len(pieces)]
     end_labels = labels[len(pieces):]
 
-    # 代表点（同一个节点的平均坐标）与"单位方向、长度"都一次算好：
-    # 接环是逐段的循环，"转角最小"要比较方向，放在循环里现算就成了绝对热点。
+    # Representative point of a node (mean coordinate) plus unit direction and length are computed
+    # once: chaining is a per-piece loop and "smallest turn" compares directions, so recomputing them
+    # inside the loop becomes the single hottest spot.
     _, inverse = np.unique(labels, return_inverse=True)
     groups = int(inverse.max()) + 1
     counts = np.bincount(inverse, minlength=groups)
@@ -650,7 +696,7 @@ def _chain_loops(
 
 
 def _drop_repeats(points: NDArray[np.float64]) -> NDArray[np.float64]:
-    """去掉闭合环里连续重复的点。"""
+    """Drop consecutive repeated points from a closed loop."""
 
     if points.shape[0] == 0:
         return points
@@ -666,10 +712,11 @@ def offset_loops(
     chord_mm: float = 0.5,
     min_area_mm2: float = 0.5,
 ) -> list[NDArray[np.float64]]:
-    """逆时针多边形向内偏置 distance >= 0，返回**所有**环（按面积从大到小）。
+    """Offset a counter-clockwise polygon inwards by distance >= 0, returning **all** loops by area.
 
-    细颈被吃掉时形状会分裂，这里就会给出多条环；一条都不剩时返回空列表。
-    只做向内偏置：向外偏置要在凸角补圆弧，是另一套几何，因此负值直接报错。
+    When a narrow neck is eaten away the shape splits and several loops come out here; an empty list
+    means nothing is left. Only inward offsetting is supported: offsetting outwards needs arcs at
+    convex corners, which is a different piece of geometry, so a negative distance raises.
     """
 
     if distance < 0.0:
@@ -678,8 +725,9 @@ def offset_loops(
     if distance <= _EPS:
         return [poly]
 
-    # 凹角的圆弧是离散成弦的，弦中点比半径近一个矢高 d·(1-cos(半步角))；
-    # 容差必须盖住它，否则整段圆弧都会被判成"不在这条等距线上"而丢掉。
+    # Reflex arcs are discretised into chords and a chord midpoint is one sagitta closer than the
+    # radius, d*(1-cos(half step angle)); the tolerance has to cover that or the whole arc is
+    # rejected as "not on the equidistant line".
     step_angle = min(chord_mm / distance, _MAX_ARC_STEP_RAD)
     sagitta = distance * (1.0 - cos(step_angle / 2.0))
     chord_tolerance = max(1e-6, 1e-6 * distance, 1.5 * sagitta)
@@ -724,14 +772,14 @@ def offset_polygon(
     chord_mm: float = 0.5,
     min_area_mm2: float = 0.5,
 ) -> NDArray[np.float64] | None:
-    """只要一条环时的便捷入口：返回面积最大的那条，没有合法环时返回 None。"""
+    """Convenience entry point for a single loop: the largest one, or None if there is none."""
 
     loops = offset_loops(polygon, distance, chord_mm=chord_mm, min_area_mm2=min_area_mm2)
     return loops[0] if loops else None
 
 
 def resample_ring(polygon: NDArray[np.float64], step_mm: float) -> NDArray[np.float64]:
-    """按等弧长重采样一个闭合环（不重复首点）。"""
+    """Resample a closed ring at equal arc length (without repeating the first point)."""
 
     ring = np.vstack([polygon, polygon[:1]])
     steps = np.linalg.norm(np.diff(ring, axis=0), axis=1)

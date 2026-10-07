@@ -1,35 +1,47 @@
-"""环切（等距轮廓）刀路。
+"""Contour (equidistant outline) toolpath.
 
-从区域轮廓开始，每向内偏置一个切宽就得到一层环，偏置到结果退化为止：
+Starting from the region outline, every inward offset by one stepover gives one layer, until the
+offset degenerates:
 
-1. 第一层把轮廓向内偏置"刀具在加工面上的足迹半径"，保证刀不切出区域；
-2. 之后每层再向内偏置一个切宽；
-3. 一层可能得到**多条环**：凹形状的细颈被偏置吃掉后，形状会分裂成互不相连的几块；
-4. 每环按采样步长离散成闭合折线，相邻环绕行方向交替（顺铣/逆铣交替）；
-5. 环之间的过渡分两种：套在里面的环用连接进给直接走进去；同一层分裂出来的兄弟环，或者
-   无法判断内外关系时，抬刀到安全面再快移过去——在切削深度上横穿细颈会啃到材料。
+1. the first layer offsets the outline inwards by the tool's footprint radius on the machining
+   plane, so the tool never cuts outside the region;
+2. every further layer offsets inwards by one more stepover;
+3. one layer may produce **several loops**: once a concave neck is eaten away by the offset, the
+   shape splits into pieces that are not connected to each other;
+4. every loop is discretised at the sampling step into a closed polyline, and neighbouring rings run
+   in alternating directions (climb/conventional);
+5. transitions between rings come in two flavours: a ring nested inside the previous one is reached
+   with a link move at cutting depth; sibling rings split off in the same layer, or cases where the
+   nesting cannot be decided, retract to the safe height and rapid over -- crossing a narrow neck at
+   cutting depth would bite into the material.
 
-偏置几何在 planning/geometry2d.py（凸角斜接、凹角圆弧接头、按自交点切分、"转角最小"接环），
-那里也写了为什么不能像早期版本那样把断开的顶点按原顺序接起来。
+The offset geometry lives in planning/geometry2d.py (convex miters, reflex arc joins, splitting at
+self-intersections, chaining by smallest turn), which also explains why the early version's habit of
+re-connecting the surviving vertices in their original order was wrong.
 
-已知限制：环与环之间只有直线连接，没有引入 / 引出圆弧。
+Known limitation: rings are connected by straight moves only, there are no lead-in/lead-out arcs.
 
-**偏置的延长上限不是正确性开关**：凸角的斜接点离顶点 d·tan(转角/2)，看起来"尖角需要很长
-延长"，但斜接点一旦落在平移线段之外，那个角两侧的边长就必然小于需要的延长，于是局部材料
-宽度最大只有 2L·sin(内角/2) < 2d——比刀具还窄，整个角早被侵蚀掉了，那条边本来就不该出现。
-所以 `geometry2d` 里给的是一个小数值余量；真正"什么都没剩下"的情形（细到放不下刀具的区域）
-会走到下面的 PlanningError。
+**The offset extension cap is not a correctness switch**: a convex corner's miter point sits
+d*tan(turn/2) away from the vertex, which looks like "sharp corners need long extensions", but once
+the miter point falls outside the shifted segment the two adjacent edges are necessarily shorter than
+the required reach, so the material there is at most 2L*sin(interior/2) < 2d wide -- narrower than the
+tool, eroded away completely, and that edge should not appear on the offset boundary at all. That is
+why `geometry2d` applies a small numerical margin; the case where nothing is left (a region too thin
+for the tool) ends up in the PlanningError below.
 
-**环绕向与顺逆铣**：`offset_loops` 给出的环都是逆时针的。环切是从外往内走的，未加工的材料
-始终在环的**内侧**（外面那一圈已经被上一环切掉了），所以
+**Ring winding versus climb/conventional milling**: `offset_loops` returns counter-clockwise loops.
+Contouring walks from the outside in, so the unmachined material is always on the **inside** of the
+ring (the ring outside it has already been cut), therefore
 
-- **逆时针** = 接触点的刀刃运动方向与进给同向 = **顺铣**；
-- **顺时针** = **逆铣**。
+- **counter-clockwise** = the cutting edge moves with the feed at the contact point = **climb**;
+- **clockwise** = **conventional**.
 
-这是按"主轴 M03（从上往下看顺时针）+ 右手刀具"推出来的。如果机床用 M04，或者材料在刀路的
-另一侧（例如加工的是外轮廓而不是这块区域），顺铣与逆铣就要对调——参数名按几何绕向标注，
-约定写在 README 的「参数与固定值」里。栅格策略没有这个参数：一刀的两侧一侧顺、一侧逆，
-没有单一答案，往复本身就是在交替。
+That follows from "spindle M03 (clockwise seen from above) + right-hand tool". With M04, or when the
+material is on the other side of the path (machining an outer profile rather than this region), climb
+and conventional swap -- the parameter is named after the geometric winding and the convention is
+documented in the parameter table of the README. The raster strategy has no such parameter: one pass
+is climb on one side and conventional on the other, there is no single answer, and zigzag alternates
+by itself.
 """
 
 from __future__ import annotations
@@ -51,10 +63,10 @@ from toolpath_lab.planning.base import MOTION_PARAMETERS, Planner, PlanningConte
 from toolpath_lab.planning.geometry2d import offset_loops, point_in_polygon, resample_ring
 from toolpath_lab.planning.registry import PLANNERS
 
-#: 偏置后面积小于这个值的环直接丢掉（mm²）：细到没有加工意义的碎片不值得走一刀。
+#: Loops whose offset area is below this (mm^2) are dropped: a fragment too thin for a pass.
 _MIN_RING_AREA_MM2 = 0.5
 
-#: 环绕向 → notes 里的说明文案。
+#: Ring direction -> wording used in the notes.
 _DIRECTION_LABELS = {
     "alternate": "交替（顺铣/逆铣）",
     "climb": "全顺铣（逆时针）",
@@ -64,7 +76,7 @@ _DIRECTION_LABELS = {
 
 @PLANNERS.register
 class ContourPlanner(Planner):
-    """沿区域轮廓逐圈向内偏置的环切刀路。"""
+    """Contour toolpath that offsets the region outline inwards ring by ring."""
 
     id: ClassVar[str] = "contour"
     label: ClassVar[str] = "环切"
@@ -160,10 +172,11 @@ class ContourPlanner(Planner):
 
     @staticmethod
     def _should_reverse(ring_direction: str, index: int) -> bool:
-        """这一环要不要反向走。
+        """Whether this ring runs the other way round.
 
-        offset_loops 给的环是逆时针的，也就是顺铣（材料在环内侧）；所以
-        "全顺铣"保持原样、"全逆铣"全部反向、"交替"按顺序奇偶交替（原来唯一的行为）。
+        offset_loops returns counter-clockwise loops, which is climb milling (material inside the
+        ring); so "climb" keeps them as they are, "conventional" reverses every one of them, and
+        "alternate" flips by index (the behaviour that used to be the only one).
         """
 
         if ring_direction == "climb":
@@ -174,6 +187,6 @@ class ContourPlanner(Planner):
 
     @staticmethod
     def _is_nested(inner: NDArray[np.float64], outer: NDArray[np.float64]) -> bool:
-        """inner 是否落在 outer 内部（用来决定环间是连接进给还是抬刀快移）。"""
+        """Whether inner lies inside outer (decides link move versus retract between rings)."""
 
         return bool(point_in_polygon(inner[:1], outer)[0])

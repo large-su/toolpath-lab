@@ -1,25 +1,32 @@
-"""自适应环切：把切宽自动收紧到覆盖率达标。
+"""Adaptive contouring: tighten the stepover automatically until the coverage target is met.
 
-环切的切宽是"要不要返工"的关键——切宽大于刀具直径会在两刀之间留下残余条带，而覆盖率分析
-正好能量出这件事。这个策略就是把两者接起来：先用请求里的切宽算一遍、量一下覆盖率，没到目标
-就按系数收窄重算，最多几轮，最后返回**性价比最好**的那一次。
+The stepover of a contour path decides whether rework is needed -- a stepover larger than the tool
+diameter leaves residual strips between passes, and the coverage analysis can measure exactly that.
+This strategy connects the two: plan once with the requested stepover, measure the coverage, and if
+the target is not met tighten by a factor and plan again, a bounded number of rounds, returning the
+round with the **best value for money**.
 
-几条规矩（`tests/test_adaptive.py` 逐条钉住）：
+The rules (each pinned by `tests/test_adaptive.py`):
 
-- 只在覆盖率**确实提升**时才继续收紧。覆盖率并不是切宽越小越高：残留的多少由刀具几何决定
-  （圆刀切不到尖角），到这个极限之后再收窄只是白走刀。实测哑铃形切宽 2 mm 时 99.75%，
-  收到 1 mm 反而降到 92.96%（内圈细到被最小环面积过滤掉了）。
-- 还要看**工时**：收窄切宽靠的是多走几圈，代价是线性的。实测方形 80、D6 从切宽 6 mm 收到
-  4.2 mm，工时涨 34% 换 +0.55 个点（划算）；再收到 2.94 mm，工时涨 84% 只换 +0.02 个点
-  （不划算）。所以有「工时上限」这个参数：默认不超过首轮的 2 倍，超出就把那一轮排除在候选
-  之外，并说明"要达标得多花多少时间"。每一轮的切宽、覆盖率、环数、切削长度与工时都写进
-  notes，这条性价比曲线可以直接读。
-- 到不了目标就如实说：返回预算内最好的一次，并用 warnings 说明是"工时上限挡住了"、
-  "再收也不提升"还是"轮数不够"。
-- 轮数、收紧系数、切宽下限、工时上限都是参数，界面上可调；不存在无界循环。
+- Only keep tightening while the coverage **actually improves**. Coverage is not monotonic in the
+  stepover: how much is left depends on the tool geometry (a round tool cannot cut a sharp corner),
+  and once that limit is reached, tightening only wastes passes. Measured on the dumbbell shape: a
+  2 mm stepover gives 99.75%, tightening to 1 mm *drops* to 92.96% (the inner rings become thin
+  enough to be filtered out by the minimum ring area).
+- Also watch the **machining time**: tightening buys coverage by walking more rings, at a linear
+  cost. Measured on an 80 mm square with D6: 6 mm -> 4.2 mm costs 34% more time for +0.55 points
+  (worth it); 4.2 mm -> 2.94 mm costs 84% more for +0.02 points (not worth it). Hence the "time
+  limit" parameter: by default no more than twice the first round, and a round beyond it is left out
+  of the candidates, with a message saying how much time the target would cost. Every round's
+  stepover, coverage, ring count, cutting length and time go into the notes, so the value-for-money
+  curve can simply be read.
+- If the target cannot be reached, say so: return the best round within the budget and use warnings
+  to distinguish "blocked by the time limit", "tightening no longer helps" and "out of rounds".
+- Rounds, tightening factor, stepover floor and time limit are all parameters, adjustable in the UI;
+  there is no unbounded loop.
 
-它继承环切策略、只重写 plan()，参数集在环切的基础上再加五项——"加一个策略就是一个类"，
-这里连刀路逻辑都是复用的。
+It subclasses the contour strategy and only overrides plan(), adding five parameters to the contour
+parameter set -- "a strategy is one class", and here even the toolpath logic is reused.
 """
 
 from __future__ import annotations
@@ -39,16 +46,16 @@ from toolpath_lab.planning.contour import ContourPlanner
 from toolpath_lab.planning.coverage import Coverage, measure_coverage
 from toolpath_lab.planning.registry import PLANNERS
 
-#: 覆盖率提升小于这个值（比例，0.0005 = 0.05 个百分点）就认为"再收也不会更好"。
+#: A coverage gain below this (ratio, 0.0005 = 0.05 percentage points) counts as "no better".
 _MIN_IMPROVEMENT = 5e-4
 
-#: 一轮实测：切宽、覆盖率、环数、切削长度、工时。
+#: One measured round: stepover, coverage ratio, ring count, cutting length, machining time.
 Round = tuple[float, float, int, float, float]
 
 
 @PLANNERS.register
 class AdaptiveContourPlanner(ContourPlanner):
-    """先按请求的切宽算一遍，再按需收紧，直到覆盖率达标或者不再划算。"""
+    """Plan with the requested stepover, then tighten while it is worth it."""
 
     id: ClassVar[str] = "adaptive_contour"
     label: ClassVar[str] = "自适应环切"
@@ -116,8 +123,9 @@ class AdaptiveContourPlanner(ContourPlanner):
             if coverage.ratio >= target:
                 break
             if not within_budget:
-                break  # 已经超出工时上限，再收只会更贵
-            # 先判"不再提升"再判轮数：到不了目标时，"再收也没用"比"轮数用完"有用得多。
+                break  # already past the time limit, tightening only gets more expensive
+            # Test "no longer improving" before the round limit: when the target is out of reach,
+            # "tightening no longer helps" is far more useful than "out of rounds".
             if len(history) >= 2 and coverage.ratio <= history[-2][1] + _MIN_IMPROVEMENT:
                 plateau = True
                 break
@@ -128,7 +136,7 @@ class AdaptiveContourPlanner(ContourPlanner):
                 break
             stepover = tighter
 
-        assert best is not None  # 预算是首轮的倍数，所以首轮必在候选里
+        assert best is not None  # the budget is a multiple of the first round, so it is eligible
         stepover, toolpath, coverage, spent = best
         achieved = coverage.ratio >= target
         if not achieved:

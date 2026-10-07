@@ -1,11 +1,12 @@
-"""刀路策略的共同契约。
+"""Shared contract for toolpath strategies.
 
-一个策略拿到 PlanningContext（刀具 + 区域 + 自己的参数），返回一个 Toolpath。
-它不知道 HTTP、JSON 与界面的存在，因此可以脱离服务单独测试、单独调用。
+A strategy receives a PlanningContext (tool + region + its own parameters) and returns a Toolpath.
+It knows nothing about HTTP, JSON or the UI, so it can be tested and called without the service.
 
-"抬刀高度"与"快移速度"是每个策略都要用的动作参数，但具体数值属于调用方的选择，
-因此在这里声明成一份共用的 MOTION_PARAMETERS，由策略并进自己的 ParameterSet；
-策略没有声明时，PlanningContext 退回下面的默认值（第三方插件因此不会被这个约定绊住）。
+"Retract height" and "rapid feed" are motion parameters every strategy needs, but their values are
+the caller's choice, so they are declared once in MOTION_PARAMETERS and merged into each strategy's
+own ParameterSet; when a strategy does not declare them, PlanningContext falls back to the defaults
+below (third party plugins are therefore not tripped up by this convention).
 """
 
 from __future__ import annotations
@@ -28,12 +29,12 @@ from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.geometry2d import ensure_ccw
 
-#: 快速移动时相对工件上表面抬起的距离（mm）的默认值。
+#: Default distance (mm) the tool lifts above the top face of the workpiece when moving rapidly.
 SAFE_HEIGHT_MM = 5.0
-#: 快速移动的进给速度（mm/min）的默认值。
+#: Default feed rate (mm/min) for rapid moves.
 RAPID_FEED_MM_PER_MIN = 5000.0
 
-#: 所有策略共用的动作参数：策略把它并进自己的 ParameterSet 即可在界面上调。
+#: Motion parameters shared by every strategy: merge them into your ParameterSet to expose them.
 MOTION_PARAMETERS: ParameterSet = ParameterSet(
     (
         spec("safe_height_mm", "安全高度", K.FLOAT, SAFE_HEIGHT_MM, minimum=0.0,
@@ -48,50 +49,50 @@ MOTION_PARAMETERS: ParameterSet = ParameterSet(
 
 @dataclass(frozen=True, slots=True)
 class PlanningContext:
-    """一次规划需要的全部输入，且不依赖任何传输层。"""
+    """Everything one plan needs, without depending on any transport layer."""
 
     tool: Tool
     region: RegionShape
     parameters: Mapping[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
-    # -- 参数 --------------------------------------------------------------
+    # -- parameters --------------------------------------------------------
     @property
     def feed_mm_per_min(self) -> float:
         return float(self.parameters["feed_mm_per_min"])
 
     @property
     def safe_height_mm(self) -> float:
-        """抬刀高度；策略声明了 safe_height_mm 就用它的值，否则用默认值。"""
+        """Retract height; uses the safe_height_mm parameter when the strategy declares it."""
 
         return float(self.parameters.get("safe_height_mm", SAFE_HEIGHT_MM))
 
     @property
     def rapid_feed_mm_per_min(self) -> float:
-        """快移进给；策略声明了 rapid_feed_mm_per_min 就用它的值，否则用默认值。"""
+        """Rapid feed; uses the rapid_feed_mm_per_min parameter when the strategy declares it."""
 
         return float(self.parameters.get("rapid_feed_mm_per_min", RAPID_FEED_MM_PER_MIN))
 
-    # -- 几何 --------------------------------------------------------------
+    # -- geometry ----------------------------------------------------------
     @property
     def boundary(self) -> NDArray[np.float64]:
-        """逆时针的区域轮廓，形状 (N, 2)。"""
+        """Counter-clockwise region outline, shape (N, 2)."""
 
         return ensure_ccw(self.region.boundary())
 
     def to_positions(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
-        """把平面点 (N, 2) 抬成工件坐标下的 (N, 3)（加工面为 Z = 0）。"""
+        """Lift planar points (N, 2) to workpiece coordinates (N, 3) on the machining plane Z = 0."""
 
         planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
         return np.column_stack((planar, np.zeros(planar.shape[0], dtype=np.float64)))
 
     def warn(self, message: str) -> None:
-        """记录一条不致命的提醒，会随响应返回并显示在界面上。"""
+        """Record a non-fatal warning, returned with the response and shown in the UI."""
 
         if message not in self.warnings:
             self.warnings.append(message)
 
-    # -- 运动段构造 --------------------------------------------------------
+    # -- move construction -------------------------------------------------
     def cut_move(self, points_xy: NDArray[np.float64], *, pass_index: int, label: str) -> Move:
         return Move(
             MoveKind.CUT,
@@ -113,7 +114,7 @@ class PlanningContext:
         return retract_move(start, end, self.safe_height_mm, self.rapid_feed_mm_per_min)
 
     def approach_move_down(self, point: NDArray[np.float64]) -> Move:
-        """从安全高度下刀到该点。"""
+        """Plunge from the safe height down to this point."""
 
         target = np.asarray(point, dtype=np.float64).reshape(3)
         start = np.array([target[0], target[1], self.safe_height_mm], dtype=np.float64)
@@ -121,7 +122,7 @@ class PlanningContext:
                     label="下刀")
 
     def retract_move_up(self, point: NDArray[np.float64]) -> Move:
-        """从该点抬刀到安全高度。"""
+        """Retract from this point up to the safe height."""
 
         start = np.asarray(point, dtype=np.float64).reshape(3)
         end = np.array([start[0], start[1], self.safe_height_mm], dtype=np.float64)
@@ -130,10 +131,10 @@ class PlanningContext:
 
 
 class Planner:
-    """所有刀路策略的基类。
+    """Base class of every toolpath strategy.
 
-    子类声明 id（接口里的标识）、label（界面上的名字）、description，
-    以及一份 parameters 参数声明，然后实现 plan()。
+    A subclass declares id (the identifier in the API), label (the name in the UI), description and a
+    ParameterSet, then implements plan().
     """
 
     id: ClassVar[str] = ""
