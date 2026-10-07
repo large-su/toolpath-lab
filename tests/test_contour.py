@@ -1,6 +1,6 @@
-"""环切策略：层与环的布局、方向交替、环间过渡、几何不可行。
+"""Contour strategy: layer and loop layout, alternating direction, transitions, infeasible geometry.
 
-偏置几何本身的数值断言在 tests/test_geometry2d.py。
+The numeric assertions for the offset geometry itself live in tests/test_geometry2d.py.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def _cut_moves(toolpath: Toolpath):
 
 
 def _rings(toolpath: Toolpath):
-    """每环的平面点（去掉闭合的重复末点）。"""
+    """Planar points of every ring (without the repeated closing point)."""
 
     return [move.points[:-1, :2] for move in _cut_moves(toolpath)]
 
@@ -76,7 +76,7 @@ class RegistrationTests(unittest.TestCase):
 
 class RingLayoutTests(unittest.TestCase):
     def test_ring_count_follows_the_stepover(self) -> None:
-        # 80 mm 方形，足迹半径 3，切宽 6 → 偏置 3/9/…/39 共 7 环（45 已超过内切半径 40）。
+        # 80 mm square, footprint 3, stepover 6: offsets 3/9/.../39 give 7 rings (45 exceeds the inradius 40).
         self.assertEqual(_plan().pass_count, 7)
 
     def test_smaller_stepover_leaves_more_rings(self) -> None:
@@ -99,7 +99,7 @@ class RingLayoutTests(unittest.TestCase):
 
 class ContourStrategyTests(unittest.TestCase):
     def test_cut_length_is_the_sum_of_the_ring_perimeters(self) -> None:
-        # 内缩 3/9/…/39 的方形边长 74/62/50/38/26/14/2 → 周长和 1064
+        # Inset squares 3/9/.../39 have sides 74/62/50/38/26/14/2, so the perimeters sum to 1064
         self.assertAlmostEqual(_plan().cut_length_mm, 1064.0, places=6)
 
     def test_every_ring_is_closed_and_on_the_machining_plane(self) -> None:
@@ -115,7 +115,7 @@ class ContourStrategyTests(unittest.TestCase):
     def test_nested_rings_are_joined_without_retracting(self) -> None:
         transitions = _transitions(_plan())
         self.assertEqual(transitions.count(MoveKind.LINK), 6)
-        # 只有首尾各一次快速移动：下刀与抬刀。
+        # Only two rapids, one at each end: the plunge and the retract.
         self.assertEqual(transitions.count(MoveKind.RAPID), 2)
 
     def test_rapid_moves_use_the_safe_height_and_rapid_feed(self) -> None:
@@ -149,7 +149,7 @@ class ContourStrategyTests(unittest.TestCase):
 
 
 class MultiLoopTests(unittest.TestCase):
-    """凹形状：细颈被偏置吃掉后一层会分裂成多条环，每块都要单独加工。"""
+    """Concave shapes: once the offset eats the neck one layer splits into several loops, each machined alone."""
 
     def _dumbbell(self, parameters=None) -> Toolpath:
         options = {"stepover_mm": 6.0, "sample_step_mm": 1.0, "feed_mm_per_min": 600.0}
@@ -163,7 +163,7 @@ class MultiLoopTests(unittest.TestCase):
 
     def test_the_split_layers_are_cut_as_separate_rings(self) -> None:
         toolpath = self._dumbbell()
-        # 偏置 3/9/15/21/27：前两层细颈还在（各 1 条环），后三层各分裂成 2 条。
+        # Offsets 3/9/15/21/27: the neck survives the first two layers (one loop each), the rest split in two.
         self.assertEqual(toolpath.pass_count, 8)
         self.assertIn("8 环", toolpath.notes[0])
         self.assertIn("5 层", toolpath.notes[0])
@@ -178,14 +178,14 @@ class MultiLoopTests(unittest.TestCase):
                     if bool(point_in_polygon(point, ring)[0])
                 )
             )
-        # 细颈还在的那两环同时绕过两个方头；分裂出来的环各自只绕一个。
+        # While the neck survives, one loop wraps both pads; once split, each loop wraps a single pad.
         self.assertEqual(wrapped.count(("left", "right")), 2)
         self.assertEqual(wrapped.count(("left",)), 3)
         self.assertEqual(wrapped.count(("right",)), 3)
 
     def test_sibling_rings_are_separated_by_a_retract(self) -> None:
         transitions = _transitions(self._dumbbell())
-        # 套在里面的环之间用连接进给，同层分裂出的兄弟环之间必须抬刀快移
+        # Nested rings are joined by link moves, sibling rings split off in the same layer must retract
         self.assertGreater(transitions.count(MoveKind.RAPID), 2)
         self.assertGreater(transitions.count(MoveKind.LINK), 2)
         rapid = [move for move in self._dumbbell().moves if move.kind is MoveKind.RAPID]
@@ -203,16 +203,16 @@ class MultiLoopTests(unittest.TestCase):
             region=build_region("u_shape", {}),
             parameters={"stepover_mm": 6.0},
         ).toolpath
-        # 壁厚 25：偏置 3、9 各一条环（6 条臂/底还剩 19、13 厚），15 起整体消失。
+        # Wall 25: offsets 3 and 9 give one loop each (arms and floor still 19 and 13 thick), from 15 on gone.
         self.assertEqual(toolpath.pass_count, 2)
         self.assertEqual(_transitions(toolpath).count(MoveKind.LINK), 1)
 
 
 class RingDirectionTests(unittest.TestCase):
-    """环绕向（顺铣 / 逆铣 / 交替）。
+    """Ring direction (climb / conventional / alternating).
 
-    约定：环切从外往内走，未加工材料在环**内侧**；按 M03 主轴 + 右手刀具，
-    逆时针 = 顺铣。offset_loops 给的环本来就是逆时针，所以"全顺铣"就是保持原样。
+    Convention: contouring walks outside in, so unmachined material is on the **inner** side; with an
+    M03 spindle and a right-hand tool, counter-clockwise = climb, and offset_loops already returns those.
     """
 
     def test_climb_runs_every_ring_counter_clockwise(self) -> None:
@@ -264,7 +264,7 @@ class RingDirectionTests(unittest.TestCase):
 
 
 class SharpCornerTests(unittest.TestCase):
-    """三角形区域：很尖的顶角处偏置也要闭合成环（斜接点能离顶点很远）。"""
+    """Triangle region: the offset must close into a ring even at a very sharp apex (miters sit far away)."""
 
     def _plan_triangle(self, width: float, height: float, **parameters) -> Toolpath:
         options = {"stepover_mm": 6.0, "sample_step_mm": 1.0}
@@ -277,7 +277,7 @@ class SharpCornerTests(unittest.TestCase):
         ).toolpath
 
     def test_a_sharp_triangle_still_gets_rings(self) -> None:
-        # 底边 20、高 200（顶角约 5.7°）：斜接点离顶点约 20×偏置量
+        # Base 20, height 200 (apex about 5.7 degrees): the miter point sits about 20x the offset away
         toolpath = self._plan_triangle(20.0, 200.0)
         self.assertGreater(toolpath.pass_count, 0)
         for move in _cut_moves(toolpath):
@@ -285,7 +285,7 @@ class SharpCornerTests(unittest.TestCase):
             self.assertGreater(abs(signed_area(move.points[:-1, :2])), 0.0)
 
     def test_the_first_ring_matches_the_analytic_erosion_area(self) -> None:
-        """三角形的侵蚀还是相似三角形：面积 = 原面积 × ((r − d) / r)²，r 是内切半径。"""
+        """The erosion of a triangle is a similar triangle: area = original area × ((r − d) / r)², r the inradius."""
 
         width, height = 20.0, 200.0
         toolpath = self._plan_triangle(width, height)

@@ -1,4 +1,4 @@
-"""覆盖率分析：这条刀路把区域切干净了没有。"""
+"""Coverage analysis: does this toolpath machine the region out?"""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _plan(region, planner_id: str = "raster", parameters=None, tool=None) -> Too
 
 
 class AnalyticTests(unittest.TestCase):
-    """先拿能算出解析值的例子校准这套网格统计。"""
+    """Calibrate the grid statistics on examples whose answer can be computed analytically."""
 
     def test_a_single_pass_across_a_narrow_region_covers_everything(self) -> None:
         region = build_region("rectangle", {"width_mm": 10.0, "height_mm": 6.0})
@@ -43,7 +43,7 @@ class AnalyticTests(unittest.TestCase):
             )
         )
         coverage = measure_coverage(toolpath, region, _tool(8.0))
-        # D8 的足迹半径 4 覆盖 |y| ≤ 4，区域只有 |y| ≤ 3
+        # A D8 tool has footprint radius 4, covering |y| <= 4, while the region is only |y| <= 3
         self.assertAlmostEqual(coverage.ratio, 1.0, places=9)
         self.assertAlmostEqual(coverage.uncut_area_mm2, 0.0, places=9)
         self.assertEqual(coverage.patch_count, 0)
@@ -55,8 +55,8 @@ class AnalyticTests(unittest.TestCase):
         coverage = measure_coverage(
             _plan(region, parameters={"stepover_mm": 12.0}), region, tool
         )
-        # 相邻刀线间距 12、刀具直径 6 → 每次留一条约 6 × 74 的条带，共 6 条；
-        # 另外还有几条边界附近的小缺口（圆刀切不到尖角与端头之间）。
+        # Passes 12 apart with a 6 mm tool leave stripes of about 6 x 74 each, six of them,
+        # plus a few small gaps near the boundary (a round tool misses corners and pass ends).
         self.assertLess(coverage.ratio, 0.65)
         stripes = [patch for patch in coverage.patches if patch.area_mm2 > 100.0]
         self.assertEqual(len(stripes), 6)
@@ -69,16 +69,16 @@ class AnalyticTests(unittest.TestCase):
         small = build_region("square", {"side_mm": 80.0})
         big = build_region("square", {"side_mm": 100.0})
         coverage = measure_coverage(_plan(small), big, _tool())
-        # 100² − 80² = 3600 的一圈没切到，而且只有一圈（连通）
+        # A ring of 100² − 80² = 3600 is uncut, and it is a single connected patch
         self.assertAlmostEqual(coverage.uncut_area_mm2, 3600.0, delta=120.0)
         self.assertAlmostEqual(coverage.ratio, 0.64, delta=0.02)
         self.assertEqual(coverage.patch_count, 1)
 
     def test_a_round_tool_leaves_only_edge_residue(self) -> None:
-        """圆刀 + 直线走刀切不到的地方都在边界附近。
+        """A round tool on straight passes only leaves material near the boundary.
 
-        两处来源：方形尖角（每角约 3² − π·3²/4 ≈ 1.9 mm²），以及刀线端头之间的扇形缺口
-        （刀线到 x=±37 结束，再往外的 3 mm 只靠端头的半圆覆盖，两条刀线中间自然漏一点）。
+        Two sources: the sharp corners of the square (about 3² − π·3²/4 ≈ 1.9 mm² each), and the
+        scalloped gaps between pass ends (passes stop at x=±37, so the outer 3 mm is covered only by the end caps).
         """
 
         region = build_region("square", {"side_mm": 80.0})
@@ -88,7 +88,7 @@ class AnalyticTests(unittest.TestCase):
         for patch in coverage.patches:
             centre_x, centre_y = patch.centre_mm
             with self.subTest(patch=patch.centre_mm):
-                # 离边界 4 mm 以内：|x| ≥ 36 或 |y| ≥ 36
+                # Within 4 mm of the boundary: |x| >= 36 or |y| >= 36
                 self.assertTrue(abs(centre_x) >= 36.0 or abs(centre_y) >= 36.0)
 
     def test_contour_leaves_the_centre_when_the_stepover_is_large(self) -> None:
@@ -187,7 +187,7 @@ class WarningTests(unittest.TestCase):
 
 
 class RectangleTests(unittest.TestCase):
-    """未切除格子合并成的矩形：给三维叠加显示用，必须与统计的面积一致。"""
+    """Rectangles merged from uncut cells for the 3D overlay: their area must match the statistics."""
 
     def test_rectangles_tile_the_uncut_cells(self) -> None:
         region = build_region("square", {"side_mm": 80.0})
@@ -199,7 +199,7 @@ class RectangleTests(unittest.TestCase):
         )
         self.assertAlmostEqual(total, coverage.uncut_area_mm2, places=6)
         self.assertFalse(coverage.uncut_rects_truncated)
-        # 成片漏切会合并成少量大矩形，而不是几千个格子
+        # A missed band merges into a few big rectangles instead of thousands of cells
         self.assertLess(len(coverage.uncut_rects), 200)
 
     def test_rectangles_stay_inside_the_region_bounds(self) -> None:

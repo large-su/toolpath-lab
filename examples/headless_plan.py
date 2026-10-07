@@ -1,11 +1,11 @@
-"""不用界面的最小示例：算一条刀路、打印统计、导出 NC。
+"""Smallest example without the UI: plan a toolpath, print the statistics, export NC.
 
-在项目根目录运行：
+Run it from the repository root:
 
     python examples/headless_plan.py
 
-它做的事情和界面完全一样，只是绕过了 HTTP 与三维显示——这正是分层带来的好处：
-刀路算法可以脱离界面单独跑。
+It does exactly what the UI does, only without HTTP and 3D display -- which is the point of the
+layering: the toolpath algorithms run without the interface.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# 直接运行本脚本时，sys.path[0] 是 examples/ 而不是仓库根，所以 toolpath_lab 不在导入路径上。
-# 把仓库根补进去，"python examples/headless_plan.py" 才能像文档写的那样直接可用。
+# Run directly, sys.path[0] is examples/ rather than the repository root, so toolpath_lab is not on
+# the import path. Adding the root makes "python examples/headless_plan.py" work as documented.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

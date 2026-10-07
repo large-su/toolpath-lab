@@ -195,7 +195,6 @@ def toolpath_to_xxx(toolpath: Toolpath, *, decimals: int = 3, **options) -> str:
 - 单位：毫米、秒、度；角度只在 API 边界出现，核心内部用弧度；
 - 坐标：右手系、Z 轴向上、XY 是加工平面；数组一律 float64；
 - 错误：参数问题抛 ParameterError（HTTP 400），几何不可行抛 PlanningError（HTTP 422）；
-- 用户可见文案用中文（放在 label / help），代码注释与文档字符串用英文
-  （这两条由 `tests/test_conventions.py` 机器检查；还没转换的旧文件列在那里的 `_PENDING_ENGLISH`
-  里，清单只会变短）；
+- 用户可见文案用中文（放在 label / help），代码注释与文档字符串用英文（这两条由
+  `tests/test_conventions.py` 机器检查，全仓库无例外）；
 - 每个新能力都要补测试，`python -m unittest discover -s tests` 必须全绿。

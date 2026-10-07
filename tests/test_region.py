@@ -1,4 +1,4 @@
-"""区域形状：方形、矩形、圆形、椭圆，以及所有形状共同遵守的边界契约。"""
+"""Region shapes: square, rectangle, circle, ellipse, plus the boundary contract they all obey."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ class RegionCatalogTests(unittest.TestCase):
 
 
 class ShapeContractTests(unittest.TestCase):
-    """新增形状时必须满足的契约：逆时针、不重复首点、有限、至少三个点、以原点为中心。"""
+    """Contract for a new shape: counter-clockwise, no repeated first point, finite, at least three points, centred on the origin."""
 
     def test_every_boundary_is_a_ccw_polygon_without_repeats(self) -> None:
         for shape_id in REGION_SHAPES.ids():
@@ -93,8 +93,8 @@ class ShapeContractTests(unittest.TestCase):
                 )
 
     def test_every_shape_is_centred_on_the_origin(self) -> None:
-        # 契约只要求包围盒对称：凹形状（U 形）的材料重心并不在原点，
-        # 而三维取景与工件厚度都是按包围盒算的。
+        # The contract only requires a symmetric bounding box: a concave shape (the U) has its
+        # centre of mass elsewhere, while framing and workpiece thickness go by the bounding box.
         for shape_id in REGION_SHAPES.ids():
             polygon = ensure_ccw(build_region(shape_id, {}).boundary())
             [(x_min, x_max), (y_min, y_max)] = polygon_bounds(polygon)
@@ -168,7 +168,7 @@ class EllipseRegionTests(unittest.TestCase):
             ).boundary()
         )
         self.assertEqual(polygon.shape[0], CURVE_SEGMENTS)
-        # 每个点都落在椭圆上：(x/a)² + (y/b)² == 1
+        # Every point lies on the ellipse: (x/a)² + (y/b)² == 1
         self.assertTrue(
             bool(
                 np.allclose(
@@ -198,7 +198,7 @@ class EllipseRegionTests(unittest.TestCase):
 
 
 class UShapeRegionTests(unittest.TestCase):
-    """凹多边形：一条扫描线会切出两段，刀路与三维显示都不需要特判。"""
+    """A concave polygon: one scanline cuts two intervals, and neither the toolpath nor the 3D view needs a special case."""
 
     def test_boundary_is_an_eight_vertex_concave_polygon(self) -> None:
         region = build_region(
@@ -206,7 +206,7 @@ class UShapeRegionTests(unittest.TestCase):
         )
         polygon = ensure_ccw(region.boundary())
         self.assertEqual(polygon.shape, (8, 2))
-        # 100 × 80 减去 50 × 55 的槽
+        # 100 x 80 minus a 50 x 55 slot
         self.assertAlmostEqual(signed_area(polygon), 8000.0 - 2750.0, places=6)
         self.assertEqual(polygon_bounds(polygon), [[-50.0, 50.0], [-40.0, 40.0]])
 
@@ -227,7 +227,7 @@ class UShapeRegionTests(unittest.TestCase):
         self.assertAlmostEqual(base[0].end, 50.0, places=6)
 
     def test_a_wall_that_would_close_the_channel_is_rejected(self) -> None:
-        # 壁厚 >= 外宽的一半时两条臂会贴在一起，形状就不再是 U 形了。
+        # With a wall thickness >= half the outer width the arms touch and it stops being a U.
         with self.assertRaises(ParameterError):
             build_region("u_shape", {"width_mm": 100.0, "wall_mm": 50.0})
         with self.assertRaises(ParameterError):
@@ -239,13 +239,13 @@ class UShapeRegionTests(unittest.TestCase):
 
 
 class DumbbellRegionTests(unittest.TestCase):
-    """哑铃形：细颈被偏置吃掉后，环切一层会分裂成两条环。"""
+    """Dumbbell: once the offset eats the neck, one contour layer splits into two loops."""
 
     def test_boundary_is_a_twelve_vertex_concave_polygon(self) -> None:
         region = build_region("dumbbell", {})
         polygon = ensure_ccw(region.boundary())
         self.assertEqual(polygon.shape, (12, 2))
-        # 160 × 60 的两个方头 + 40 × 20 的细颈
+        # Two 160 x 60 pads joined by a 40 x 20 neck
         self.assertAlmostEqual(signed_area(polygon), 2 * 60 * 60 + 40 * 20, places=6)
         self.assertEqual(polygon_bounds(polygon), [[-80.0, 80.0], [-30.0, 30.0]])
 
@@ -272,7 +272,7 @@ class DumbbellRegionTests(unittest.TestCase):
 
 
 class TriangleRegionTests(unittest.TestCase):
-    """等腰三角形：顶角可以调尖，是偏置几何最吃力的形状。"""
+    """Isosceles triangle: the apex angle can be made sharp, the hardest case for the offset geometry."""
 
     def test_boundary_is_a_counter_clockwise_triangle(self) -> None:
         region = build_region("triangle", {"width_mm": 80.0, "height_mm": 60.0})
@@ -282,7 +282,7 @@ class TriangleRegionTests(unittest.TestCase):
         self.assertEqual(polygon_bounds(polygon), [[-40.0, 40.0], [-30.0, 30.0]])
 
     def test_the_apex_angle_follows_the_width_and_height(self) -> None:
-        # 底边 20、高 200 时顶角只有约 5.7°：斜接点需要约 20×偏置量的延长
+        # With a base of 20 and a height of 200 the apex angle is only about 5.7 degrees, so the miter point needs a long extension
         region = build_region("triangle", {"width_mm": 20.0, "height_mm": 200.0})
         polygon = ensure_ccw(region.boundary())
         apex = polygon[np.argmax(polygon[:, 1])]

@@ -1,4 +1,4 @@
-"""栅格刀路：往复与单向。"""
+"""Raster toolpaths: zigzag and one-way."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _cut_moves(toolpath: Toolpath):
 
 class RegistryTests(unittest.TestCase):
     def test_registered_strategies_are_listed_in_import_order(self) -> None:
-        # 顺序 = planning/__init__.py 的导入顺序 = 界面上的排列顺序。
+        # Order = the import order in planning/__init__.py = the order shown in the UI.
         self.assertEqual(PLANNERS.ids(), ["raster", "contour", "adaptive_contour"])
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:
@@ -59,7 +59,7 @@ class RegistryTests(unittest.TestCase):
 
 class PassLayoutTests(unittest.TestCase):
     def test_pass_count_follows_stepover_and_tool_radius(self) -> None:
-        # 80 mm 方形，刀具 D6（足迹半径 3），切宽 6 → v 从 -37 到 37，13 个间隔 + 末刀对齐 = 14
+        # 80 mm square, D6 (footprint radius 3), stepover 6: v from -37 to 37, 13 intervals plus the aligned last pass = 14
         toolpath = _plan().toolpath
         self.assertEqual(toolpath.pass_count, 14)
 
@@ -97,7 +97,7 @@ class ModeTests(unittest.TestCase):
         toolpath = _plan({"mode": "zigzag"}).toolpath
         kinds = [move.kind for move in toolpath.moves]
         self.assertEqual(kinds.count(MoveKind.LINK), toolpath.pass_count - 1)
-        # 只有下刀与最后抬刀两段快速移动
+        # Only two rapids: the plunge and the final retract
         self.assertEqual(kinds.count(MoveKind.RAPID), 2)
 
     def test_one_way_keeps_a_single_direction_and_retracts(self) -> None:
@@ -107,7 +107,7 @@ class ModeTests(unittest.TestCase):
             self.assertGreater(float(move.points[-1][0] - move.points[0][0]), 0.0)
         kinds = [move.kind for move in toolpath.moves]
         self.assertEqual(kinds.count(MoveKind.LINK), 0)
-        # 每刀之间一次抬刀 + 首尾各一次
+        # One retract between passes plus one at each end
         self.assertEqual(kinds.count(MoveKind.RAPID), len(passes) + 1)
 
     def test_one_way_takes_longer_than_zigzag(self) -> None:
@@ -159,7 +159,7 @@ class CircleRegionTests(unittest.TestCase):
 
 
 class EveryShapeTests(unittest.TestCase):
-    """新增区域形状的验收线：不需要改任何刀路代码就能规划。"""
+    """Acceptance line for a new region shape: it can be planned without touching toolpath code."""
 
     def test_every_shape_can_be_planned_by_every_strategy(self) -> None:
         for shape_id in REGION_SHAPES.ids():
@@ -174,19 +174,19 @@ class EveryShapeTests(unittest.TestCase):
                     self.assertGreater(toolpath.estimated_time_s, 0.0)
 
     def test_an_elongated_rectangle_gets_more_passes_along_its_short_side(self) -> None:
-        # 100 × 60 的矩形：沿 X 走刀（切宽方向是 Y，只有 60 宽）→ 刀数由短边决定。
+        # 100 x 60 rectangle cut along X (the stepover direction is Y, only 60 wide), so the short side sets the count
         toolpath = run_plan(
             planner_id="raster",
             tool=_tool(),
             region=build_region("rectangle", {"width_mm": 100.0, "height_mm": 60.0}),
             parameters={"stepover_mm": 6.0, "direction_deg": 0.0},
         ).toolpath
-        # v 从 -30+3 到 30-3，共 54/6 = 9 个间隔 + 末刀对齐 = 10 刀
+        # v from -30+3 to 30-3: 54/6 = 9 intervals plus the aligned last pass = 10 passes
         self.assertEqual(toolpath.pass_count, 10)
         self.assertAlmostEqual(toolpath.cut_length_mm, 10 * 94.0, places=6)
 
     def test_a_concave_region_puts_two_passes_on_the_same_level(self) -> None:
-        # U 形：横穿两条臂的扫描线得到两段独立刀轨，低于槽底的只有一段。
+        # U shape: a scanline across both arms yields two independent toolpaths, below the slot floor only one
         toolpath = run_plan(
             planner_id="raster",
             tool=_tool(),
@@ -197,7 +197,7 @@ class EveryShapeTests(unittest.TestCase):
         levels = [round(float(move.points[0][1]), 6) for move in _cut_moves(toolpath)]
         repeated = {level for level in levels if levels.count(level) > 1}
         self.assertTrue(repeated)
-        # 最下面那一刀在两条臂之间是连通的（扫描线只有一段）
+        # The bottom pass is connected across both arms (the scanline has a single interval)
         self.assertEqual(levels.count(min(levels)), 1)
         self.assertEqual(levels.count(max(levels)), 2)
 

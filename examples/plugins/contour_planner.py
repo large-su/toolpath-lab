@@ -1,29 +1,35 @@
-"""示例插件：环切（等距轮廓）策略。
+"""Example plugin: contour (equidistant outline) strategy.
 
-这是一个完整、可直接使用的策略实现：它自带所需的几何（多边形等距偏置），
-只依赖公开接口，可以当作编写其它策略的参考。
+A complete, directly usable strategy implementation: it carries the geometry it needs (polygon
+inward offset) and depends on public interfaces only, so it can serve as a reference for writing
+other strategies.
 
-**与内置版本的关系**：内置的 toolpath_lab/planning/contour.py 已经升级成"每层多环"（凹形状的
-细颈被偏置吃掉后形状会分裂，每块单独加工，兄弟环之间抬刀快移），偏置几何也搬到了
-planning/geometry2d.py；本文件保留一份**单环**的最小实现，用来演示一个策略需要写什么，
-以及"偏置几何可以从策略里长出来、需要时再搬进主程序"这条路径。
+**Relation to the built-in version**: the built-in toolpath_lab/planning/contour.py has since been
+upgraded to "several loops per layer" (once the offset eats a concave neck the shape splits and each
+piece is machined separately, with sibling loops reached by retracting and rapid moves), and its
+offset geometry moved to planning/geometry2d.py. This file keeps a **single-loop** minimal
+implementation to show what a strategy has to contain, and to demonstrate the path "geometry can grow
+inside a strategy and move into the main program when it is needed".
 
-**注意**：环切已经内置为 toolpath_lab/planning/contour.py（id `contour`），所以本文件的 id 特意
-写成 `contour_demo`，直接启用不会和内置策略撞车。两种用法：
+**Note**: contouring is already built in as toolpath_lab/planning/contour.py (id `contour`), so the id
+here is deliberately `contour_demo`; enabling it directly cannot collide with the built-in strategy.
+Two ways to use this file:
 
-1. 照着写自己的策略：复制成 toolpath_lab/planning/my_strategy.py，改掉 id / label，再在
-   toolpath_lab/planning/__init__.py 里加一行（导入顺序即界面上的排列顺序）：
+1. As a template for your own strategy: copy it to toolpath_lab/planning/my_strategy.py, change the
+   id / label, and add one import line to toolpath_lab/planning/__init__.py (import order = the order
+   in the UI):
 
        from toolpath_lab.planning import my_strategy as _my_strategy  # noqa: F401
 
-2. 想直接在界面上看到这个示例：复制成 toolpath_lab/planning/contour_demo.py，再加一行
-   `from toolpath_lab.planning import contour_demo as _contour_demo  # noqa: F401`，
-   重启后会多出一个"环切(示例插件)"策略。
+2. To see this example in the UI: copy it to toolpath_lab/planning/contour_demo.py and add
+   `from toolpath_lab.planning import contour_demo as _contour_demo  # noqa: F401`; after a restart
+   one more strategy entry (the example plugin) shows up.
 
-注册表遇到重复 id 会抛 RegistryError，所以无论哪种用法，都不要保留两个相同的 id。
+The registry raises RegistryError on a duplicate id, so never keep two strategies with the same id.
 
-**当前限制**：偏置量超过局部内切半径时，环会断开；本实现每个偏置层只保留一条环，
-因此凹形状的窄颈区域会提前结束（内置版本已经没有这个限制）。
+**Current limitation**: when the offset exceeds the local inscribed radius the ring breaks; this
+implementation keeps a single loop per offset layer, so a concave narrow neck ends early (the built-in
+version no longer has that limitation).
 """
 
 from __future__ import annotations
@@ -46,10 +52,11 @@ _MIN_RING_AREA_MM2 = 0.5
 
 
 # --------------------------------------------------------------------------
-# 这份几何只被环切用到，所以放在插件里；将来有第二个策略需要它，再提到 core 里。
+# This geometry is used by contouring only, so it lives in the plugin; move it into core once a
+# second strategy needs it.
 # --------------------------------------------------------------------------
 def _inward_normals(polygon: NDArray[np.float64]) -> NDArray[np.float64]:
-    """每条边的单位左法向（逆时针多边形时为内法向）。"""
+    """Unit left normal of every edge (the inward normal for a counter-clockwise polygon)."""
 
     edge = np.roll(polygon, -1, axis=0) - polygon
     length = np.linalg.norm(edge, axis=1, keepdims=True)
@@ -77,13 +84,15 @@ def offset_polygon(
     chord_mm: float = 0.5,
     max_miter: float = 4.0,
 ) -> NDArray[np.float64] | None:
-    """逆时针多边形向内偏置 distance >= 0，退化为空时返回 None。
+    """Offset a counter-clockwise polygon inwards by distance >= 0, returning None if it degenerates.
 
-    凸角用斜接（miter）交点，凹角插入圆弧接头——多边形内缩在凹角处本来就是圆弧；
-    最后用"到原始边界的距离 >= 偏置量"过滤掉自交产生的顶点。
+    Convex corners use miter intersections and reflex corners get a circular arc insert -- a polygon
+    shrunk inwards really is an arc at a reflex corner; afterwards vertices created by
+    self-intersection are filtered out with "distance to the original boundary >= offset distance".
 
-    只做向内偏置：向外偏置的凸角要补圆弧、凹角反而要斜接，"到边界距离"这条过滤规则
-    也不再成立，是另一套几何；用不到，所以负值直接报错。
+    Inward offsets only: offsetting outwards needs arcs at convex corners and miters at reflex ones,
+    and the "distance to the boundary" filter no longer holds either -- that is a different piece of
+    geometry. It is not needed, so a negative distance raises.
     """
 
     if distance < 0.0:
@@ -143,7 +152,7 @@ def offset_polygon(
 
 
 def resample_ring(polygon: NDArray[np.float64], step_mm: float) -> NDArray[np.float64]:
-    """按等弧长重采样一个闭合环（不重复首点）。"""
+    """Resample a closed ring at equal arc length (without repeating the first point)."""
 
     ring = np.vstack([polygon, polygon[:1]])
     steps = np.linalg.norm(np.diff(ring, axis=0), axis=1)
@@ -162,11 +171,11 @@ def resample_ring(polygon: NDArray[np.float64], step_mm: float) -> NDArray[np.fl
 
 
 # --------------------------------------------------------------------------
-# 策略本体
+# The strategy itself
 # --------------------------------------------------------------------------
 @PLANNERS.register
 class ContourPlanner(Planner):
-    """沿区域轮廓逐圈向内偏置的环切刀路。"""
+    """Contour toolpath that offsets the region outline inwards ring by ring."""
 
     id: ClassVar[str] = "contour_demo"
     label: ClassVar[str] = "环切(示例插件)"
@@ -180,7 +189,7 @@ class ContourPlanner(Planner):
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
         )
-    ) + MOTION_PARAMETERS  # 抬刀高度与快移速度是每个策略都要的，直接并进来
+    ) + MOTION_PARAMETERS  # retract height and rapid feed are needed by every strategy, merge them
 
     def plan(self, context: PlanningContext) -> Toolpath:
         stepover = self.require_positive(
@@ -242,7 +251,7 @@ class ContourPlanner(Planner):
 
 
 def describe_plugin() -> dict[str, Any]:
-    """给好奇的人看的自检信息。"""
+    """Self-check information for the curious."""
 
     return {"id": ContourPlanner.id, "label": ContourPlanner.label,
             "parameters": [item.key for item in ContourPlanner.parameters]}

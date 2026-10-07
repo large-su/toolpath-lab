@@ -5,15 +5,9 @@ Two conventions about language are written down in both documents:
 - code comments and docstrings are written in English;
 - everything the user sees (labels, help texts, notes, warnings) is written in Chinese.
 
-Both are machine checkable, so they are checked here instead of being left to review. The package
-still contains files whose docstrings predate the convention; they are listed in `_PENDING_ENGLISH`
-so that
-
-- no **new** file may break the rule (the list may only shrink), and
-- converting a file fails this test until its entry is removed.
-
-`tests/test_conventions.py` is also the reason the sweep can be resumed at any time: the list is the
-remaining work.
+Both are machine checkable, so they are checked here instead of being left to review. The first one
+used to carry a list of files whose docstrings predated the convention; that sweep is finished, so
+the rule now holds for every Python file in the repository without exception.
 """
 
 from __future__ import annotations
@@ -28,20 +22,6 @@ from toolpath_lab.core.tool import Tool, ToolKind
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_ROOTS = ("toolpath_lab", "tests", "examples")
-
-#: Files whose docstrings and comments are still Chinese. Remove an entry as soon as its file is
-#: translated; never add one. (Comment shows how many Chinese characters were left when listed.)
-#: `toolpath_lab/` is fully converted; what remains is the test suite and the examples.
-_PENDING_ENGLISH = (
-    "tests/test_adaptive.py",  # 327
-    "tests/test_contour.py",  # 347
-    "tests/test_coverage.py",  # 236
-    "tests/test_geometry2d.py",  # 736
-    "tests/test_planners.py",  # 177
-    "tests/test_region.py",  # 239
-    "examples/headless_plan.py",  # 117
-    "examples/plugins/contour_planner.py",  # 598
-)
 
 
 def _chinese_characters(text: str) -> int:
@@ -72,33 +52,18 @@ def _source_files():
 
 
 class DocstringLanguageTests(unittest.TestCase):
-    def test_no_new_file_breaks_the_english_rule(self) -> None:
+    def test_every_python_file_documents_in_english(self) -> None:
         offences = {
             name: _english_offences(path)
             for name, path in _source_files()
-            if _english_offences(path) and name not in _PENDING_ENGLISH
+            if _english_offences(path)
         }
         self.assertEqual(
             offences,
             {},
-            "文档字符串与注释应该是英文（CONTRIBUTING / docs/extending.md §5）："
-            f"这些文件还没转换 {offences}",
+            "文档字符串与注释应该是英文（CONTRIBUTING / docs/extending.md §5）；"
+            f"这些文件里还有中文 {offences}",
         )
-
-    def test_the_pending_list_only_shrinks(self) -> None:
-        """Every listed file must still offend, and every path must exist.
-
-        A file that has been translated has to be removed from the list; a typo in a path has to be
-        fixed. Both show up here.
-        """
-
-        stale = [name for name in _PENDING_ENGLISH if _english_offences(REPOSITORY_ROOT / name) == 0]
-        self.assertEqual(
-            stale, [], f"这些文件已经没有中文文档字符串了，请从 _PENDING_ENGLISH 里划掉：{stale}"
-        )
-
-    def test_the_pending_list_has_no_duplicates(self) -> None:
-        self.assertEqual(len(_PENDING_ENGLISH), len(set(_PENDING_ENGLISH)))
 
 
 class UserFacingTextTests(unittest.TestCase):

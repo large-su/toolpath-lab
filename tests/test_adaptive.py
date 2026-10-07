@@ -1,4 +1,4 @@
-"""自适应环切：切宽自动收紧到覆盖率达标，到不了就如实说明。"""
+"""Adaptive contouring: tighten the stepover until the coverage target is met, or say honestly why not."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class RegistrationTests(unittest.TestCase):
         entry = {item["id"]: item for item in planner_catalog()}["adaptive_contour"]
         self.assertEqual(entry["label"], "自适应环切")
         keys = [item["key"] for item in entry["parameters"]]
-        # 环切的参数一个不少，再加四项目适应专属
+        # Every contour parameter is present, plus the adaptive ones
         for inherited in ("stepover_mm", "sample_step_mm", "ring_direction", "feed_mm_per_min",
                           "safe_height_mm", "rapid_feed_mm_per_min"):
             self.assertIn(inherited, keys)
@@ -61,7 +61,7 @@ class TighteningTests(unittest.TestCase):
     def test_it_tightens_until_the_target_is_met(self) -> None:
         region, outcome = _run()
         toolpath = outcome.toolpath
-        # 方形 80、D6：切宽 6 mm 时 99.31%，收紧一轮到 4.2 mm 就是 99.86%
+        # 80 square, D6: 99.31% at a 6 mm stepover, 99.86% after one round down to 4.2 mm
         self.assertAlmostEqual(toolpath.statistics()["pass_count"], 9)
         coverage = measure_coverage(toolpath, region, _tool())
         self.assertGreaterEqual(coverage.ratio, 0.995)
@@ -85,11 +85,11 @@ class TighteningTests(unittest.TestCase):
         self.assertEqual(outcome.toolpath.pass_count, plain.pass_count)
 
     def test_it_stops_as_soon_as_a_round_does_not_improve(self) -> None:
-        """三角形的残留是几何极限：再收窄也不会更好，就不该继续白算。"""
+        """The residue on a triangle is a geometric limit: tightening cannot help, so it must not keep computing."""
 
         region, outcome = _run("triangle")
         toolpath = outcome.toolpath
-        # 6 → 4.2 提升明显，2.94 与 4.2 完全一样，于是停在 4.2（环数更少的那次）
+        # 6 -> 4.2 improves clearly, 2.94 is identical to 4.2, so it stops at 4.2 (the cheaper round)
         self.assertIn("切宽 6 → 4.2 mm", toolpath.notes[0])
         self.assertIn("共算 3 次", toolpath.notes[0])
         self.assertIn("未达标", toolpath.notes[0])
@@ -101,7 +101,7 @@ class TighteningTests(unittest.TestCase):
         )
 
     def test_it_keeps_the_best_round_even_though_coverage_is_not_monotonic(self) -> None:
-        """覆盖率并非切宽越小越高（哑铃在 1 mm 时反而更差），所以必须保留最好的一次。"""
+        """Coverage is not monotonic in the stepover (the dumbbell is worse at 1 mm), so the best round is kept."""
 
         region = build_region("dumbbell", {})
         outcome = run_plan(
@@ -113,7 +113,7 @@ class TighteningTests(unittest.TestCase):
         smallest = run_plan(planner_id="contour", tool=_tool(), region=region,
                             parameters={"stepover_mm": 1.0}).toolpath
         self.assertGreater(reported, measure_coverage(smallest, region, _tool()).ratio)
-        # 每一轮的覆盖率都记在 notes 里，便于回溯
+        # Every round's coverage is recorded in the notes, so it can be traced back
         self.assertIn("各轮实测", toolpath.notes[1])
 
     def test_the_round_count_is_bounded(self) -> None:
@@ -127,7 +127,7 @@ class TighteningTests(unittest.TestCase):
 
     def test_the_floor_stops_the_tightening(self) -> None:
         _, outcome = _run(min_stepover_mm=5.0)
-        # 下限 5 mm：先试 5（6 × 0.7 = 4.2 被抬到下限），再收就没有意义了
+        # Floor 5 mm: 5 is tried first (6 x 0.7 = 4.2 is raised to the floor), tightening further is pointless
         self.assertIn("各轮实测：6 mm", outcome.toolpath.notes[1])
         self.assertIn("5 mm", outcome.toolpath.notes[1])
         self.assertIn("共算 2 次", outcome.toolpath.notes[0])
@@ -140,7 +140,7 @@ class TighteningTests(unittest.TestCase):
         self.assertTrue(any("环切：共" in note for note in notes[2:]))
 
     def test_the_curve_reports_coverage_and_cost_per_round(self) -> None:
-        """性价比曲线：每轮都给出切宽、覆盖率、环数、切削长度与工时。"""
+        """Value for money curve: every round reports stepover, coverage, ring count, cutting length and time."""
 
         _, outcome = _run()
         summary, curve = outcome.toolpath.notes[0], outcome.toolpath.notes[1]
@@ -156,10 +156,10 @@ class TighteningTests(unittest.TestCase):
 
 
 class TimeBudgetTests(unittest.TestCase):
-    """工时上限：收窄切宽靠的是多走几圈，太贵的那一轮就不该采用。"""
+    """Time limit: tightening the stepover means walking more rings, so a round that costs too much is not adopted."""
 
     def test_an_expensive_round_is_rejected(self) -> None:
-        # 方形 80：6 mm → 111.6 s，4.2 mm → 149.9 s（1.34 倍）。上限 1.2 倍时后者出局。
+        # 80 square: 6 mm -> 111.6 s, 4.2 mm -> 149.9 s (1.34x). With a 1.2x limit the latter is out.
         region, outcome = _run(coverage_target=100.0, max_time_ratio=1.2)
         toolpath = outcome.toolpath
         self.assertAlmostEqual(toolpath.statistics()["pass_count"], 7)  # 保留了首轮
@@ -168,7 +168,7 @@ class TimeBudgetTests(unittest.TestCase):
         self.assertIn("工时上限", outcome.warnings[0])
         self.assertIn("149.9 s", outcome.warnings[0])
         self.assertIn("调大", outcome.warnings[0])
-        # 那一轮还是算过、也记在曲线上，只是没被采用
+        # That round was still computed and recorded on the curve, it was just not adopted
         self.assertIn("4.2 mm → 99.86%", toolpath.notes[1])
         self.assertAlmostEqual(
             measure_coverage(toolpath, region, _tool()).ratio, 0.9931, delta=0.001
@@ -177,7 +177,7 @@ class TimeBudgetTests(unittest.TestCase):
     def test_a_generous_budget_lets_it_tighten(self) -> None:
         region, outcome = _run(coverage_target=100.0, max_time_ratio=2.0)
         toolpath = outcome.toolpath
-        # 上限 2 倍时 4.2 mm（1.34 倍）与 2.94 mm（1.84 倍）都在预算内，取覆盖率最好的那次
+        # With a 2x limit both 4.2 mm (1.34x) and 2.94 mm (1.84x) fit the budget, so the best coverage wins
         self.assertAlmostEqual(toolpath.statistics()["pass_count"], 13)
         self.assertIn("切宽 6 → 2.94 mm", toolpath.notes[0])
         self.assertIn("不再提升", outcome.warnings[0])
@@ -186,7 +186,7 @@ class TimeBudgetTests(unittest.TestCase):
         )
 
     def test_a_round_that_meets_the_target_but_costs_too_much_is_also_rejected(self) -> None:
-        # 目标 99.5%：4.2 mm 那次正好达标，但工时 1.34 倍 > 上限 1.2 倍，于是保留 6 mm
+        # Target 99.5%: 4.2 mm meets it, but 1.34x time exceeds the 1.2x limit, so 6 mm is kept
         _, outcome = _run(coverage_target=99.5, max_time_ratio=1.2)
         self.assertIn("切宽 6 → 6 mm", outcome.toolpath.notes[0])
         self.assertIn("未达标", outcome.toolpath.notes[0])
@@ -205,14 +205,14 @@ class InvalidParameterTests(unittest.TestCase):
             _run(coverage_target=10.0)
 
     def test_an_out_of_range_factor_is_rejected_by_the_parameter_layer(self) -> None:
-        # 参数声明里已经限定 0.3–0.95，接口与界面都会先拦下来
+        # The declaration already limits the factor to 0.3-0.95, so the API and UI reject it first
         for factor in (0.0, 1.0, 1.5):
             with self.subTest(factor=factor):
                 with self.assertRaises(ParameterError):
                     _run(stepover_factor=factor)
 
     def test_the_planner_itself_rejects_a_factor_outside_zero_and_one(self) -> None:
-        """绕过参数层直接调用域层时也得守住：系数 ≥ 1 就是"越收越宽"。"""
+        """Calling the domain layer directly, bypassing the parameter layer, must hold too: a factor >= 1 would widen."""
 
         entry = {item["id"]: item for item in planner_catalog()}["adaptive_contour"]
         defaults = {item["key"]: item["default"] for item in entry["parameters"]}

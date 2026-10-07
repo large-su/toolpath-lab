@@ -1,4 +1,4 @@
-"""扫描线裁剪、多边形规范化，以及向内偏置（含凹形状分裂出的多条环）。"""
+"""Scanline clipping, polygon normalisation, and the inward offset (including split concave loops)."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def _square(side: float = 80.0) -> np.ndarray:
 
 
 def _densify(loop: np.ndarray, step: float) -> np.ndarray:
-    """沿环的每条边密集取样：查"边"有没有越界，光看顶点是不够的。"""
+    """Sample densely along every edge of a loop: checking only the vertices is not enough."""
 
     out = []
     for start, end in zip(loop, np.roll(loop, -1, axis=0)):
@@ -43,7 +43,7 @@ def _densify(loop: np.ndarray, step: float) -> np.ndarray:
 
 
 def _self_intersections(polygon: np.ndarray) -> int:
-    """数一数非相邻边之间的交点个数。"""
+    """Count the intersections between non-adjacent edges."""
 
     count = polygon.shape[0]
     found = 0
@@ -106,7 +106,7 @@ class ScanlineTests(unittest.TestCase):
         self.assertAlmostEqual(offset[0].end, expected, places=2)
 
     def test_a_concave_polygon_yields_several_intervals(self) -> None:
-        """凹形状是保留能力：新增形状不需要改裁剪代码。"""
+        """Concave shapes are a standing capability: a new shape needs no change to the clipping code."""
 
         u_shape = np.array(
             [[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [20.0, 30.0],
@@ -149,7 +149,7 @@ class MeasureTests(unittest.TestCase):
 
 
 class OffsetLoopTests(unittest.TestCase):
-    """向内偏置：数值上对得上解析值，而且整条边都不越界。"""
+    """Inward offset: it matches the analytic values and no edge crosses the boundary."""
 
     def test_square_offset_is_exact(self) -> None:
         for distance, side in ((3.0, 74.0), (10.0, 60.0), (21.0, 38.0), (33.0, 14.0)):
@@ -180,7 +180,7 @@ class OffsetLoopTests(unittest.TestCase):
         self.assertAlmostEqual(signed_area(loop), 6400.0, places=6)
 
     def test_outward_offset_is_rejected(self) -> None:
-        # 向外偏置要在凸角补圆弧，是另一套几何：负值直接报错，免得悄悄给出错的环。
+        # An outward offset needs arcs at convex corners, a different geometry: a negative value raises instead
         with self.assertRaises(ValueError):
             offset_loops(_square(80.0), -10.0)
 
@@ -190,10 +190,10 @@ class OffsetLoopTests(unittest.TestCase):
         self.assertEqual(offset_loops(polygon, 27.0, min_area_mm2=100.0), [])
 
     def test_every_loop_keeps_the_distance_along_its_edges(self) -> None:
-        """关键不变式：不是只有顶点不越界，整条边都不能越界。
+        """The key invariant: it is not enough for the vertices to stay inside, no edge may cross the boundary.
 
-        早期版本把"被细颈吃掉后剩下的顶点"按原顺序接起来，顶点都合格、边却横穿细颈，
-        实测边中点离轮廓只有细颈一半那么远。
+        An early version re-connected the vertices left after the neck was eaten in their original order:
+        every vertex passed, yet an edge crossed the neck, its midpoint only half the neck from the outline.
         """
 
         for shape_id in ("square", "circle", "rectangle", "ellipse", "u_shape", "dumbbell"):
@@ -215,7 +215,7 @@ class OffsetLoopTests(unittest.TestCase):
 
     def test_a_thin_neck_splits_the_offset_into_several_loops(self) -> None:
         polygon = ensure_ccw(build_region("dumbbell", {}).boundary())
-        # 细颈宽 20：偏置 3、9 时细颈还在（一条环），15 起被吃掉，两块方头各成一条环。
+        # Neck 20 wide: it survives offsets 3 and 9 (one loop) and is eaten from 15 on, leaving one loop per pad.
         self.assertEqual(len(offset_loops(polygon, 3.0)), 1)
         self.assertEqual(len(offset_loops(polygon, 9.0)), 1)
         for distance in (15.0, 21.0, 27.0):
@@ -227,7 +227,7 @@ class OffsetLoopTests(unittest.TestCase):
     def test_the_split_loops_cover_the_whole_offset_region(self) -> None:
         polygon = ensure_ccw(build_region("dumbbell", {}).boundary())
         loops = offset_loops(polygon, 15.0)
-        # 方头 60 − 2×15 = 30 → 30×30 = 900，再加上凹角圆弧鼓包 ≈ 24
+        # Pad 60 - 2x15 = 30, so 30x30 = 900, plus the reflex arc bulges of about 24
         self.assertAlmostEqual(
             sum(signed_area(loop) for loop in loops), 2 * 924.0, delta=2.0
         )
@@ -235,7 +235,7 @@ class OffsetLoopTests(unittest.TestCase):
     def test_a_u_shape_offset_keeps_the_reflex_arc_bulges(self) -> None:
         polygon = ensure_ccw(build_region("u_shape", {}).boundary())
         loop = offset_polygon(polygon, 3.0)
-        # 直角版本是 94×74 − 56×55 = 3876，两个凹角各多一块圆弧鼓包 3² − π·3²/4
+        # The right-angled version is 94x74 - 56x55 = 3876, plus one arc bulge 3² - π·3²/4 per reflex corner
         bulge = 2.0 * (9.0 - pi * 9.0 / 4.0)
         self.assertAlmostEqual(signed_area(loop), 3876.0 + bulge, delta=0.5)
 
@@ -246,17 +246,17 @@ class OffsetLoopTests(unittest.TestCase):
 
 
 def _triangle(width: float, height: float) -> np.ndarray:
-    """底边宽 width、高 height 的等腰三角形（顶点朝上）。"""
+    """Isosceles triangle with base `width` and height `height` (apex pointing up)."""
 
     half = width / 2.0
     return ensure_ccw(np.array([[-half, 0.0], [half, 0.0], [0.0, height]]))
 
 
 def _slab_with_fin() -> np.ndarray:
-    """一块 100 × 60 的板，上边中间长了一个 4 × 10 的小尖鳍（顶角约 22.6°）。
+    """A 100 x 60 slab with a small 4 x 10 fin on top (apex angle about 22.6°).
 
-    尖鳍两侧边长约 10.2，而斜接点需要 3·tan(78.7°) ≈ 15 的延长——斜接点落在平移线段之外。
-    按几何结论，这时鳍附近宽 2L·sin(11.3°) ≈ 4 < 6 = 2d，比刀具还窄，整只鳍早被侵蚀掉了。
+    The fin's sides are about 10.2 long while its miter point needs 3·tan(78.7°) ≈ 15 of extension, so
+    the miter falls outside the shifted segment, where the fin is only 2L·sin(11.3°) ≈ 4 < 6 = 2d wide.
     """
 
     return ensure_ccw(
@@ -275,10 +275,10 @@ def _slab_with_fin() -> np.ndarray:
 
 
 class SharpCornerTests(unittest.TestCase):
-    """尖角处的偏置：斜接点可以离顶点很远，但这从来不是"够不够长"的问题。"""
+    """Offsetting at sharp corners: the miter point can sit far from the vertex, which is never about length."""
 
     def test_a_sharp_apex_still_closes_the_ring(self) -> None:
-        # 顶角 18.9° 的斜接点离顶点约 6×偏置量，照样要闭合成环
+        # With an apex angle of 18.9° the miter point sits about 6x the offset away, and it still closes
         for width, height in ((30.0, 90.0), (15.0, 120.0), (8.0, 120.0)):
             polygon = _triangle(width, height)
             with self.subTest(width=width, height=height):
@@ -290,7 +290,7 @@ class SharpCornerTests(unittest.TestCase):
                 )
 
     def test_the_eroded_triangle_matches_the_analytic_area(self) -> None:
-        """三角形的侵蚀还是相似三角形：面积 = 原面积 × ((r − d) / r)²，r 是内切半径。"""
+        """The erosion of a triangle is a similar triangle: area = original × ((r − d) / r)², r the inradius."""
 
         width, height = 8.0, 120.0
         polygon = _triangle(width, height)
@@ -303,20 +303,20 @@ class SharpCornerTests(unittest.TestCase):
         )
 
     def test_a_needle_that_leaves_nothing_reports_no_ring(self) -> None:
-        # 顶角 1.9° 的细长三角：内切半径小于偏置量，本来就什么都不剩
+        # A needle-thin triangle with a 1.9° apex: its inradius is below the offset, so nothing is left
         self.assertEqual(offset_loops(_triangle(4.0, 120.0), 3.0), [])
 
     def test_a_feature_narrower_than_the_tool_just_disappears(self) -> None:
-        """比刀具还窄的尖鳍不会留下碎片，也不会把整条环弄断——它整只被侵蚀掉了。"""
+        """A fin narrower than the tool leaves no fragments and does not break the loop: it simply disappears."""
 
         polygon = _slab_with_fin()
         loops = offset_loops(polygon, 3.0)
         self.assertEqual(len(loops), 1)
         loop = loops[0]
-        # 鳍完全消失：偏置边界最高只到板的顶面内缩处
+        # The fin disappears completely: the offset boundary stops at the inset top face of the slab
         self.assertLess(float(loop[:, 1].max()), 28.0)
         self.assertGreater(float(loop[:, 1].min()), -28.0)
-        # 留下来的环离轮廓的距离仍然不小于偏置量
+        # The remaining loop is still nowhere closer to the outline than the offset distance
         self.assertGreaterEqual(
             float(distance_to_boundary(_densify(loop, 0.05), polygon).min()), 3.0 - 0.02
         )
@@ -343,7 +343,7 @@ class ResampleTests(unittest.TestCase):
 
 
 class PrefilterTests(unittest.TestCase):
-    """几处"先便宜后贵"的剪枝：必须与全量计算一致，否则就是错的优化。"""
+    """The cheap-before-expensive prunings: each must agree with the full computation, or it is a wrong one."""
 
     def _grid(self, polygon: np.ndarray, step: float = 3.0) -> np.ndarray:
         x_min, x_max, y_min, y_max = bounding_box(polygon)
@@ -353,10 +353,10 @@ class PrefilterTests(unittest.TestCase):
         return np.column_stack((grid_x.ravel(), grid_y.ravel()))
 
     def test_the_line_prefilter_never_loses_the_nearest_edge(self) -> None:
-        """点到线段距离 ≥ 点到支撑直线距离，所以"最近边"一定在直线筛出来的候选里。
+        """The distance to a segment is never smaller than to its supporting line, so the nearest edge always survives
 
-        被筛掉的边只会让最小值变大，不会变小；凡是全量距离本来就在 target + slack 以内的点，
-        结果必须与全量逐位相同。
+        the line filter. Dropped edges can only make the minimum larger, never smaller, so for every point
+        whose full distance is within target + slack must equal the full computation bit for bit.
         """
 
         for shape_id, parameters in (
@@ -369,11 +369,11 @@ class PrefilterTests(unittest.TestCase):
             points = self._grid(polygon)
             with self.subTest(shape=shape_id):
                 exact = distance_to_edges(points, edges)
-                # 全部边都当候选时，结果必须一模一样
+                # With every edge as a candidate the result must be identical
                 self.assertTrue(
                     np.array_equal(_nearest_edge_distance(points, edges, 0.0, np.inf), exact)
                 )
-                # 真容差下：全量距离在 target + slack 以内的点，也必须一模一样
+                # With a real tolerance, points whose full distance is within target + slack must match as well
                 target, slack = 3.0, 1e-3
                 prefixed = _nearest_edge_distance(points, edges, target, slack)
                 keep = exact <= target + slack
@@ -391,7 +391,7 @@ class PrefilterTests(unittest.TestCase):
             i_flat, j_flat = _candidate_pairs(starts, ends)
             candidates = set(zip(i_flat.tolist(), j_flat.tolist()))
 
-            # 全量两两求交，作为"真交点"的参照
+            # All-pairs intersection, as the reference for "true crossings"
             true_pairs = set()
             for first in range(count):
                 for second in range(first + 1, count):
@@ -410,12 +410,12 @@ class PrefilterTests(unittest.TestCase):
                 self.assertTrue(true_pairs, "参照集不该为空")
                 self.assertTrue(true_pairs <= candidates, "候选必须覆盖所有真交点")
                 all_pairs = count * (count - 1) // 2
-                # 小偏置量下平移线段铺得开，大偏置量下都缩到中心，两种情形都得筛掉大半
+                # At small offsets the shifted segments spread out, at large ones they shrink to the centre; both prune well
                 self.assertLess(len(candidates), all_pairs * 0.5)
                 self.assertGreaterEqual(len(candidates), len(true_pairs))
 
     def test_filtering_crossings_does_not_change_the_result(self) -> None:
-        """只有落在偏置边界上的交点才是合法/不合法子段的分界，筛掉其余交点不该有影响。"""
+        """Only crossings on the offset boundary separate valid from invalid sub-segments, so dropping the rest changes nothing."""
 
         polygon = ensure_ccw(build_region("circle", {"diameter_mm": 80.0}).boundary())
 
