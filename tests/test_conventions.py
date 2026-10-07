@@ -31,11 +31,8 @@ SOURCE_ROOTS = ("toolpath_lab", "tests", "examples")
 
 #: Files whose docstrings and comments are still Chinese. Remove an entry as soon as its file is
 #: translated; never add one. (Comment shows how many Chinese characters were left when listed.)
+#: `toolpath_lab/` is fully converted; what remains is the test suite and the examples.
 _PENDING_ENGLISH = (
-    "toolpath_lab/export/csv.py",  # 171
-    "toolpath_lab/server/app.py",  # 117
-    "toolpath_lab/server/service.py",  # 112
-    "toolpath_lab/simulation/timeline.py",  # 253
     "tests/test_adaptive.py",  # 327
     "tests/test_api.py",  # 170
     "tests/test_contour.py",  # 347

@@ -9,13 +9,10 @@
 - **按 CONTRIBUTING / docs/extending.md 的要求把文档字符串与注释统一成英文**（用户可见文案仍是
   中文）：这两份文档都在「代码约定」里写了"代码注释与文档字符串用英文"，但仓库里 46 个 Python
   文件中有 134 个文档字符串、56 条注释是中文（连原有的 core / simulation / export / server
-  也一样），等于这条要求全仓库都没做到。分批转换，目前**整个 `toolpath_lab/core/`、`planning/`
-  与除 4 个文件外的全部产品代码已完成**：`geometry2d.py`、`coverage.py`、`base.py`、
-  `contour.py`、`adaptive.py`、`raster.py`、`core/{__init__,mathutil,tool,path,parameters,region}.py`、
-  `export/{__init__,gcode}.py`、`planning/{__init__,registry,service}.py`、
-  `server/{catalog,schema}.py` ——中文字数 11,926 降到 3,882（约 67%），其中**产品代码只剩 653 字**
-  （`export/csv.py`、`server/app.py`、`server/service.py`、`simulation/timeline.py`），其余是
-  tests（2,514 字）与 examples（715 字）。转换过程中用"AST 去掉文档字符串后逐文件比对"证明
+  也一样），等于这条要求全仓库都没做到。分批转换，**`toolpath_lab/` 整个包已经清零**
+  （28 个模块，文档字符串与注释里再没有一个中文字），中文字数 11,926 降到 3,229（约 73%），
+  剩下的全在 tests（2,514 字）与 examples（715 字）里，清单见 `tests/test_conventions.py` 的
+  `_PENDING_ENGLISH`。转换过程中用"AST 去掉文档字符串后逐文件比对"证明
   **代码一行没动**（唯一例外是 `geometry2d.py`：`Callable` 只在注解里用过却没导入，靠
   `from __future__ import annotations` 侥幸没报错，顺手补上了导入）。
 - **新增 `tests/test_conventions.py`（5 项）**：把这两条约定变成机器检查。

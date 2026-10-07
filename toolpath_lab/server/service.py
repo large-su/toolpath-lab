@@ -1,7 +1,8 @@
-"""组装一次规划的结果。
+"""Assemble the result of one plan.
 
-界面需要的全部内容都在这里汇合：参数回显、刀具摘要、区域轮廓、刀路与统计、播放时间轴，
-以及覆盖率分析（这条刀路到底切干净了没有）。
+Everything the UI needs comes together here: the echoed parameters, the tool summary, the region
+outline, the toolpath with its statistics, the playback timeline, and the coverage analysis (whether
+this toolpath actually machines the region out).
 """
 
 from __future__ import annotations
@@ -15,13 +16,13 @@ from toolpath_lab.planning import Coverage, coverage_warnings, measure_coverage,
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.simulation import Timeline, build_timeline
 
-#: 播放采样的上限，决定响应的体积。
+#: Upper bound on playback samples, which sets the size of the response.
 DEFAULT_MAX_SAMPLES = 4000
 
 
 @dataclass(frozen=True, slots=True)
 class PlanResult:
-    """一次完成的规划。"""
+    """One completed plan."""
 
     request: PlanRequest
     toolpath: Toolpath
@@ -58,7 +59,7 @@ def execute_plan(
     with_coverage: bool = True,
     max_samples: int = DEFAULT_MAX_SAMPLES,
 ) -> PlanResult:
-    """执行一次规划（导出接口会关掉时间轴与覆盖率，只取刀路本身）。"""
+    """Run one plan (the export endpoints turn the timeline and coverage off and take the path only)."""
 
     outcome = run_plan(
         planner_id=request.planner_id,

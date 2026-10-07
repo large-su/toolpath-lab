@@ -1,10 +1,12 @@
-"""按进给速度做时间参数化。
+"""Time parameterisation driven by feed rates.
 
-刀路是几何，播放需要的是时间。每段运动自带进给速度，所以时间轴就是"各段弧长 / 该段进给"
-的累加：切削段用切削进给，快移段用快移速度，界面上的"预计工时"因此不是总长除以一个进给。
+A toolpath is geometry; playback needs time. Every move carries its own feed rate, so the timeline is
+simply the accumulated "arc length / feed of that move": cutting moves use the cutting feed, rapid
+moves the rapid feed, which is why the "estimated time" in the UI is not the total length divided by
+one feed rate.
 
-采样会压缩到 max_samples 个点以控制载荷大小，但每段运动的边界一定保留，
-所以播放永远不会跨段插值。
+Sampling is capped at max_samples points to bound the payload, but the boundary of every move is kept,
+so playback never interpolates across a move boundary.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from numpy.typing import NDArray
 from toolpath_lab.core.mathutil import cumulative_lengths
 from toolpath_lab.core.path import Move, MoveKind, Toolpath
 
-#: 载荷里使用的运动类型编码（kind_runs 里是整数，省掉重复字符串）。
+#: Move kind codes used in the payload (integer runs in kind_runs, avoiding repeated strings).
 KIND_CODES: dict[str, int] = {
     MoveKind.CUT.value: 0,
     MoveKind.LINK.value: 1,
@@ -29,7 +31,7 @@ KIND_CODE_LABELS: dict[int, str] = {value: key for key, value in KIND_CODES.item
 
 @dataclass(frozen=True, slots=True)
 class TimelineState:
-    """播放到某一时刻的机床状态。"""
+    """Machine state at one playback instant."""
 
     time_s: float
     position: NDArray[np.float64]
@@ -40,7 +42,7 @@ class TimelineState:
 
 @dataclass(frozen=True, slots=True)
 class Timeline:
-    """刀路的采样时间历史。"""
+    """Sampled time history of a toolpath."""
 
     times_s: NDArray[np.float64]
     positions: NDArray[np.float64]
@@ -53,7 +55,7 @@ class Timeline:
         return int(self.times_s.shape[0])
 
     def _runs(self, values: NDArray[np.int64]) -> list[list[int]]:
-        """把取值数组编码成 [起始下标, 取值] 的游程。"""
+        """Encode a value array as [start index, value] runs."""
 
         if values.size == 0:
             return []
@@ -62,7 +64,7 @@ class Timeline:
         return [[int(start), int(values[start])] for start in starts]
 
     def state_at(self, time_s: float) -> TimelineState:
-        """插值出任意时刻的状态。"""
+        """Interpolate the state at an arbitrary instant."""
 
         duration = max(self.duration_s, 1e-9)
         query = float(np.clip(time_s, 0.0, self.duration_s))
@@ -82,7 +84,7 @@ class Timeline:
         )
 
     def to_payload(self, *, time_decimals: int = 4, position_decimals: int = 3) -> dict[str, Any]:
-        """紧凑的 JSON 形式。"""
+        """Compact JSON form."""
 
         return {
             "duration_s": round(self.duration_s, 6),
@@ -99,7 +101,7 @@ class Timeline:
 
 
 def _resample_move(move: Move, samples: int) -> NDArray[np.float64]:
-    """按等弧长重采样一段运动，两端点一定保留。"""
+    """Resample one move at equal arc length, always keeping both endpoints."""
 
     points = move.points
     cumulative = cumulative_lengths(points)
@@ -113,7 +115,7 @@ def _resample_move(move: Move, samples: int) -> NDArray[np.float64]:
 
 
 def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
-    """把一条刀路变成采样时间历史。"""
+    """Turn a toolpath into a sampled time history."""
 
     lengths = np.array([move.length_mm for move in toolpath.moves], dtype=np.float64)
     total_length = float(lengths.sum())
@@ -138,7 +140,7 @@ def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
         local_times = clock + local
         clock = float(local_times[-1])
         if positions and index > 0:
-            # 上一段的终点与本段起点重合，去掉重复采样。
+            # The previous move ends where this one starts, so drop the duplicated sample.
             sampled = sampled[1:]
             local_times = local_times[1:]
         times.append(local_times)

@@ -1,7 +1,7 @@
-"""标准库 HTTP 服务：JSON 接口 + 静态前端。
+"""Standard library HTTP service: JSON API plus the static front end.
 
-不依赖任何 Web 框架——整个服务就是一个 http.server，路由一屏能读完。
-默认只监听回环地址，并且只从 toolpath_lab/web 目录提供静态文件。
+No web framework at all -- the whole service is one http.server with a route table that fits on one
+screen. It listens on the loopback address only and serves static files only from toolpath_lab/web.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ CONTENT_TYPES: dict[str, str] = {
 
 @dataclass(frozen=True, slots=True)
 class Response:
-    """一个准备好的 HTTP 响应。"""
+    """A prepared HTTP response."""
 
     status: int
     body: bytes
@@ -63,12 +63,12 @@ def text_response(text: str, *, content_type: str, filename: str | None = None) 
 
 
 class ToolpathLabHandler(BaseHTTPRequestHandler):
-    """接口路由 + 静态文件。"""
+    """API routes plus static files."""
 
     server_version = f"ToolpathLab/{__version__}"
     protocol_version = "HTTP/1.1"
 
-    def do_GET(self) -> None:  # noqa: N802 - 名字由 BaseHTTPRequestHandler 规定
+    def do_GET(self) -> None:  # noqa: N802 - the name is fixed by BaseHTTPRequestHandler
         self._dispatch("GET")
 
     def do_POST(self) -> None:  # noqa: N802
@@ -77,7 +77,7 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         print(f"[toolpath-lab] {self.address_string()} {format % args}", flush=True)
 
-    # -- 分发 --------------------------------------------------------------
+    # -- dispatch ----------------------------------------------------------
     def _dispatch(self, method: str) -> None:
         path = unquote(urlsplit(self.path).path)
         try:
@@ -86,9 +86,9 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             response = error_response(str(error), HTTPStatus.BAD_REQUEST)
         except PlanningError as error:
             response = error_response(str(error), HTTPStatus.UNPROCESSABLE_ENTITY)
-        except BrokenPipeError:  # pragma: no cover - 客户端提前断开
+        except BrokenPipeError:  # pragma: no cover - the client went away early
             return
-        except Exception as error:  # pragma: no cover - 兜底
+        except Exception as error:  # pragma: no cover - last resort
             traceback.print_exc()
             response = error_response(
                 f"内部错误：{type(error).__name__}: {error}",
@@ -147,11 +147,11 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         return f"toolpath_{request.planner_id}_{stamp}.{suffix}"
 
-    # -- 静态文件 ----------------------------------------------------------
+    # -- static files ------------------------------------------------------
     def _serve_static(self, path: str) -> Response:
         relative = "index.html" if path in {"", "/"} else path.lstrip("/")
         if relative == "favicon.ico":
-            # 浏览器和部分工具会直接请求 /favicon.ico，这里返回应用的 PNG 图标。
+            # Browsers and some tools request /favicon.ico directly; answer with the app's PNG icon.
             icon = self._resolve_static("icon.png")
             if icon is None:
                 return Response(int(HTTPStatus.NO_CONTENT), b"", "image/x-icon")
@@ -172,7 +172,7 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             return None
         return candidate if candidate.is_file() else None
 
-    # -- 工具 --------------------------------------------------------------
+    # -- helpers -----------------------------------------------------------
     def _read_json(self) -> Mapping[str, Any] | None:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
@@ -205,7 +205,7 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
 
 
 def create_server(host: str = "127.0.0.1", port: int = 8770) -> ThreadingHTTPServer:
-    """创建（但不启动）HTTP 服务。"""
+    """Create (but do not start) the HTTP server."""
 
     server = ThreadingHTTPServer((host, port), ToolpathLabHandler)
     server.daemon_threads = True
@@ -213,7 +213,7 @@ def create_server(host: str = "127.0.0.1", port: int = 8770) -> ThreadingHTTPSer
 
 
 def serve_forever(host: str = "127.0.0.1", port: int = 8770) -> None:
-    """阻塞式服务循环，Ctrl+C 退出。"""
+    """Blocking serve loop, exits on Ctrl+C."""
 
     server = create_server(host, port)
     try:

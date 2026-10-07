@@ -1,23 +1,24 @@
-"""CSV 点表导出。
+"""CSV point table export.
 
-一行一个刀点，方便丢进 Excel / pandas 做统计或画图：
+One tool point per row, easy to drop into Excel / pandas for statistics or plots:
 
     move_index,pass_index,kind,feed_mm_per_min,point_index,x_mm,y_mm,z_mm
 
-刻意保持**纯 ASCII**（列名与取值都是英文，kind 用 cut / link / rapid）：不带 BOM 的 UTF-8
-比"带 BOM 才能被 Excel 认出来"更通用，csv.reader、pandas 与各种脚本都不需要额外处理编码。
-非切削段的 pass_index 是 -1；每段运动的第一个点与上一段的最后一个点可能重合（运动段首尾相接），
-这是刀路模型本身的样子，不做去重。
+Deliberately kept **pure ASCII** (column names and values are English, kind is cut / link / rapid):
+UTF-8 without a BOM is more portable than "a BOM so Excel recognises it", and csv.reader, pandas and
+scripts need no special encoding handling. pass_index is -1 for non-cutting moves; the first point of
+a move may coincide with the last point of the previous one (moves join end to end), which is simply
+what the toolpath model looks like, so nothing is deduplicated.
 
-新增导出格式的套路见 docs/extending.md §4：这里写一个纯函数，在 export/__init__.py 导出，
-再在 server/app.py 的 _route_api 里加一个分支。
+The recipe for a new export format is in docs/extending.md section 4: write a pure function here,
+export it in export/__init__.py, and add a branch to _route_api in server/app.py.
 """
 
 from __future__ import annotations
 
 from toolpath_lab.core.path import Toolpath
 
-#: 列名，顺序即输出顺序。
+#: Column names; the order is the output order.
 CSV_COLUMNS: tuple[str, ...] = (
     "move_index",
     "pass_index",
@@ -31,7 +32,7 @@ CSV_COLUMNS: tuple[str, ...] = (
 
 
 def toolpath_to_csv(toolpath: Toolpath, *, decimals: int = 3) -> str:
-    """把一条刀路渲染成"一个刀点一行"的 CSV 点表。"""
+    """Render a toolpath as a CSV point table, one tool point per row."""
 
     number = f"{{:.{decimals}f}}"
     lines = [",".join(CSV_COLUMNS)]
