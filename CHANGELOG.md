@@ -6,6 +6,14 @@
 
 ### 能力
 
+- **区域形状新增矩形与椭圆**：`rectangle`（宽 W × 高 H，默认 100 × 60）与 `ellipse`
+  （长半轴 a / 短半轴 b，默认 60 / 40，长半轴沿 X）。界面"区域 → 形状"、`/api/catalog`
+  与 `POST /api/plan` 都会自动包含它们，刀路代码一行没改。
+  - 圆与椭圆共用 `CURVE_SEGMENTS`（原 `CIRCLE_SEGMENTS`）作为折线逼近段数。
+  - 三维工件不再区分形状：`viewport.js` 从"方形/圆形特判"改成**按区域边界多边形挤出**
+    （`ExtrudeGeometry`，上表面落在 Z = 0），因此任何新形状——包括凹多边形——都能正确显示。
+  - 统计面板的"区域"一行改为按该形状自己声明的参数生成（"宽 W 100 mm · 高 H 60 mm"），
+    同样不再特判形状。
 - **固定值参数化**：安全高度、快移速度、边界处理方式不再写死在代码里。
   - `planning/base.py` 新增共用的 `MOTION_PARAMETERS`（`safe_height_mm` 默认 5 mm、
     `rapid_feed_mm_per_min` 默认 5000 mm/min），由各策略并进自己的 `ParameterSet`；
@@ -43,11 +51,14 @@
 
 - 新增 `tests/test_motion_parameters.py`（20 项）：参数声明与默认值、两个策略都吃
   `safe_height_mm` / `rapid_feed_mm_per_min`、0 高度不抬刀、快移速度只影响时间不影响长度、
-  没有声明这两个参数的 context 退回默认值、边界处理三种取值下的精确刀轨数与切削长度、
+  没有声明这两个参数的 context 退回默认值、边界处理与边界余量取值下的精确刀轨数与切削长度、
   非法取值报 ParameterError、notes 跟随参数。
 - 新增 `tests/test_contour.py`（24 项）：等距偏置的数值断言（方形内缩保持方形、圆形内缩后
   半径、超过内切半径退化、重采样等弧长）、环数与切削长度的精确值、闭环与 Z=0、方向交替、
   环间不抬刀、安全高度与快移进给、几何不可行。
+- `tests/test_region.py` 扩到四形状：矩形 / 椭圆的边界数值（面积、包围盒、点都落在椭圆上、
+  半轴互换只是旋转 90°）、新增 `ShapeContractTests`（每个形状都必须逆时针、不重复首点、
+  以原点为中心），`tests/test_planners.py` 新增 `EveryShapeTests`（四种形状 × 两个策略都能规划）。
 
 ## [0.0.1] - 2026-09-10
 

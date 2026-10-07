@@ -18,7 +18,8 @@ ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形�
 ## 功能
 
 - **刀具**：平底刀，可设置直径与长度。刀具在加工面上的足迹半径决定刀路相对区域轮廓的偏置量。
-- **区域**：方形（边长）与圆形（直径），以原点为中心，加工面为 XY 平面。
+- **区域**：方形（边长）、矩形（宽 × 高）、圆形（直径）、椭圆（长 / 短半轴），
+  都以原点为中心，加工面为 XY 平面。
 - **刀路**：
   - **往复 Zigzag**：奇数刀反向，相邻两刀在端头直接连过去；
   - **单向 One-way**：每刀同向，刀与刀之间抬刀到安全面再回到起点；
@@ -165,7 +166,8 @@ docs/          架构与扩展文档
 | 事项 | 值 | 位置 |
 | --- | --- | --- |
 | 每刀采样 | 两个端点（加工面是平面，所以一刀两个点） | `toolpath_lab/planning/raster.py` |
-| 圆形离散 | 180 段折线逼近 | `toolpath_lab/core/region.py` |
+| 圆形离散 | 180 段折线逼近（圆与椭圆共用，见 `CURVE_SEGMENTS`） | `toolpath_lab/core/region.py` |
+| 工件建模 | 按区域边界多边形挤出，上表面在 Z = 0 | `toolpath_lab/web/js/viewport.js` |
 | 环切边界 | 第一环永远内缩一个刀具足迹半径（偏置几何只支持向内） | `toolpath_lab/planning/contour.py` |
 | 刀路显示 | 抬高 0.05 mm 画在工件上表面之上，避免 z-fighting | `toolpath_lab/web/js/viewport.js` |
 
@@ -177,8 +179,8 @@ docs/          架构与扩展文档
   里导入一行即可注册。内置的 [contour.py](toolpath_lab/planning/contour.py)（环切）与
   [examples/plugins/contour_planner.py](examples/plugins/contour_planner.py) 放在一起看，
   就是"一个策略需要写什么"的完整例子。
-- **新增区域形状**：实现一个返回逆时针边界多边形的 `boundary()`，栅格刀路会自动适配
-  （三维工件目前只按方形/圆形两种形状建模，其它形状需要同时改 `web/js/viewport.js`）。
+- **新增区域形状**：实现一个返回逆时针边界多边形的 `boundary()`，栅格刀路与三维工件都会自动适配
+  ——工件就是按这条边界挤出的，所以矩形、椭圆（甚至凹多边形）都不需要改刀路或前端代码。
 - **新增导出格式**：在 `export/` 中写一个纯函数，并在 HTTP 路由中加一个分支。
 - 完整说明见 [docs/extending.md](docs/extending.md)，开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

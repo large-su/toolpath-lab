@@ -8,7 +8,7 @@ import numpy as np
 
 from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.path import MoveKind, Toolpath
-from toolpath_lab.core.region import build_region
+from toolpath_lab.core.region import REGION_SHAPES, build_region
 from toolpath_lab.core.tool import Tool, ToolKind
 from toolpath_lab.planning import (
     PLANNERS,
@@ -156,6 +156,34 @@ class CircleRegionTests(unittest.TestCase):
             ).toolpath
         )
         self.assertLess(passes[0].length_mm, passes[len(passes) // 2].length_mm)
+
+
+class EveryShapeTests(unittest.TestCase):
+    """新增区域形状的验收线：不需要改任何刀路代码就能规划。"""
+
+    def test_every_shape_can_be_planned_by_every_strategy(self) -> None:
+        for shape_id in REGION_SHAPES.ids():
+            region = build_region(shape_id, {})
+            for planner_id in PLANNERS.ids():
+                with self.subTest(shape=shape_id, planner=planner_id):
+                    toolpath = run_plan(
+                        planner_id=planner_id, tool=_tool(), region=region, parameters={}
+                    ).toolpath
+                    self.assertGreater(toolpath.pass_count, 0)
+                    self.assertGreater(toolpath.cut_length_mm, 0.0)
+                    self.assertGreater(toolpath.estimated_time_s, 0.0)
+
+    def test_an_elongated_rectangle_gets_more_passes_along_its_short_side(self) -> None:
+        # 100 × 60 的矩形：沿 X 走刀（切宽方向是 Y，只有 60 宽）→ 刀数由短边决定。
+        toolpath = run_plan(
+            planner_id="raster",
+            tool=_tool(),
+            region=build_region("rectangle", {"width_mm": 100.0, "height_mm": 60.0}),
+            parameters={"stepover_mm": 6.0, "direction_deg": 0.0},
+        ).toolpath
+        # v 从 -30+3 到 30-3，共 54/6 = 9 个间隔 + 末刀对齐 = 10 刀
+        self.assertEqual(toolpath.pass_count, 10)
+        self.assertAlmostEqual(toolpath.cut_length_mm, 10 * 94.0, places=6)
 
 
 class SafetyTests(unittest.TestCase):

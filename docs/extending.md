@@ -73,40 +73,53 @@ class SpiralPlanner(Planner):
 
 ## 2. 新增一个区域形状
 
-在 toolpath_lab/core/region.py 里加一个类，或者单独放一个模块再导入：
+内置四种形状：方形、矩形、圆形、椭圆（都在 `toolpath_lab/core/region.py`）。
+再加一种就是照着它们写一个类——下面以"跑道形"为例（`__post_init__` 要守住自己的不变式）：
 
 ```python
 from dataclasses import dataclass
 from typing import ClassVar
 import numpy as np
+from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.parameters import ParameterKind as K, ParameterSet, spec
-from toolpath_lab.core.region import REGION_SHAPES, RegionShape
+from toolpath_lab.core.region import CURVE_SEGMENTS, REGION_SHAPES, RegionShape
 
 
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
-class EllipseRegion(RegionShape):
-    semi_major_mm: float = 60.0
-    semi_minor_mm: float = 40.0
+class StadiumRegion(RegionShape):
+    """矩形两端各接一个半圆的跑道形。"""
 
-    id: ClassVar[str] = "ellipse"
-    label: ClassVar[str] = "椭圆"
-    description: ClassVar[str] = "长半轴 / 短半轴定义的椭圆"
+    length_mm: float = 100.0
+    width_mm: float = 40.0
+
+    id: ClassVar[str] = "stadium"
+    label: ClassVar[str] = "跑道形"
+    description: ClassVar[str] = "矩形两端各接一个半圆"
     parameters: ClassVar[ParameterSet] = ParameterSet((
-        spec("semi_major_mm", "长半轴", K.FLOAT, 60.0, minimum=1.0, maximum=500.0,
-             step=1.0, unit="mm", group="区域"),
-        spec("semi_minor_mm", "短半轴", K.FLOAT, 40.0, minimum=1.0, maximum=500.0,
-             step=1.0, unit="mm", group="区域"),
+        spec("length_mm", "总长", K.FLOAT, 100.0, minimum=5.0, maximum=1000.0,
+             step=5.0, unit="mm", group="区域"),
+        spec("width_mm", "宽", K.FLOAT, 40.0, minimum=5.0, maximum=1000.0,
+             step=5.0, unit="mm", group="区域"),
     ))
 
-    def boundary(self):
-        angles = np.linspace(0.0, 2.0 * np.pi, 180, endpoint=False)
-        return np.column_stack((self.semi_major_mm * np.cos(angles),
-                                self.semi_minor_mm * np.sin(angles)))
+    def __post_init__(self) -> None:
+        if self.length_mm <= 0 or self.width_mm <= 0:
+            raise ParameterError("跑道形的长与宽都必须为正")
+
+    def boundary(self):  # 逆时针、不重复首点
+        ...
 ```
 
-只要返回**逆时针、不重复首点**的多边形，栅格刀路与三维显示都会自动适配——连凹多边形都能直接
-工作，因为裁剪用的是扫描线求交。
+**形状契约**（`tests/test_region.py` 的 `ShapeContractTests` 会逐条检查）：
+
+- 返回 `(N, 2)` 的 float64 多边形：**逆时针**、**不重复首点**、至少三个点、坐标有限；
+- 以原点为中心（包围盒左右 / 上下对称）——三维取景与工件厚度都按包围盒算；
+- 曲线边界用共用的 `CURVE_SEGMENTS`（180）段折线逼近，别再引入新的魔数；
+- 参数用 `spec(...)` 声明，界面控件自动生成，`build_region(id, params)` 自动校验范围。
+
+做到这些之后**刀路与三维显示都不需要改**：栅格刀路靠扫描线求交，工件直接按这条边界挤出
+（`web/js/viewport.js`），连凹多边形都能直接工作。
 
 ## 3. 再加一个参数（示范：抬刀高度、快移速度、边界处理）
 

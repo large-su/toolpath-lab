@@ -364,20 +364,22 @@ export class Viewport {
   }
 
   _workpiece(region, thickness) {
-    const material = new THREE.MeshStandardMaterial({
-      color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
+    // 工件由区域边界多边形挤出：换形状（矩形、椭圆、以后的凹多边形）都不需要动这里。
+    // ExtrudeGeometry 沿 +Z 挤出，平移一个厚度后上表面正好落在 Z = 0，也就是加工面。
+    const shape = new THREE.Shape(
+      region.boundary.map((point) => new THREE.Vector2(point[0], point[1]))
+    );
+    const geometry = new THREE.ExtrudeGeometry(shape, {
+      depth: thickness,
+      bevelEnabled: false,
     });
-    if (region.id === "circle") {
-      const radius = (region.bounds_mm[0][1] - region.bounds_mm[0][0]) / 2;
-      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, thickness, 128), material);
-      mesh.rotation.x = Math.PI / 2;
-      mesh.position.z = -thickness / 2;
-      mesh.receiveShadow = true;
-      return mesh;
-    }
-    const side = region.bounds_mm[0][1] - region.bounds_mm[0][0];
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(side, side, thickness), material);
-    mesh.position.z = -thickness / 2;
+    geometry.translate(0, 0, -thickness);
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
+      })
+    );
     mesh.receiveShadow = true;
     return mesh;
   }

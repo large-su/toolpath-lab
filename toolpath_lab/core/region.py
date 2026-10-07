@@ -1,14 +1,16 @@
 """加工区域。
 
 区域就是"要加工的那块地方"，它替代了"导入模型 + 提取特征"这一整套前置环节：
-直接给定一个规则区域即可开始规划。当前提供两种形状：
+直接给定一个规则区域即可开始规划。当前提供四种形状：
 
 - 方形（square）：一个边长；
-- 圆形（circle）：一个直径。
+- 矩形（rectangle）：宽 × 高；
+- 圆形（circle）：一个直径；
+- 椭圆（ellipse）：长半轴 / 短半轴。
 
 所有形状统一归约为一条**逆时针、不重复首点**的边界多边形。栅格刀路只会用到
-"一条直线与多边形求交"，因此新增形状（椭圆、跑道形、凹多边形……）只要实现一个
-boundary() 就能直接参与规划，不需要改任何刀路代码。
+"一条直线与多边形求交"，三维工件也直接按这条边界挤出，因此新增形状（跑道形、凹多边形……）
+只要实现一个 boundary() 就能直接参与规划与显示，不需要改任何刀路或前端代码。
 """
 
 from __future__ import annotations
@@ -30,8 +32,8 @@ from toolpath_lab.core.registry import Registry
 
 REGION_SHAPES: Registry[type["RegionShape"]] = Registry("region shape")
 
-#: 圆用多少段折线逼近；固定值，避免把离散精度暴露成一个意义不大的参数。
-CIRCLE_SEGMENTS = 180
+#: 曲线边界（圆、椭圆）用多少段折线逼近；固定值，避免把离散精度暴露成一个意义不大的参数。
+CURVE_SEGMENTS = 180
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,8 +134,77 @@ class CircleRegion(RegionShape):
 
     def boundary(self) -> NDArray[np.float64]:
         radius = self.diameter_mm / 2.0
-        angles = np.linspace(0.0, 2.0 * pi, CIRCLE_SEGMENTS, endpoint=False)
+        angles = np.linspace(0.0, 2.0 * pi, CURVE_SEGMENTS, endpoint=False)
         return np.column_stack((radius * np.cos(angles), radius * np.sin(angles)))
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class RectangleRegion(RegionShape):
+    """以原点为中心的矩形区域（宽沿 X 轴，高沿 Y 轴）。"""
+
+    width_mm: float = 100.0
+    height_mm: float = 60.0
+
+    id: ClassVar[str] = "rectangle"
+    label: ClassVar[str] = "矩形"
+    description: ClassVar[str] = "宽高不等的长方形，用来看刀路在两个方向上的收放"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("width_mm", "宽 W", K.FLOAT, 100.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域", help="沿 X 轴的尺寸"),
+            spec("height_mm", "高 H", K.FLOAT, 60.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域", help="沿 Y 轴的尺寸"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.width_mm <= 0 or self.height_mm <= 0:
+            raise ParameterError("矩形的宽和高都必须为正")
+
+    def boundary(self) -> NDArray[np.float64]:
+        half_width = self.width_mm / 2.0
+        half_height = self.height_mm / 2.0
+        return np.array(
+            [
+                (-half_width, -half_height),
+                (half_width, -half_height),
+                (half_width, half_height),
+                (-half_width, half_height),
+            ],
+            dtype=np.float64,
+        )
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class EllipseRegion(RegionShape):
+    """以原点为中心的椭圆区域（长半轴沿 X 轴，短半轴沿 Y 轴）。"""
+
+    semi_major_mm: float = 60.0
+    semi_minor_mm: float = 40.0
+
+    id: ClassVar[str] = "ellipse"
+    label: ClassVar[str] = "椭圆"
+    description: ClassVar[str] = "长半轴 / 短半轴定义的椭圆，刀线是一族弦长各不相同的弦"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("semi_major_mm", "长半轴 a", K.FLOAT, 60.0, minimum=1.0, maximum=500.0,
+                 step=1.0, unit="mm", group="区域", help="沿 X 轴"),
+            spec("semi_minor_mm", "短半轴 b", K.FLOAT, 40.0, minimum=1.0, maximum=500.0,
+                 step=1.0, unit="mm", group="区域", help="沿 Y 轴；与长半轴互换只是把椭圆转 90°"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.semi_major_mm <= 0 or self.semi_minor_mm <= 0:
+            raise ParameterError("椭圆的两个半轴都必须为正")
+
+    def boundary(self) -> NDArray[np.float64]:
+        angles = np.linspace(0.0, 2.0 * pi, CURVE_SEGMENTS, endpoint=False)
+        return np.column_stack(
+            (self.semi_major_mm * np.cos(angles), self.semi_minor_mm * np.sin(angles))
+        )
 
 
 def build_region(shape_id: str, raw_parameters: Mapping[str, Any] | None = None) -> RegionShape:

@@ -32,7 +32,7 @@ planning ── simulation ┘
 | --- | --- |
 | `parameters.py` | `ParameterSpec` / `ParameterSet`：声明式参数（类型、范围、默认值、单位、中文标签、显隐条件、选项的 disabled），同时驱动界面、校验与文档 |
 | `tool.py` | 刀具：类型、直径、长度，以及由类型推出的**足迹半径**（刀路相对轮廓的偏置量） |
-| `region.py` | 区域形状：方形与圆形，统一输出逆时针边界多边形 |
+| `region.py` | 区域形状：方形、矩形、圆形、椭圆，统一输出逆时针边界多边形（曲线用 180 段折线逼近） |
 | `path.py` | `Move`（切削/连接/快移 + 进给）与 `Toolpath`（统计、载荷） |
 | `registry.py` | 通用能力注册表（区域形状、策略共用） |
 | `payload.py` | 请求字典 → 领域对象的拆解工具 |
@@ -60,8 +60,8 @@ planning ── simulation ┘
 - `server`：标准库 `ThreadingHTTPServer`。`schema.py` 是唯一的请求校验入口，`service.py` 组装响应，
   `catalog.py` 生成能力目录，`app.py` 只做路由与错误码映射（400 参数错误 / 422 几何不可行 / 404 / 405）；
   静态文件只从 `web/` 提供并做了路径穿越防护；
-- `web`：`panel.js` 依据目录生成控件，`viewport.js` 负责 three.js 场景与相机，`playback.js` 是纯逻辑的
-  时间插值器，`main.js` 负责串联；
+- `web`：`panel.js` 依据目录生成控件，`viewport.js` 负责 three.js 场景与相机（工件按区域边界
+  多边形挤出，所以新增形状不用改前端），`playback.js` 是纯逻辑的时间插值器，`main.js` 负责串联；
 - `electron/main.mjs`：挑一个空闲端口 → 拉起 `python -m toolpath_lab` → 轮询 `/api/health` →
   装进原生窗口；关窗时结束后端。前端是普通静态文件，所以不需要打包器。
 

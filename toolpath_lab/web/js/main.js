@@ -202,15 +202,22 @@ function statRow(label, value) {
   return [term, detail];
 }
 
+// 区域尺寸按"该形状自己声明的参数"生成，所以新增形状（矩形、椭圆……）不用改这里。
+function regionSummary(region) {
+  const shapes = (catalog && catalog.regions && catalog.regions.shapes) || [];
+  const shape = shapes.find((item) => item.id === region.id);
+  const values = region.parameters || {};
+  const parts = ((shape && shape.parameters) || [])
+    .filter((item) => values[item.key] !== undefined)
+    .map((item) => item.label + " " + values[item.key] + (item.unit ? " " + item.unit : ""));
+  return parts.length ? parts.join(" · ") : (region.label || region.id);
+}
+
 function renderStats(result) {
   const stats = result.toolpath.statistics;
   const region = result.region;
-  const size = region.id === "circle"
-    ? "直径 " + (region.bounds_mm[0][1] - region.bounds_mm[0][0]).toFixed(0) + " mm"
-    : (region.bounds_mm[0][1] - region.bounds_mm[0][0]).toFixed(0) + " × "
-      + (region.bounds_mm[1][1] - region.bounds_mm[1][0]).toFixed(0) + " mm";
   const rows = [
-    ["区域", size],
+    ["区域", regionSummary(region)],
     ["刀轨", String(stats.pass_count)],
     ["刀点", String(stats.point_count)],
     ["切削长度", stats.cut_length_mm.toFixed(1) + " mm"],

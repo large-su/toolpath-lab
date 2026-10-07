@@ -1,4 +1,4 @@
-"""区域形状：方形与圆形。"""
+"""区域形状：方形、矩形、圆形、椭圆，以及所有形状共同遵守的边界契约。"""
 
 from __future__ import annotations
 
@@ -9,8 +9,10 @@ import numpy as np
 
 from toolpath_lab.core.errors import ParameterError, RegistryError
 from toolpath_lab.core.region import (
-    CIRCLE_SEGMENTS,
+    CURVE_SEGMENTS,
     REGION_SHAPES,
+    EllipseRegion,
+    RectangleRegion,
     build_region,
     polygon_area,
     polygon_bounds,
@@ -20,8 +22,10 @@ from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
 
 
 class RegionCatalogTests(unittest.TestCase):
-    def test_only_square_and_circle_are_registered(self) -> None:
-        self.assertEqual(sorted(REGION_SHAPES.ids()), ["circle", "square"])
+    def test_registered_shapes(self) -> None:
+        self.assertEqual(
+            sorted(REGION_SHAPES.ids()), ["circle", "ellipse", "rectangle", "square"]
+        )
 
     def test_catalog_publishes_labels_and_parameters(self) -> None:
         entries = {entry["id"]: entry for entry in region_catalog()}
@@ -32,10 +36,53 @@ class RegionCatalogTests(unittest.TestCase):
         self.assertEqual(
             [item["key"] for item in entries["circle"]["parameters"]], ["diameter_mm"]
         )
+        self.assertEqual(entries["rectangle"]["label"], "矩形")
+        self.assertEqual(
+            [item["key"] for item in entries["rectangle"]["parameters"]],
+            ["width_mm", "height_mm"],
+        )
+        self.assertEqual(entries["ellipse"]["label"], "椭圆")
+        self.assertEqual(
+            [item["key"] for item in entries["ellipse"]["parameters"]],
+            ["semi_major_mm", "semi_minor_mm"],
+        )
 
     def test_unknown_shape_raises(self) -> None:
         with self.assertRaises(RegistryError):
             build_region("hexagon", {})
+
+    def test_every_shape_builds_from_its_catalog_defaults(self) -> None:
+        for entry in region_catalog():
+            with self.subTest(shape=entry["id"]):
+                region = build_region(entry["id"], {})
+                self.assertEqual(region.id, entry["id"])
+                self.assertGreater(region.describe()["area_mm2"], 0.0)
+
+
+class ShapeContractTests(unittest.TestCase):
+    """新增形状时必须满足的契约：逆时针、不重复首点、有限、至少三个点、以原点为中心。"""
+
+    def test_every_boundary_is_a_ccw_polygon_without_repeats(self) -> None:
+        for shape_id in REGION_SHAPES.ids():
+            boundary = build_region(shape_id, {}).boundary()
+            with self.subTest(shape=shape_id):
+                self.assertEqual(boundary.ndim, 2)
+                self.assertGreaterEqual(boundary.shape[0], 3)
+                self.assertTrue(bool(np.all(np.isfinite(boundary))))
+                self.assertGreater(signed_area(boundary), 0.0)
+                self.assertGreater(
+                    float(np.linalg.norm(boundary[0] - boundary[-1])), 1e-9
+                )
+
+    def test_every_shape_is_centred_on_the_origin(self) -> None:
+        for shape_id in REGION_SHAPES.ids():
+            polygon = ensure_ccw(build_region(shape_id, {}).boundary())
+            [(x_min, x_max), (y_min, y_max)] = polygon_bounds(polygon)
+            with self.subTest(shape=shape_id):
+                self.assertAlmostEqual(x_min, -x_max, places=6)
+                self.assertAlmostEqual(y_min, -y_max, places=6)
+                self.assertAlmostEqual(float(polygon[:, 0].mean()), 0.0, places=6)
+                self.assertAlmostEqual(float(polygon[:, 1].mean()), 0.0, places=6)
 
 
 class SquareRegionTests(unittest.TestCase):
@@ -56,11 +103,35 @@ class SquareRegionTests(unittest.TestCase):
             build_region("square", {"side_mm": 1.0})
 
 
+class RectangleRegionTests(unittest.TestCase):
+    def test_boundary_is_a_counter_clockwise_rectangle(self) -> None:
+        region = build_region("rectangle", {"width_mm": 100.0, "height_mm": 60.0})
+        polygon = ensure_ccw(region.boundary())
+        self.assertEqual(polygon.shape, (4, 2))
+        self.assertAlmostEqual(signed_area(polygon), 6000.0)
+        self.assertEqual(polygon_bounds(polygon), [[-50.0, 50.0], [-30.0, 30.0]])
+
+    def test_defaults_are_a_hundred_by_sixty_rectangle(self) -> None:
+        described = build_region("rectangle", {}).describe()
+        self.assertAlmostEqual(described["area_mm2"], 6000.0)
+        self.assertEqual(described["parameters"], {"width_mm": 100.0, "height_mm": 60.0})
+
+    def test_too_small_sides_are_rejected(self) -> None:
+        for parameters in ({"width_mm": 1.0}, {"height_mm": 1.0}):
+            with self.subTest(parameters=parameters):
+                with self.assertRaises(ParameterError):
+                    build_region("rectangle", parameters)
+
+    def test_the_class_itself_keeps_the_invariant(self) -> None:
+        with self.assertRaises(ParameterError):
+            RectangleRegion(width_mm=0.0, height_mm=60.0)
+
+
 class CircleRegionTests(unittest.TestCase):
     def test_boundary_area_matches_the_analytic_value(self) -> None:
         region = build_region("circle", {"diameter_mm": 60.0})
         polygon = ensure_ccw(region.boundary())
-        self.assertEqual(polygon.shape[0], CIRCLE_SEGMENTS)
+        self.assertEqual(polygon.shape[0], CURVE_SEGMENTS)
         self.assertAlmostEqual(polygon_area(polygon), pi * 900.0, delta=1.0)
 
     def test_boundary_stays_inside_the_nominal_radius(self) -> None:
@@ -68,6 +139,44 @@ class CircleRegionTests(unittest.TestCase):
         radii = np.linalg.norm(polygon, axis=1)
         self.assertAlmostEqual(float(radii.min()), 30.0, places=6)
         self.assertAlmostEqual(float(radii.max()), 30.0, places=6)
+
+
+class EllipseRegionTests(unittest.TestCase):
+    def test_boundary_samples_the_ellipse(self) -> None:
+        major, minor = 60.0, 40.0
+        polygon = ensure_ccw(
+            build_region(
+                "ellipse", {"semi_major_mm": major, "semi_minor_mm": minor}
+            ).boundary()
+        )
+        self.assertEqual(polygon.shape[0], CURVE_SEGMENTS)
+        # 每个点都落在椭圆上：(x/a)² + (y/b)² == 1
+        self.assertTrue(
+            bool(
+                np.allclose(
+                    (polygon[:, 0] / major) ** 2 + (polygon[:, 1] / minor) ** 2,
+                    1.0,
+                    atol=1e-9,
+                )
+            )
+        )
+        self.assertEqual(polygon_bounds(polygon), [[-major, major], [-minor, minor]])
+
+    def test_area_matches_the_analytic_value(self) -> None:
+        polygon = build_region("ellipse", {}).boundary()
+        self.assertAlmostEqual(polygon_area(polygon), pi * 60.0 * 40.0, delta=5.0)
+
+    def test_swapping_the_axes_just_rotates_the_shape(self) -> None:
+        wide = build_region("ellipse", {"semi_major_mm": 60.0, "semi_minor_mm": 40.0}).boundary()
+        tall = build_region("ellipse", {"semi_major_mm": 40.0, "semi_minor_mm": 60.0}).boundary()
+        self.assertAlmostEqual(polygon_area(wide), polygon_area(tall), places=6)
+        self.assertEqual(polygon_bounds(wide)[0], polygon_bounds(tall)[1])
+
+    def test_invalid_axes_are_rejected(self) -> None:
+        with self.assertRaises(ParameterError):
+            build_region("ellipse", {"semi_major_mm": 0.5})
+        with self.assertRaises(ParameterError):
+            EllipseRegion(semi_major_mm=60.0, semi_minor_mm=0.0)
 
 
 if __name__ == "__main__":

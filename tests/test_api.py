@@ -104,7 +104,8 @@ class CatalogTests(ApiTestCase):
             [item["id"] for item in payload["planners"]["list"]], ["raster", "contour"]
         )
         self.assertEqual(
-            sorted(item["id"] for item in payload["regions"]["shapes"]), ["circle", "square"]
+            sorted(item["id"] for item in payload["regions"]["shapes"]),
+            ["circle", "ellipse", "rectangle", "square"],
         )
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
