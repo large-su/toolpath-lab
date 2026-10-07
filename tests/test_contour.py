@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from toolpath_lab.core.errors import PlanningError
+from toolpath_lab.core.errors import ParameterError, PlanningError
 from toolpath_lab.core.path import MoveKind, Toolpath
 from toolpath_lab.core.region import build_region
 from toolpath_lab.core.tool import Tool, ToolKind
@@ -63,8 +63,14 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(entry["label"], "环切")
         self.assertEqual(
             [item["key"] for item in entry["parameters"]],
-            ["stepover_mm", "sample_step_mm", "feed_mm_per_min",
+            ["stepover_mm", "sample_step_mm", "ring_direction", "feed_mm_per_min",
              "safe_height_mm", "rapid_feed_mm_per_min"],
+        )
+        direction = {item["key"]: item for item in entry["parameters"]}["ring_direction"]
+        self.assertEqual(direction["default"], "alternate")
+        self.assertEqual(
+            [choice["value"] for choice in direction["choices"]],
+            ["alternate", "climb", "conventional"],
         )
 
 
@@ -200,6 +206,61 @@ class MultiLoopTests(unittest.TestCase):
         # 壁厚 25：偏置 3、9 各一条环（6 条臂/底还剩 19、13 厚），15 起整体消失。
         self.assertEqual(toolpath.pass_count, 2)
         self.assertEqual(_transitions(toolpath).count(MoveKind.LINK), 1)
+
+
+class RingDirectionTests(unittest.TestCase):
+    """环绕向（顺铣 / 逆铣 / 交替）。
+
+    约定：环切从外往内走，未加工材料在环**内侧**；按 M03 主轴 + 右手刀具，
+    逆时针 = 顺铣。offset_loops 给的环本来就是逆时针，所以"全顺铣"就是保持原样。
+    """
+
+    def test_climb_runs_every_ring_counter_clockwise(self) -> None:
+        areas = [signed_area(ring) for ring in _rings(_plan({"ring_direction": "climb"}))]
+        self.assertTrue(all(area > 0.0 for area in areas))
+
+    def test_conventional_runs_every_ring_clockwise(self) -> None:
+        areas = [signed_area(ring) for ring in _rings(_plan({"ring_direction": "conventional"}))]
+        self.assertTrue(all(area < 0.0 for area in areas))
+
+    def test_alternate_is_the_default_and_keeps_swapping(self) -> None:
+        default = [signed_area(ring) for ring in _rings(_plan())]
+        explicit = [signed_area(ring) for ring in _rings(_plan({"ring_direction": "alternate"}))]
+        self.assertEqual(default, explicit)
+        self.assertTrue(all(area > 0.0 for area in default[::2]))
+        self.assertTrue(all(area < 0.0 for area in default[1::2]))
+
+    def test_only_the_direction_changes_not_the_geometry(self) -> None:
+        reference = _plan({"ring_direction": "alternate"})
+        for direction in ("climb", "conventional"):
+            with self.subTest(direction=direction):
+                toolpath = _plan({"ring_direction": direction})
+                self.assertEqual(toolpath.pass_count, reference.pass_count)
+                self.assertAlmostEqual(toolpath.cut_length_mm, reference.cut_length_mm, places=6)
+                self.assertAlmostEqual(
+                    toolpath.estimated_time_s, reference.estimated_time_s, places=6
+                )
+
+    def test_sibling_rings_of_a_split_layer_follow_the_same_direction(self) -> None:
+        toolpath = run_plan(
+            planner_id="contour",
+            tool=_tool(),
+            region=build_region("dumbbell", {}),
+            parameters={"stepover_mm": 6.0, "ring_direction": "climb"},
+        ).toolpath
+        areas = [signed_area(ring) for ring in _rings(toolpath)]
+        self.assertEqual(len(areas), 8)
+        self.assertTrue(all(area > 0.0 for area in areas))
+
+    def test_notes_record_the_choice(self) -> None:
+        for direction, label in (("climb", "全顺铣"), ("conventional", "全逆铣")):
+            with self.subTest(direction=direction):
+                notes = _plan({"ring_direction": direction}).notes
+                self.assertTrue(any(label in note for note in notes))
+
+    def test_an_unknown_direction_is_rejected(self) -> None:
+        with self.assertRaises(ParameterError):
+            _plan({"ring_direction": "climb_ccw"})
 
 
 if __name__ == "__main__":

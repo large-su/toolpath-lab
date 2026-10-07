@@ -12,7 +12,19 @@
 偏置几何在 planning/geometry2d.py（凸角斜接、凹角圆弧接头、按自交点切分、"转角最小"接环），
 那里也写了为什么不能像早期版本那样把断开的顶点按原顺序接起来。
 
-已知限制：环与环之间只有直线连接，没有引入 / 引出圆弧，也不做顺逆铣的强制指定。
+已知限制：环与环之间只有直线连接，没有引入 / 引出圆弧；极尖凸角（斜接点超出延长上限）那一层
+可能接不成环。
+
+**环绕向与顺逆铣**：`offset_loops` 给出的环都是逆时针的。环切是从外往内走的，未加工的材料
+始终在环的**内侧**（外面那一圈已经被上一环切掉了），所以
+
+- **逆时针** = 接触点的刀刃运动方向与进给同向 = **顺铣**；
+- **顺时针** = **逆铣**。
+
+这是按"主轴 M03（从上往下看顺时针）+ 右手刀具"推出来的。如果机床用 M04，或者材料在刀路的
+另一侧（例如加工的是外轮廓而不是这块区域），顺铣与逆铣就要对调——参数名按几何绕向标注，
+约定写在 README 的「参数与固定值」里。栅格策略没有这个参数：一刀的两侧一侧顺、一侧逆，
+没有单一答案，往复本身就是在交替。
 """
 
 from __future__ import annotations
@@ -23,7 +35,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 from toolpath_lab.core.errors import PlanningError
-from toolpath_lab.core.parameters import ParameterKind as K, ParameterSet, spec
+from toolpath_lab.core.parameters import (
+    Choice,
+    ParameterKind as K,
+    ParameterSet,
+    spec,
+)
 from toolpath_lab.core.path import Move, MoveKind, Toolpath
 from toolpath_lab.planning.base import MOTION_PARAMETERS, Planner, PlanningContext
 from toolpath_lab.planning.geometry2d import offset_loops, point_in_polygon, resample_ring
@@ -31,6 +48,13 @@ from toolpath_lab.planning.registry import PLANNERS
 
 #: 偏置后面积小于这个值的环直接丢掉（mm²）：细到没有加工意义的碎片不值得走一刀。
 _MIN_RING_AREA_MM2 = 0.5
+
+#: 环绕向 → notes 里的说明文案。
+_DIRECTION_LABELS = {
+    "alternate": "交替（顺铣/逆铣）",
+    "climb": "全顺铣（逆时针）",
+    "conventional": "全逆铣（顺时针）",
+}
 
 
 @PLANNERS.register
@@ -47,6 +71,13 @@ class ContourPlanner(Planner):
             spec("sample_step_mm", "采样步长", K.FLOAT, 1.0, minimum=0.1, maximum=20.0,
                  step=0.1, unit="mm", group="刀路",
                  help="每环离散成折线的点距；越小越贴合曲线，刀点也越多"),
+            spec("ring_direction", "环绕向", K.CHOICE, "alternate", group="刀路",
+                 choices=(
+                     Choice("alternate", "交替（顺铣/逆铣）"),
+                     Choice("climb", "全顺铣（逆时针）"),
+                     Choice("conventional", "全逆铣（顺时针）"),
+                 ),
+                 help="顺逆铣：按 M03 主轴 + 右手刀具，逆时针为顺铣；约定见 README「参数与固定值」"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
         )
@@ -59,6 +90,7 @@ class ContourPlanner(Planner):
         sample_step = self.require_positive(
             float(context.parameters["sample_step_mm"]), "采样步长 sample_step_mm"
         )
+        ring_direction = str(context.parameters["ring_direction"])
         boundary = context.boundary
         distance = context.tool.footprint_radius_mm
 
@@ -83,8 +115,7 @@ class ContourPlanner(Planner):
             for loop in loops:
                 sampled = resample_ring(loop, sample_step)
                 closed = np.vstack([sampled, sampled[:1]])
-                if index % 2 == 1:
-                    # 奇数环反向，顺铣/逆铣因此交替，和往复栅格同一个道理。
+                if self._should_reverse(ring_direction, index):
                     closed = closed[::-1]
                 positions = context.to_positions(closed)
                 if previous is None:
@@ -114,14 +145,27 @@ class ContourPlanner(Planner):
             planner_label=self.label,
             notes=(
                 f"环切：共 {ring_count} 环（{len(layers)} 层），切宽 {stepover:g} mm，"
-                f"采样步长 {sample_step:g} mm",
-                "相邻环绕行方向交替（顺铣/逆铣交替）；同层分裂出的环之间抬刀快移，"
-                "套在里面的环之间用连接进给",
+                f"采样步长 {sample_step:g} mm，环绕向 {_DIRECTION_LABELS[ring_direction]}",
+                "同层分裂出的环之间抬刀快移，套在里面的环之间用连接进给",
                 f"边界固定内缩一个刀具足迹半径（R{context.tool.footprint_radius_mm:g} mm），"
                 f"安全高度 {context.safe_height_mm:g} mm、"
                 f"快移 {context.rapid_feed_mm_per_min:g} mm/min",
             ),
         )
+
+    @staticmethod
+    def _should_reverse(ring_direction: str, index: int) -> bool:
+        """这一环要不要反向走。
+
+        offset_loops 给的环是逆时针的，也就是顺铣（材料在环内侧）；所以
+        "全顺铣"保持原样、"全逆铣"全部反向、"交替"按顺序奇偶交替（原来唯一的行为）。
+        """
+
+        if ring_direction == "climb":
+            return False
+        if ring_direction == "conventional":
+            return True
+        return index % 2 == 1
 
     @staticmethod
     def _is_nested(inner: NDArray[np.float64], outer: NDArray[np.float64]) -> bool:
