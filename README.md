@@ -2,7 +2,9 @@
   <img src="toolpath_lab/web/icon.png" width="128" alt="ToolpathLab">
 </p>
 
-# ToolpathLab · 刀路规划基座
+# ToolpathLab
+
+> English: [README.en.md](README.en.md)（中文是主文档，英文版手工同步） · 刀路规划基座
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)

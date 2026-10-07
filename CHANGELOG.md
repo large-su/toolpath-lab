@@ -6,6 +6,13 @@
 
 ### 工程
 
+- **同步 `README.en.md`**：它此前停在 0.0.1 的状态（只有方形/圆形、只有栅格、参数还写成"常量"、
+  导出只有 NC），现在与中文 README 对齐：7 种区域形状、3 个策略（含自适应环切与性价比曲线）、
+  覆盖率分析、拐角减速、分层深度、导出自述（NC 头 + CSV 注释块）、`selfcheck.py` 与 CI、
+  完整的参数表（14 行）与"仍然是固定的设计选择"表，并写明界面与文档是中文、注释与文档字符串是
+  英文这条约定。中文 README 顶部加了指向英文版的链接。
+  - 校验方式：写了一个临时脚本，把 `README.en.md` 参数表里的键与默认值逐个对照 `/api/catalog`
+    的声明、检查正文引用的文件是否都存在（结果：14 行全对、无缺失文件），脚本用完即删。
 - **新增 GitHub Actions（`.github/workflows/selfcheck.yml`）**：每次推送与 PR 都跑
   `python selfcheck.py`——与本地提交前自检**完全同一条命令**（单元测试、headless 示例、
   `node --check`、HTTP 冒烟），环境是 ubuntu-latest + Python 3.12 + Node 20。CONTRIBUTING 的
