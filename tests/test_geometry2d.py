@@ -238,6 +238,83 @@ class OffsetLoopTests(unittest.TestCase):
         self.assertAlmostEqual(signed_area(largest), signed_area(offset_loops(polygon, 15.0)[0]))
 
 
+def _triangle(width: float, height: float) -> np.ndarray:
+    """底边宽 width、高 height 的等腰三角形（顶点朝上）。"""
+
+    half = width / 2.0
+    return ensure_ccw(np.array([[-half, 0.0], [half, 0.0], [0.0, height]]))
+
+
+def _slab_with_fin() -> np.ndarray:
+    """一块 100 × 60 的板，上边中间长了一个 4 × 10 的小尖鳍（顶角约 22.6°）。
+
+    尖鳍两侧边长约 10.2，而斜接点需要 3·tan(78.7°) ≈ 15 的延长——斜接点落在平移线段之外。
+    按几何结论，这时鳍附近宽 2L·sin(11.3°) ≈ 4 < 6 = 2d，比刀具还窄，整只鳍早被侵蚀掉了。
+    """
+
+    return ensure_ccw(
+        np.array(
+            [
+                [-50.0, -30.0],
+                [50.0, -30.0],
+                [50.0, 30.0],
+                [2.0, 30.0],
+                [0.0, 40.0],
+                [-2.0, 30.0],
+                [-50.0, 30.0],
+            ]
+        )
+    )
+
+
+class SharpCornerTests(unittest.TestCase):
+    """尖角处的偏置：斜接点可以离顶点很远，但这从来不是"够不够长"的问题。"""
+
+    def test_a_sharp_apex_still_closes_the_ring(self) -> None:
+        # 顶角 18.9° 的斜接点离顶点约 6×偏置量，照样要闭合成环
+        for width, height in ((30.0, 90.0), (15.0, 120.0), (8.0, 120.0)):
+            polygon = _triangle(width, height)
+            with self.subTest(width=width, height=height):
+                loops = offset_loops(polygon, 3.0)
+                self.assertEqual(len(loops), 1)
+                self.assertGreaterEqual(
+                    float(distance_to_boundary(_densify(loops[0], 0.05), polygon).min()),
+                    3.0 - 0.02,
+                )
+
+    def test_the_eroded_triangle_matches_the_analytic_area(self) -> None:
+        """三角形的侵蚀还是相似三角形：面积 = 原面积 × ((r − d) / r)²，r 是内切半径。"""
+
+        width, height = 8.0, 120.0
+        polygon = _triangle(width, height)
+        loop = offset_polygon(polygon, 3.0)
+        area = 0.5 * width * height
+        side = float(np.hypot(width / 2.0, height))
+        inradius = area / ((width + 2.0 * side) / 2.0)
+        self.assertAlmostEqual(
+            signed_area(loop), area * ((inradius - 3.0) / inradius) ** 2, delta=0.5
+        )
+
+    def test_a_needle_that_leaves_nothing_reports_no_ring(self) -> None:
+        # 顶角 1.9° 的细长三角：内切半径小于偏置量，本来就什么都不剩
+        self.assertEqual(offset_loops(_triangle(4.0, 120.0), 3.0), [])
+
+    def test_a_feature_narrower_than_the_tool_just_disappears(self) -> None:
+        """比刀具还窄的尖鳍不会留下碎片，也不会把整条环弄断——它整只被侵蚀掉了。"""
+
+        polygon = _slab_with_fin()
+        loops = offset_loops(polygon, 3.0)
+        self.assertEqual(len(loops), 1)
+        loop = loops[0]
+        # 鳍完全消失：偏置边界最高只到板的顶面内缩处
+        self.assertLess(float(loop[:, 1].max()), 28.0)
+        self.assertGreater(float(loop[:, 1].min()), -28.0)
+        # 留下来的环离轮廓的距离仍然不小于偏置量
+        self.assertGreaterEqual(
+            float(distance_to_boundary(_densify(loop, 0.05), polygon).min()), 3.0 - 0.02
+        )
+
+
 class ResampleTests(unittest.TestCase):
     def test_ring_is_resampled_at_even_arc_length(self) -> None:
         sampled = resample_ring(_square(80.0), 5.0)

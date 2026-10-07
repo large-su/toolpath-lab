@@ -263,5 +263,39 @@ class RingDirectionTests(unittest.TestCase):
             _plan({"ring_direction": "climb_ccw"})
 
 
+class SharpCornerTests(unittest.TestCase):
+    """三角形区域：很尖的顶角处偏置也要闭合成环（斜接点能离顶点很远）。"""
+
+    def _plan_triangle(self, width: float, height: float, **parameters) -> Toolpath:
+        options = {"stepover_mm": 6.0, "sample_step_mm": 1.0}
+        options.update(parameters)
+        return run_plan(
+            planner_id="contour",
+            tool=_tool(),
+            region=build_region("triangle", {"width_mm": width, "height_mm": height}),
+            parameters=options,
+        ).toolpath
+
+    def test_a_sharp_triangle_still_gets_rings(self) -> None:
+        # 底边 20、高 200（顶角约 5.7°）：斜接点离顶点约 20×偏置量
+        toolpath = self._plan_triangle(20.0, 200.0)
+        self.assertGreater(toolpath.pass_count, 0)
+        for move in _cut_moves(toolpath):
+            self.assertTrue(bool(np.allclose(move.points[0], move.points[-1])))
+            self.assertGreater(abs(signed_area(move.points[:-1, :2])), 0.0)
+
+    def test_the_first_ring_matches_the_analytic_erosion_area(self) -> None:
+        """三角形的侵蚀还是相似三角形：面积 = 原面积 × ((r − d) / r)²，r 是内切半径。"""
+
+        width, height = 20.0, 200.0
+        toolpath = self._plan_triangle(width, height)
+        area = 0.5 * width * height
+        side = float(np.hypot(width / 2.0, height))
+        inradius = area / ((width + 2.0 * side) / 2.0)
+        expected = area * ((inradius - 3.0) / inradius) ** 2
+        first = _rings(toolpath)[0]
+        self.assertAlmostEqual(abs(signed_area(first)), expected, delta=expected * 0.03)
+
+
 if __name__ == "__main__":
     unittest.main()

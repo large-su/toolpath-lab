@@ -8,7 +8,8 @@
 - 圆形（circle）：一个直径；
 - 椭圆（ellipse）：长半轴 / 短半轴；
 - U 形（u_shape）：外宽 / 外高 / 壁厚，一个凹多边形；
-- 哑铃形（dumbbell）：两端方头 + 细颈，细颈被偏置吃掉后同一层会分裂成两条环。
+- 哑铃形（dumbbell）：两端方头 + 细颈，细颈被偏置吃掉后同一层会分裂成两条环；
+- 三角形（triangle）：底边与高，顶角可以调得很尖。
 
 所有形状统一归约为一条**逆时针、不重复首点**的边界多边形。栅格刀路只会用到
 "一条直线与多边形求交"，三维工件也直接按这条边界挤出，因此新增形状（跑道形、带缺口的多边形……）
@@ -321,6 +322,44 @@ class DumbbellRegion(RegionShape):
                 (-inner, half_neck),
                 (-inner, half_pad),
                 (-half_width, half_pad),
+            ],
+            dtype=np.float64,
+        )
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class TriangleRegion(RegionShape):
+    """以原点为中心的等腰三角形（底边在下、顶点朝上）。"""
+
+    width_mm: float = 80.0
+    height_mm: float = 60.0
+
+    id: ClassVar[str] = "triangle"
+    label: ClassVar[str] = "三角形"
+    description: ClassVar[str] = "等腰三角形；顶角可以调得很尖，用来验证偏置在尖角处也能闭合"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("width_mm", "底边 W", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域", help="沿 X 轴的底边长度"),
+            spec("height_mm", "高 H", K.FLOAT, 60.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域",
+                 help="沿 Y 轴的高度；底边越窄、高越大，顶角越尖"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.width_mm <= 0 or self.height_mm <= 0:
+            raise ParameterError("三角形的底边与高都必须为正")
+
+    def boundary(self) -> NDArray[np.float64]:
+        half_width = self.width_mm / 2.0
+        half_height = self.height_mm / 2.0
+        return np.array(
+            [
+                (-half_width, -half_height),
+                (half_width, -half_height),
+                (0.0, half_height),
             ],
             dtype=np.float64,
         )

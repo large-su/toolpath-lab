@@ -73,9 +73,9 @@ class SpiralPlanner(Planner):
 
 ## 2. 新增一个区域形状
 
-内置六种形状：方形、矩形、圆形、椭圆、U 形（凹）、哑铃形（细颈 + 两端方头），都在
-`toolpath_lab/core/region.py`。再加一种就是照着它们写一个类——下面以"跑道形"为例
-（`__post_init__` 要守住自己的不变式）：
+内置七种形状：方形、矩形、圆形、椭圆、U 形（凹）、哑铃形（细颈 + 两端方头）、三角形
+（顶角可调尖），都在 `toolpath_lab/core/region.py`。再加一种就是照着它们写一个类——
+下面以"跑道形"为例（`__post_init__` 要守住自己的不变式）：
 
 ```python
 from dataclasses import dataclass

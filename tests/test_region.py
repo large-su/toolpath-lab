@@ -27,7 +27,7 @@ class RegionCatalogTests(unittest.TestCase):
     def test_registered_shapes(self) -> None:
         self.assertEqual(
             sorted(REGION_SHAPES.ids()),
-            ["circle", "dumbbell", "ellipse", "rectangle", "square", "u_shape"],
+            ["circle", "dumbbell", "ellipse", "rectangle", "square", "triangle", "u_shape"],
         )
 
     def test_catalog_publishes_labels_and_parameters(self) -> None:
@@ -58,6 +58,11 @@ class RegionCatalogTests(unittest.TestCase):
         self.assertEqual(
             [item["key"] for item in entries["dumbbell"]["parameters"]],
             ["width_mm", "pad_mm", "neck_mm"],
+        )
+        self.assertEqual(entries["triangle"]["label"], "三角形")
+        self.assertEqual(
+            [item["key"] for item in entries["triangle"]["parameters"]],
+            ["width_mm", "height_mm"],
         )
 
     def test_unknown_shape_raises(self) -> None:
@@ -264,6 +269,31 @@ class DumbbellRegionTests(unittest.TestCase):
     def test_the_class_itself_keeps_the_invariant(self) -> None:
         with self.assertRaises(ParameterError):
             DumbbellRegion(width_mm=160.0, pad_mm=60.0, neck_mm=0.0)
+
+
+class TriangleRegionTests(unittest.TestCase):
+    """等腰三角形：顶角可以调尖，是偏置几何最吃力的形状。"""
+
+    def test_boundary_is_a_counter_clockwise_triangle(self) -> None:
+        region = build_region("triangle", {"width_mm": 80.0, "height_mm": 60.0})
+        polygon = ensure_ccw(region.boundary())
+        self.assertEqual(polygon.shape, (3, 2))
+        self.assertAlmostEqual(signed_area(polygon), 0.5 * 80.0 * 60.0, places=6)
+        self.assertEqual(polygon_bounds(polygon), [[-40.0, 40.0], [-30.0, 30.0]])
+
+    def test_the_apex_angle_follows_the_width_and_height(self) -> None:
+        # 底边 20、高 200 时顶角只有约 5.7°：斜接点需要约 20×偏置量的延长
+        region = build_region("triangle", {"width_mm": 20.0, "height_mm": 200.0})
+        polygon = ensure_ccw(region.boundary())
+        apex = polygon[np.argmax(polygon[:, 1])]
+        self.assertAlmostEqual(float(apex[0]), 0.0, places=6)
+        self.assertAlmostEqual(float(apex[1]), 100.0, places=6)
+
+    def test_too_small_sides_are_rejected(self) -> None:
+        for parameters in ({"width_mm": 1.0}, {"height_mm": 1.0}):
+            with self.subTest(parameters=parameters):
+                with self.assertRaises(ParameterError):
+                    build_region("triangle", parameters)
 
 
 if __name__ == "__main__":
