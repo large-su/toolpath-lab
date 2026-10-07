@@ -109,6 +109,8 @@ export class Playback {
       if (this.time >= this.duration) {
         this.time = this.duration;
         this.playing = false;
+        // 播放自然结束也是一次状态变化：不通知的话播放键会停在"暂停"图标上。
+        this._notify();
       }
     }
     return this.state();
