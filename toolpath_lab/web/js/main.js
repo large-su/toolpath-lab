@@ -225,6 +225,16 @@ function renderStats(result) {
     ["切削长度", stats.cut_length_mm.toFixed(1) + " mm"],
     ["预计工时", seconds(stats.estimated_time_s)],
   ];
+  if (result.coverage) {
+    const coverage = result.coverage;
+    rows.push(["覆盖率", (coverage.ratio * 100).toFixed(1) + " %"]);
+    if (coverage.uncut_area_mm2 > 0) {
+      rows.push([
+        "未切除",
+        coverage.uncut_area_mm2.toFixed(1) + " mm² / " + coverage.patch_count + " 处",
+      ]);
+    }
+  }
   const list = document.createElement("dl");
   for (const [label, value] of rows) {
     for (const node of statRow(label, value)) list.appendChild(node);

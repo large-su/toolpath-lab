@@ -10,6 +10,11 @@ from toolpath_lab.planning.base import (
     Planner,
     PlanningContext,
 )
+from toolpath_lab.planning.coverage import (
+    Coverage,
+    coverage_warnings,
+    measure_coverage,
+)
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
 from toolpath_lab.planning.service import PlanningOutcome, get_planner, run_plan
 
@@ -21,10 +26,13 @@ __all__ = [
     "PLANNERS",
     "RAPID_FEED_MM_PER_MIN",
     "SAFE_HEIGHT_MM",
+    "Coverage",
     "Planner",
     "PlanningContext",
     "PlanningOutcome",
+    "coverage_warnings",
     "get_planner",
+    "measure_coverage",
     "planner_catalog",
     "run_plan",
 ]
