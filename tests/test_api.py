@@ -204,6 +204,18 @@ class PlanTests(ApiTestCase):
                 self.assertEqual(status, 400)
                 self.assertIn("待拓展", payload["error"])
 
+    def test_the_plan_response_carries_the_coverage_analysis(self) -> None:
+        _, payload, _ = self.plan({})
+        coverage = payload["coverage"]
+        self.assertIsNotNone(coverage)
+        self.assertAlmostEqual(coverage["ratio"], 1.0, delta=0.05)
+        self.assertIn("uncut_area_mm2", coverage)
+        self.assertIn("patches", coverage)
+        # 三维叠加显示的矩形：默认请求残留很少，但确实有（边界附近那点）
+        self.assertTrue(coverage["uncut_rects"])
+        self.assertIsInstance(coverage["uncut_rects_truncated"], bool)
+        self.assertEqual(len(coverage["uncut_rects"][0]), 4)
+
     def test_warnings_are_returned(self) -> None:
         _, payload, _ = self.plan(
             {"tool": {"diameter_mm": 6.0}, "planner": {"parameters": {"stepover_mm": 40.0}}}

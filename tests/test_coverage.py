@@ -186,5 +186,64 @@ class WarningTests(unittest.TestCase):
         self.assertAlmostEqual(measure_coverage(toolpath, region, _tool(8.0)).ratio, 1.0, places=9)
 
 
+class RectangleTests(unittest.TestCase):
+    """未切除格子合并成的矩形：给三维叠加显示用，必须与统计的面积一致。"""
+
+    def test_rectangles_tile_the_uncut_cells(self) -> None:
+        region = build_region("square", {"side_mm": 80.0})
+        coverage = measure_coverage(
+            _plan(region, parameters={"stepover_mm": 12.0}), region, _tool()
+        )
+        total = sum(
+            (x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in coverage.uncut_rects
+        )
+        self.assertAlmostEqual(total, coverage.uncut_area_mm2, places=6)
+        self.assertFalse(coverage.uncut_rects_truncated)
+        # 成片漏切会合并成少量大矩形，而不是几千个格子
+        self.assertLess(len(coverage.uncut_rects), 200)
+
+    def test_rectangles_stay_inside_the_region_bounds(self) -> None:
+        region = build_region("square", {"side_mm": 80.0})
+        coverage = measure_coverage(
+            _plan(region, parameters={"stepover_mm": 12.0}), region, _tool()
+        )
+        for x0, y0, x1, y1 in coverage.uncut_rects:
+            with self.subTest(rect=(x0, y0, x1, y1)):
+                self.assertGreaterEqual(x0, -40.0)
+                self.assertLessEqual(x1, 40.0)
+                self.assertGreaterEqual(y0, -40.0)
+                self.assertLessEqual(y1, 40.0)
+                self.assertGreater(x1, x0)
+                self.assertGreater(y1, y0)
+
+    def test_the_rectangle_list_can_be_capped(self) -> None:
+        region = build_region("square", {"side_mm": 80.0})
+        coverage = measure_coverage(
+            _plan(region, parameters={"stepover_mm": 12.0}), region, _tool(), max_rects=3
+        )
+        self.assertEqual(len(coverage.uncut_rects), 3)
+        self.assertTrue(coverage.uncut_rects_truncated)
+
+    def test_a_fully_covered_toolpath_has_no_rectangles(self) -> None:
+        region = build_region("rectangle", {"width_mm": 10.0, "height_mm": 6.0})
+        toolpath = Toolpath(
+            moves=(
+                Move(MoveKind.CUT, np.array([[-5.0, 0.0, 0.0], [5.0, 0.0, 0.0]]), 600.0),
+            )
+        )
+        coverage = measure_coverage(toolpath, region, _tool(8.0))
+        self.assertEqual(coverage.uncut_rects, ())
+        self.assertFalse(coverage.uncut_rects_truncated)
+
+    def test_describe_exposes_the_rectangles(self) -> None:
+        region = build_region("square", {"side_mm": 80.0})
+        payload = measure_coverage(
+            _plan(region, parameters={"stepover_mm": 12.0}), region, _tool()
+        ).describe()
+        self.assertTrue(payload["uncut_rects"])
+        self.assertEqual(len(payload["uncut_rects"][0]), 4)
+        self.assertFalse(payload["uncut_rects_truncated"])
+
+
 if __name__ == "__main__":
     unittest.main()

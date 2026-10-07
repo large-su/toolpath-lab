@@ -41,6 +41,8 @@ DEFAULT_CELL_MM = 0.5
 MAX_CELLS = 400_000
 #: 最多报告几块未切除区域（其余只计入总数）。
 MAX_PATCHES = 8
+#: 最多输出多少个未切除矩形（给三维叠加显示用）：成片漏切通常是几个大矩形，够用了。
+MAX_RECTS = 800
 #: 未切除面积占比超过这个值才提醒：圆刀在方形的尖角处、曲线区域的多边形逼近处总会留一点点，
 #: 那是几何必然，不该每次都弹提醒。真正要提醒的是"成片漏切"（切宽过大、环切剩中心）。
 WARN_UNCUT_RATIO = 0.02
@@ -72,6 +74,8 @@ class Coverage:
     uncut_area_mm2: float
     patch_count: int
     patches: tuple[UncutPatch, ...]
+    uncut_rects: tuple[tuple[float, float, float, float], ...] = ()
+    uncut_rects_truncated: bool = False
 
     @property
     def ratio(self) -> float:
@@ -86,6 +90,11 @@ class Coverage:
             "ratio": round(self.ratio, 6),
             "patch_count": self.patch_count,
             "patches": [patch.describe() for patch in self.patches],
+            # 未切除格子合并成的矩形（x0, y0, x1, y1，mm），给三维叠加显示用
+            "uncut_rects": [
+                [round(value, 4) for value in rect] for rect in self.uncut_rects
+            ],
+            "uncut_rects_truncated": self.uncut_rects_truncated,
         }
 
 
@@ -216,12 +225,44 @@ def _label_patches(uncut: NDArray[np.bool_]) -> list[tuple[int, int, int, int, i
     return patches
 
 
+def _merge_rectangles(
+    uncut: NDArray[np.bool_], limit: int
+) -> tuple[list[tuple[int, int, int, int]], bool]:
+    """把未切除格子贪心合并成尽量少的矩形，返回格坐标 (列起, 行起, 列止, 行止) 与是否被截断。
+
+    先按行扫出连续段，再尽量往下扩；成片漏切（条带、中心残留）因此会变成几个大矩形，
+    载荷小、画起来也简单。
+    """
+
+    rows, columns = uncut.shape
+    remaining = uncut.copy()
+    rects: list[tuple[int, int, int, int]] = []
+    for row in range(rows):
+        line = remaining[row]
+        if not line.any():
+            continue
+        edges = np.diff(np.concatenate(([False], line, [False])).astype(np.int8))
+        for begin, finish in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+            span = remaining[row:, begin:finish]
+            filled = span.all(axis=1)
+            if filled.all():
+                bottom = rows - 1
+            else:
+                bottom = row + int(np.argmin(filled)) - 1
+            remaining[row:bottom + 1, begin:finish] = False
+            rects.append((int(begin), row, int(finish), bottom + 1))
+            if len(rects) >= limit:
+                return rects, True
+    return rects, False
+
+
 def measure_coverage(
     toolpath: Toolpath,
     region: RegionShape,
     tool: Tool,
     *,
     cell_mm: float = DEFAULT_CELL_MM,
+    max_rects: int = MAX_RECTS,
 ) -> Coverage:
     """量一下这条刀路在给定区域上切干净了没有。"""
 
@@ -243,6 +284,9 @@ def measure_coverage(
     uncut_cells = int(uncut.sum())
 
     labelled = _label_patches(uncut) if uncut_cells else []
+    grid_rects, truncated = (
+        _merge_rectangles(uncut, max_rects) if uncut_cells else ([], False)
+    )
     patches = []
     for cells, row_begin, row_end, col_begin, col_end in labelled[:MAX_PATCHES]:
         patches.append(
@@ -268,6 +312,16 @@ def measure_coverage(
         uncut_area_mm2=uncut_cells * area_per_cell,
         patch_count=len(labelled),
         patches=tuple(patches),
+        uncut_rects=tuple(
+            (
+                float(x_min + col_begin * cell),
+                float(y_min + row_begin * cell),
+                float(x_min + col_end * cell),
+                float(y_min + row_end * cell),
+            )
+            for col_begin, row_begin, col_end, row_end in grid_rects
+        ),
+        uncut_rects_truncated=truncated,
     )
 
 

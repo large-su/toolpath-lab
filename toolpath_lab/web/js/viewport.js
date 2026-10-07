@@ -21,6 +21,7 @@ const COLORS = {
   trace: 0x54d6c4,
   tool: 0xffcc00,
   holder: 0xb0bcc6,
+  uncut: 0xff8a80,
 };
 
 //: 加工面上的刀路（切削 / 连接 / 已走轨迹）抬高一点点画，避免与工件上表面 z-fighting。
@@ -69,6 +70,21 @@ function liftPaths(polylines) {
   return polylines.map(liftPath);
 }
 
+// 未切除区域的叠加显示：每个矩形两个三角形，贴在加工面上方一点点
+// （低于刀路的 0.05，免得把刀路盖住）。
+// 导出这个纯函数是为了能在 Node 里用仓库自带的 three.js 直接验证它，不必开浏览器。
+export function uncutGeometry(rects) {
+  const positions = [];
+  const z = PATH_LIFT_MM * 0.4;
+  for (const [x0, y0, x1, y1] of rects) {
+    positions.push(x0, y0, z, x1, y0, z, x1, y1, z);
+    positions.push(x0, y0, z, x1, y1, z, x0, y1, z);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  return geometry;
+}
+
 function polylineGeometry(polylines, dashed = false) {
   const positions = [];
   for (const points of polylines) {
@@ -91,6 +107,7 @@ export class Viewport {
     this.appearance = { shadows: true, white: false, grid: true };
     this.display = {
       showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true,
+      showUncut: true,
     };
     this.bounds = null;
     this.activeView = "fit";
@@ -142,12 +159,13 @@ export class Viewport {
 
     this.gridGroup = new THREE.Group();
     this.workpieceGroup = new THREE.Group();
+    this.uncutGroup = new THREE.Group();
     this.contourGroup = new THREE.Group();
     this.pathGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
     this.toolGroup = new THREE.Group();
     this.scene.add(
-      this.gridGroup, this.workpieceGroup,
+      this.gridGroup, this.workpieceGroup, this.uncutGroup,
       this.contourGroup, this.pathGroup, this.traceGroup, this.toolGroup
     );
 
@@ -183,6 +201,7 @@ export class Viewport {
   // ---------------------------------------------------------------- 结果
   setResult(payload) {
     this._clear(this.workpieceGroup);
+    this._clear(this.uncutGroup);
     this._clear(this.contourGroup);
     this._clear(this.pathGroup);
     this._clear(this.traceGroup);
@@ -196,6 +215,18 @@ export class Viewport {
     this.workpieceGroup.add(this._workpiece(region, thickness));
     this.contourGroup.add(this._contour(region.boundary));
     this._rebuildGrid(span, thickness);
+
+    const rects = (payload.coverage && payload.coverage.uncut_rects) || [];
+    if (rects.length) {
+      const mesh = new THREE.Mesh(
+        uncutGeometry(rects),
+        new THREE.MeshBasicMaterial({
+          color: COLORS.uncut, transparent: true, opacity: 0.32,
+          depthWrite: false, side: THREE.DoubleSide,
+        })
+      );
+      this.uncutGroup.add(mesh);
+    }
 
     const groups = { cut: [], link: [], rapid: [] };
     for (const move of payload.toolpath.moves) {
@@ -297,6 +328,7 @@ export class Viewport {
   setDisplayOptions(options) {
     this.display = Object.assign({}, this.display, options || {});
     this.workpieceGroup.visible = this.display.showWorkpiece;
+    this.uncutGroup.visible = this.display.showUncut;
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.toolGroup.visible = this.display.showTool;
