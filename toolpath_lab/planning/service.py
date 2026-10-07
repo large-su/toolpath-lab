@@ -9,6 +9,7 @@ from toolpath_lab.core.path import Toolpath
 from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.base import Planner, PlanningContext
+from toolpath_lab.planning.feeds import apply_corner_slowdown
 from toolpath_lab.planning.registry import PLANNERS
 
 
@@ -39,4 +40,11 @@ def run_plan(
     validated = planner.parameters.coerce(parameters)
     context = PlanningContext(tool=tool, region=region, parameters=validated)
     toolpath = planner.plan(context)
+    # Corner feed reduction is a motion post-process shared by every strategy (including third party
+    # plugins), so it happens here rather than inside each plan(). Off by default.
+    toolpath = apply_corner_slowdown(
+        toolpath,
+        corner_angle_deg=context.corner_angle_deg,
+        corner_feed_ratio=context.corner_feed_ratio,
+    )
     return PlanningOutcome(toolpath=toolpath, warnings=tuple(context.warnings))

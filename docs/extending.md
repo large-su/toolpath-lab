@@ -134,7 +134,7 @@ class StadiumRegion(RegionShape):
 安全高度、快移速度、边界处理方式过去是 planning 里的常量，现在已经全部参数化，可以直接照抄这个
 模式给新能力加参数：
 
-1. **声明**：抬刀高度与快移速度是所有策略都要的，因此声明成一份共用的
+1. **声明**：抬刀高度、快移速度与拐角减速是所有策略都要的，因此声明成一份共用的
    `MOTION_PARAMETERS`（planning/base.py），策略只要并进自己的 ParameterSet：
 
    ```python
@@ -153,6 +153,8 @@ class StadiumRegion(RegionShape):
 2. **读取**：值从 `context.parameters` 取，构造器一律读 `PlanningContext` 上的属性——
    `context.safe_height_mm`、`context.rapid_feed_mm_per_min`。策略没有声明这两个键时，
    context 会退回 `SAFE_HEIGHT_MM` / `RAPID_FEED_MM_PER_MIN` 默认值，第三方插件因此不会被绊住。
+   **拐角减速不用你管**：它是规划服务在 `plan()` 之后统一做的动作后处理（planning/feeds.py），
+   只读 `corner_angle_deg` / `corner_feed_ratio` 两个共用参数，默认关闭；插件照样白拿。
 
 3. **两个注意事项**：
    - 参数化的值如果会影响"几何是否可行"，就让规划失败抛 `PlanningError`（HTTP 422），

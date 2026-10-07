@@ -173,6 +173,29 @@ def check_http_api() -> tuple[bool, str]:
         steps += 1
         expect(status == 404, f"未知接口应返回 404，实际 {status}")
 
+        # Corner feed reduction: off by default, and turning it on must slow the corner segments
+        # without touching the geometry.
+        payload = {"region": {"shape": "square"}, "planner": {"id": "contour"}}
+        status, body = _request(base, "/api/plan", payload)
+        steps += 1
+        plain = json.loads(body) if status == 200 else {}
+        payload["planner"]["parameters"] = {"corner_angle_deg": 30.0}
+        status, body = _request(base, "/api/plan", payload)
+        steps += 1
+        if status != 200 or not plain:
+            problems.append(f"拐角减速的规划失败：{status} {body[:60]}")
+        else:
+            slowed = json.loads(body)
+            feeds = {move["feed_mm_per_min"] for move in slowed["toolpath"]["moves"]
+                     if move["kind"] == "cut"}
+            expect(len(feeds) > 1 and min(feeds) < max(feeds),
+                   f"打开拐角减速后进给应当有快有慢，实际 {feeds}")
+            expect(
+                abs(slowed["toolpath"]["statistics"]["cut_length_mm"]
+                    - plain["toolpath"]["statistics"]["cut_length_mm"]) < 1e-6,
+                "拐角减速不应改变切削长度",
+            )
+
         status, page = _request(base, "/index.html")
         steps += 1
         expect(status == 200 and "<html" in page.lower(), f"静态首页返回 {status}")

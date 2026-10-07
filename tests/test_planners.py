@@ -52,7 +52,7 @@ class RegistryTests(unittest.TestCase):
             keys,
             ["mode", "stepover_mm", "boundary_mode", "stock_allowance_mm",
              "direction_deg", "feed_mm_per_min", "safe_height_mm",
-             "rapid_feed_mm_per_min"],
+             "rapid_feed_mm_per_min", "corner_angle_deg", "corner_feed_ratio"],
         )
         self.assertEqual(entry["label"], "栅格刀路")
 

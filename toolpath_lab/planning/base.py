@@ -27,6 +27,7 @@ from toolpath_lab.core.parameters import (
 from toolpath_lab.core.path import Move, MoveKind, Toolpath, retract_move
 from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import Tool
+from toolpath_lab.planning.feeds import DEFAULT_CORNER_ANGLE_DEG, DEFAULT_CORNER_FEED_RATIO
 from toolpath_lab.planning.geometry2d import ensure_ccw
 
 #: Default distance (mm) the tool lifts above the top face of the workpiece when moving rapidly.
@@ -35,6 +36,8 @@ SAFE_HEIGHT_MM = 5.0
 RAPID_FEED_MM_PER_MIN = 5000.0
 
 #: Motion parameters shared by every strategy: merge them into your ParameterSet to expose them.
+#: Corner feed reduction is in here too, so even a third party strategy gets it for free (see
+#: planning/feeds.py); leaving `corner_angle_deg` at 0 keeps the plain geometric toolpath.
 MOTION_PARAMETERS: ParameterSet = ParameterSet(
     (
         spec("safe_height_mm", "安全高度", K.FLOAT, SAFE_HEIGHT_MM, minimum=0.0,
@@ -43,6 +46,12 @@ MOTION_PARAMETERS: ParameterSet = ParameterSet(
         spec("rapid_feed_mm_per_min", "快移速度", K.FLOAT, RAPID_FEED_MM_PER_MIN,
              minimum=100.0, maximum=50000.0, step=100.0, unit="mm/min", group="刀路",
              help="抬刀 / 横移 / 下刀的进给速度，会计入预计工时"),
+        spec("corner_angle_deg", "拐角减速起始角", K.FLOAT, DEFAULT_CORNER_ANGLE_DEG,
+             minimum=0.0, maximum=180.0, step=5.0, unit="°", group="刀路",
+             help="切削段转角超过它就开始降速；0 表示关闭（圆滑曲线因此不受影响）"),
+        spec("corner_feed_ratio", "拐角最低进给", K.FLOAT, DEFAULT_CORNER_FEED_RATIO,
+             minimum=0.05, maximum=1.0, step=0.05, unit="×", group="刀路",
+             help="180° 折返处降到编程进给的这个比例；起始角为 0 时不生效"),
     )
 )
 
@@ -72,6 +81,18 @@ class PlanningContext:
         """Rapid feed; uses the rapid_feed_mm_per_min parameter when the strategy declares it."""
 
         return float(self.parameters.get("rapid_feed_mm_per_min", RAPID_FEED_MM_PER_MIN))
+
+    @property
+    def corner_angle_deg(self) -> float:
+        """Turn angle above which cutting feeds ramp down; 0 means corner slowdown is off."""
+
+        return float(self.parameters.get("corner_angle_deg", DEFAULT_CORNER_ANGLE_DEG))
+
+    @property
+    def corner_feed_ratio(self) -> float:
+        """Feed factor at a full reversal; uses the default when the strategy declares no such key."""
+
+        return float(self.parameters.get("corner_feed_ratio", DEFAULT_CORNER_FEED_RATIO))
 
     # -- geometry ----------------------------------------------------------
     @property
