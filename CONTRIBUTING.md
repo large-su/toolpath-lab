@@ -18,7 +18,7 @@ three.module.js、three.core.js、OrbitControls.js、RoomEnvironment.js 四个�
 
 ## 提交前自检
 
-一条命令跑完：
+一条命令跑完（CI 也是跑这一条，见 `.github/workflows/selfcheck.yml`）：
 
 ```bash
 python selfcheck.py                # node 不在 PATH 上时跳过前端语法检查

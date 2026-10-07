@@ -16,6 +16,7 @@ const COLORS = {
   workpiece: 0x5b6b7e,
   contour: 0x54d6c4,
   cut: 0xffa726,
+  cutSlow: 0xff5c33,
   link: 0xf2c94c,
   rapid: 0x4fc3f7,
   trace: 0x54d6c4,
@@ -80,6 +81,21 @@ function liftPaths(polylines) {
 // 未切除区域的叠加显示：每个矩形两个三角形，贴在加工面上方一点点
 // （低于刀路的 0.05，免得把刀路盖住）。
 // 导出这个纯函数是为了能在 Node 里用仓库自带的 three.js 直接验证它，不必开浏览器。
+// Cutting moves do not all run at the same feed once corner slowdown (or any strategy that varies
+// the feed) is on: the fastest cutting feed in the toolpath is the programmed one, anything below it
+// is a slowed stretch. Split them so the slow bits can be drawn in their own colour; exported for the
+// same reason as liftPath, so it can be checked in Node without a browser.
+export function splitCutByFeed(moves) {
+  const cut = moves.filter((move) => move.kind === "cut");
+  const fastest = cut.reduce((max, move) => Math.max(max, move.feed_mm_per_min), 0);
+  const fast = [];
+  const slow = [];
+  for (const move of cut) {
+    (move.feed_mm_per_min < fastest - 1e-9 ? slow : fast).push(move.points);
+  }
+  return { fast, slow };
+}
+
 export function uncutGeometry(rects) {
   const positions = [];
   const z = PATH_LIFT_MM * 0.4;
@@ -248,11 +264,19 @@ export class Viewport {
       this.uncutGroup.add(mesh);
     }
 
-    const groups = { cut: [], link: [], rapid: [] };
+    const groups = { link: [], rapid: [] };
     for (const move of payload.toolpath.moves) {
-      (groups[move.kind] || groups.cut).push(move.points);
+      if (move.kind === "cut") {
+        continue;
+      }
+      (groups[move.kind] || groups.link).push(move.points);
     }
-    this.pathGroup.add(this._line(liftPaths(groups.cut), COLORS.cut, 1));
+    const { fast, slow } = splitCutByFeed(payload.toolpath.moves);
+    this.pathGroup.add(this._line(liftPaths(fast), COLORS.cut, 1));
+    // Slowed stretches (corner slowdown) in their own colour, a touch brighter to stand out.
+    if (slow.length) {
+      this.pathGroup.add(this._line(liftPaths(slow), COLORS.cutSlow, 1.2));
+    }
     this.pathGroup.add(this._line(liftPaths(groups.link), COLORS.link, 1));
     // 快移段按真实 Z 画：抬刀与下刀是竖直线，横移在安全高度上，一眼能看出安全高度设成了多少。
     this.rapidLine = this._line(groups.rapid, COLORS.rapid, 0.75, true);
