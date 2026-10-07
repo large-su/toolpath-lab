@@ -111,7 +111,7 @@ class CatalogTests(ApiTestCase):
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
         self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
-                         ["kind", "diameter_mm", "length_mm"])
+                         ["kind", "diameter_mm", "length_mm", "corner_radius_mm"])
 
     def test_catalog_reports_the_motion_parameters_instead_of_fixed_values(self) -> None:
         # Safe height and rapid feed used to sit in the catalogue's "fixed" section for display only;
@@ -128,10 +128,13 @@ class CatalogTests(ApiTestCase):
         self.assertIn("rapid_feed_mm_per_min", keys)
         self.assertIn("boundary_mode", keys)
 
-    def test_disabled_tool_kinds_are_published(self) -> None:
+    def test_every_tool_kind_is_published_and_selectable(self) -> None:
+        """Ball nose and bull nose tools are real tools now, so nothing is flagged as pending."""
+
         _, body, _ = self.get("/api/catalog")
         kinds = json.loads(body)["tool"]["parameters"][0]["choices"]
-        self.assertEqual([item["disabled"] for item in kinds], [False, True, True])
+        self.assertEqual([item["value"] for item in kinds], ["flat", "ball", "bull"])
+        self.assertEqual([item["disabled"] for item in kinds], [False, False, False])
 
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -199,14 +202,14 @@ class PlanTests(ApiTestCase):
         self.assertEqual(status, 422)
         self.assertTrue(payload["error"])
 
-    def test_a_pending_tool_kind_is_a_bad_request(self) -> None:
-        # Tool kinds marked "to be extended" must be refused by the API as well, never quietly
-        # computed as if they were flat mills.
-        for kind in ("ball", "bull"):
-            with self.subTest(kind=kind):
-                status, payload, _ = self.plan({"tool": {"kind": kind}})
-                self.assertEqual(status, 400)
-                self.assertIn("待拓展", payload["error"])
+    def test_a_corner_radius_larger_than_the_tool_is_a_bad_request(self) -> None:
+        # The tool geometry is validated in the parameter layer: a bull nose corner radius cannot
+        # exceed the tool radius, so the API answers 400 instead of cutting with a nonsense tool.
+        status, payload, _ = self.plan(
+            {"tool": {"kind": "bull", "diameter_mm": 10.0, "corner_radius_mm": 6.0}}
+        )
+        self.assertEqual(status, 400)
+        self.assertTrue(payload["error"])
 
     def test_the_plan_response_carries_the_coverage_analysis(self) -> None:
         _, payload, _ = self.plan({})

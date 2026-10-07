@@ -16,7 +16,7 @@ class ToolGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(tool.corner_radius_mm, 0.0)
 
     def test_ball_tool_touches_with_its_tip(self) -> None:
-        """Once a ball nose tool is enabled its footprint radius is 0 (only the tip touches)."""
+        """A ball nose tool only touches the floor with its tip, so its footprint radius is 0."""
 
         tool = Tool(ToolKind.BALL, diameter_mm=8.0, length_mm=40.0)
         self.assertAlmostEqual(tool.footprint_radius_mm, 0.0)
@@ -41,32 +41,51 @@ class ToolParameterTests(unittest.TestCase):
         self.assertEqual(tool.diameter_mm, 6.0)
         self.assertEqual(tool.length_mm, 30.0)
 
-    def test_only_the_flat_kind_is_selectable(self) -> None:
+    def test_every_kind_is_selectable(self) -> None:
         disabled = {choice.value: choice.disabled for choice in TOOL_KINDS}
-        self.assertFalse(disabled["flat"])
-        self.assertTrue(disabled["ball"])
-        self.assertTrue(disabled["bull"])
+        self.assertEqual(disabled, {"flat": False, "ball": False, "bull": False})
 
-    def test_the_parameter_layer_refuses_the_pending_kinds(self) -> None:
-        """Not selectable in the UI means unusable through the API, or "to be extended" is hollow."""
+    def test_a_corner_radius_larger_than_the_tool_is_rejected(self) -> None:
+        """A bull nose corner radius cannot exceed the tool radius (the API answers 400 for that)."""
 
-        for kind in ("ball", "bull"):
-            with self.subTest(kind=kind):
-                with self.assertRaises(ParameterError) as context:
-                    tool_parameters().coerce({"kind": kind})
-                self.assertIn("待拓展", str(context.exception))
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, bull_corner_radius_mm=6.0)
 
-    def test_the_domain_still_models_the_pending_kinds(self) -> None:
-        """Rejected by the parameter layer does not mean unmodelled: direct construction still works,
-        so enabling these tools later needs no change here."""
-
+    def test_a_ball_nose_touches_the_floor_in_a_point(self) -> None:
         ball = Tool(ToolKind.BALL, diameter_mm=8.0, length_mm=40.0)
+        self.assertAlmostEqual(ball.corner_radius_mm, 4.0)
         self.assertAlmostEqual(ball.footprint_radius_mm, 0.0)
+        self.assertAlmostEqual(ball.wall_clearance_mm(0.0), 0.0)
+        # 2 mm deep: the sphere's half-width there is R*sin(60 deg) = 2*sqrt(3)
+        self.assertAlmostEqual(ball.wall_clearance_mm(2.0), 2.0 * (3.0 ** 0.5), places=6)
+        self.assertAlmostEqual(ball.wall_clearance_mm(4.0), 4.0)
+        self.assertAlmostEqual(ball.wall_clearance_mm(99.0), 4.0)
+
+    def test_a_bull_nose_reaches_its_full_radius_at_the_corner_radius(self) -> None:
+        bull = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, bull_corner_radius_mm=2.0)
+        self.assertAlmostEqual(bull.corner_radius_mm, 2.0)
+        self.assertAlmostEqual(bull.footprint_radius_mm, 3.0)
+        self.assertAlmostEqual(bull.wall_clearance_mm(0.5), 3.0 + (4.0 - 2.25) ** 0.5, places=6)
+        self.assertAlmostEqual(bull.wall_clearance_mm(2.0), 5.0)
+        self.assertAlmostEqual(bull.wall_clearance_mm(10.0), 5.0)
+
+    def test_a_flat_mill_reaches_its_radius_at_any_depth(self) -> None:
+        flat = Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=40.0)
+        for depth in (0.0, 0.5, 5.0, 50.0):
+            with self.subTest(depth=depth):
+                self.assertAlmostEqual(flat.wall_clearance_mm(depth), 5.0)
+
+    def test_the_corner_radius_comes_from_the_parameters(self) -> None:
+        tool = Tool.from_parameters(
+            {"kind": "bull", "diameter_mm": 10.0, "length_mm": 40.0, "corner_radius_mm": 2.5}
+        )
+        self.assertAlmostEqual(tool.corner_radius_mm, 2.5)
+        self.assertAlmostEqual(tool.footprint_radius_mm, 2.5)
 
     def test_parameter_choices_are_published_in_the_catalog(self) -> None:
         kind_spec = tool_parameters().spec("kind")
         self.assertEqual(len(kind_spec.choices), 3)
-        self.assertTrue(kind_spec.to_dict()["choices"][1]["disabled"])
+        self.assertFalse(any(choice["disabled"] for choice in kind_spec.to_dict()["choices"]))
 
     def test_describe_exposes_the_geometry(self) -> None:
         payload = Tool.from_parameters(

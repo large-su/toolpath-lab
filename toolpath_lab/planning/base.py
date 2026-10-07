@@ -113,6 +113,17 @@ class PlanningContext:
 
         return float(self.parameters.get("stepdown_mm", DEFAULT_STEPDOWN_MM))
 
+    @property
+    def cutting_radius_mm(self) -> float:
+        """Radius the path must keep from the outline: the cutter's reach over the whole cut.
+
+        For a flat mill that is just its radius. A ball or bull nose tool is narrower at the tip, so
+        the offset has to cover everything it sweeps from the machining plane down to the deepest
+        layer -- otherwise it would gouge the wall down there.
+        """
+
+        return self.tool.wall_clearance_mm(self.depth_mm)
+
     # -- geometry ----------------------------------------------------------
     @property
     def boundary(self) -> NDArray[np.float64]:

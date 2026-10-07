@@ -157,7 +157,7 @@ class RasterPlanner(Planner):
             )
             return 0.0
         allowance = max(0.0, float(context.parameters.get("stock_allowance_mm", 0.0)))
-        return context.tool.footprint_radius_mm + allowance
+        return context.cutting_radius_mm + allowance
 
     @staticmethod
     def _to_world(
@@ -206,7 +206,7 @@ class RasterPlanner(Planner):
         return (
             f"{_MODE_LABELS[mode]}走刀，共 {pass_count} 刀，"
             f"切宽 {stepover:g} mm，走刀方向 {direction:g}°",
-            f"边界处理：{boundary}（刀具足迹半径 R{context.tool.footprint_radius_mm:g} mm）"
+            f"边界处理：{boundary}（刀具贴壁间隙 R{context.cutting_radius_mm:g} mm）"
             f"{allowance_note}，安全高度 {context.safe_height_mm:g} mm、"
             f"快移 {context.rapid_feed_mm_per_min:g} mm/min",
         )

@@ -13,8 +13,9 @@ How it works: lay a grid over the region's bounding box and decide cell by cell
 2. whether the cell centre is within the tool's footprint radius of any **material removing** move
    (cut or link; rapids do not remove material).
 
-The tool is treated as a disc of its footprint radius: that is what a flat end mill sweeps on a
-flat face (once ball or bull nose tools are enabled, this radius has to change with the tool).
+The tool is treated as a disc of its footprint radius: the flat contact of its bottom, which is what a
+flat end mill sweeps on a flat face, the flat annulus of a bull nose, and a single point for a ball
+nose (whose real surface is a scalloped envelope this model does not simulate).
 The machining plane is fixed at Z = 0, so only planar distances matter.
 
 It lives in the planning layer because it shares the planar geometry (`geometry2d`) with the

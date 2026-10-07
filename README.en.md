@@ -23,10 +23,12 @@ described by parameter declarations, and the parameter panel is generated from t
 
 ## Features
 
-- **Tool**: flat end mill with diameter and length. Its footprint radius on the machining plane sets
-  how far the toolpath is offset from the region contour. Ball nose and bull nose tools are declared
-  but marked "to be extended": the parameter layer rejects them, the domain model already handles
-  them.
+- **Tools**: flat end mill, ball nose and bull nose (diameter, length, and a corner radius for the
+  bull nose - all of them parameters). The offset from the region contour uses how far the cutter
+  reaches sideways over the whole cut, so a shaped tool keeps its full radius away from the wall at
+  the deepest layer instead of gouging it. Coverage sweeps the flat contact on the floor: the full
+  radius for a flat mill, `R - Rc` for a bull nose, and a single point for a ball nose, whose real
+  surface is a scalloped envelope this model does not simulate.
 - **Regions**: square, rectangle, circle, ellipse, U shape, dumbbell and triangle, all centred at the
   origin and machined on the XY plane. Each one reduces to a single counter-clockwise boundary
   polygon, which is what the toolpath planners clip against and what the 3D workpiece is extruded

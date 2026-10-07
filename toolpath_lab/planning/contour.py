@@ -109,7 +109,7 @@ class ContourPlanner(Planner):
         )
         ring_direction = str(context.parameters["ring_direction"])
         boundary = context.boundary
-        distance = context.tool.footprint_radius_mm
+        distance = context.cutting_radius_mm
 
         layers: list[list[NDArray[np.float64]]] = []
         while True:
@@ -120,7 +120,7 @@ class ContourPlanner(Planner):
             distance += stepover
         if not layers:
             raise PlanningError(
-                f"环切没有生成任何刀轨：刀具足迹半径 {context.tool.footprint_radius_mm:g} mm "
+                f"环切没有生成任何刀轨：刀具贴壁间隙 {context.cutting_radius_mm:g} mm "
                 "已经超过区域的内切半径，请减小刀具直径或扩大区域"
             )
 
@@ -164,7 +164,7 @@ class ContourPlanner(Planner):
                 f"环切：共 {ring_count} 环（{len(layers)} 层），切宽 {stepover:g} mm，"
                 f"采样步长 {sample_step:g} mm，环绕向 {_DIRECTION_LABELS[ring_direction]}",
                 "同层分裂出的环之间抬刀快移，套在里面的环之间用连接进给",
-                f"边界固定内缩一个刀具足迹半径（R{context.tool.footprint_radius_mm:g} mm），"
+                f"边界固定内缩一个刀具贴壁间隙（R{context.cutting_radius_mm:g} mm），"
                 f"安全高度 {context.safe_height_mm:g} mm、"
                 f"快移 {context.rapid_feed_mm_per_min:g} mm/min",
             ),

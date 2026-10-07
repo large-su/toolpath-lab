@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from toolpath_lab.core.path import Toolpath
 from toolpath_lab.core.region import RegionShape
-from toolpath_lab.core.tool import Tool
+from toolpath_lab.core.tool import TOOL_KIND_LABELS, Tool, ToolKind
 from toolpath_lab.planning.base import Planner, PlanningContext
 from toolpath_lab.planning.feeds import apply_corner_slowdown
 from toolpath_lab.planning.registry import PLANNERS
@@ -52,4 +52,17 @@ def run_plan(
     toolpath = apply_stepdown(
         toolpath, depth_mm=context.depth_mm, stepdown_mm=context.stepdown_mm
     )
+    if context.tool.kind is not ToolKind.FLAT:
+        # Say out loud how a shaped tool is treated: the offset uses the wall clearance over the whole
+        # cut, while coverage still sweeps the (much smaller) flat contact on the floor.
+        toolpath = replace(
+            toolpath,
+            notes=toolpath.notes
+            + (
+                f"{TOOL_KIND_LABELS[context.tool.kind.value].split()[0]}：贴壁间隙取整段切深的外伸半径 "
+                f"R{context.cutting_radius_mm:g} mm，底面足迹半径 {context.tool.footprint_radius_mm:g} mm；"
+                "覆盖率按足迹圆面算（球头刀在平底模型下足迹是一个点，圆鼻刀是 R−Rc 的圆环面），"
+                "实际表面的残留高度取决于切宽，本模型不做表面仿真",
+            ),
+        )
     return PlanningOutcome(toolpath=toolpath, warnings=tuple(context.warnings))

@@ -199,7 +199,7 @@ class ContourPlanner(Planner):
             float(context.parameters["sample_step_mm"]), "采样步长 sample_step_mm"
         )
         boundary = context.boundary
-        distance = context.tool.footprint_radius_mm
+        distance = context.cutting_radius_mm
 
         rings: list[NDArray[np.float64]] = []
         while True:
