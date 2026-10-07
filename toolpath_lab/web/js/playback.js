@@ -1,7 +1,7 @@
-// 按时间播放一次规划结果。
+// Play one planning result back in time.
 //
-// 后端已经把几何换算成了时间（弧长 / 进给），所以播放只是插值：没有物理，也不会重新规划。
-// 相邻采样点就是刀路上相邻的点，因此"采样下标"可以直接当作"已经走到哪一段"。
+// The backend already turned geometry into time (arc length / feed), so playback is interpolation, not physics.
+// Consecutive samples are consecutive points on the toolpath, so the sample index doubles as the segment reached.
 
 function decodeRuns(runs, count, Ctor) {
   const values = new Ctor(count);
@@ -109,7 +109,7 @@ export class Playback {
       if (this.time >= this.duration) {
         this.time = this.duration;
         this.playing = false;
-        // 播放自然结束也是一次状态变化：不通知的话播放键会停在"暂停"图标上。
+        // Reaching the end is a state change too: without telling the UI the play button stays on pause.
         this._notify();
       }
     }

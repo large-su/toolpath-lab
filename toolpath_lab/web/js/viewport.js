@@ -1,10 +1,10 @@
-// three.js 视口：工件、区域轮廓、刀路、刀具与播放指示。
+// three.js viewport: workpiece, region contour, toolpath, cutter and playback indicator.
 //
-// 交互与观感约定：
-//   左键旋转 / 中键缩放 / 右键平移（并屏蔽右键菜单），
-//   顶部居中的标准视图工具条（最佳、前、后、左、右、上、下），
-//   左上角的外观开关（实时阴影、白色背景、网格地面），
-//   深色背景 + 雾 + 环境反射 + 阴影的"工作室"外观。
+// Interaction and look conventions:
+//   left drag orbits / middle wheel zooms / right drag pans (and suppresses the context menu),
+//   the standard view toolbar centred at the top (fit, front, back, left, right, top, bottom),
+//   the appearance toggles at the top left (live shadows, white background, grid floor),
+//   a "studio" look with dark background, fog, environment reflections and shadows.
 
 import * as THREE from "three";
 import { OrbitControls } from "../vendor/OrbitControls.js";
@@ -25,11 +25,11 @@ const COLORS = {
   uncut: 0xff8a80,
 };
 
-//: 加工面上的刀路（切削 / 连接 / 已走轨迹）抬高一点点画，避免与工件上表面 z-fighting。
-//: 快移段不抬高：它按真实 Z 画，所以安全高度的抬刀在视图里看得见。
+// Toolpaths on the machining plane (cut / link / trace) are lifted slightly to avoid z-fighting.
+// Rapids are not lifted: they keep their real Z, so a retract to the safe height stays visible.
 const PATH_LIFT_MM = 0.05;
 
-//: 视图工具条上的按钮，按常用顺序排列。
+// Buttons of the view toolbar, in the order they are used most.
 export const VIEW_BUTTONS = [
   { view: "fit", label: "最佳", sub: "FIT" },
   { view: "front", label: "前", sub: "−Y" },
@@ -61,8 +61,8 @@ function orientation(view) {
   };
 }
 
-// 加工面上的折线抬高一点点，避免与工件上表面互相穿插（z-fighting）；
-// 本来就高于 PATH_LIFT_MM 的点（快移的抬刀）保留真实高度。
+// Machining-plane polylines are lifted slightly to avoid z-fighting with the top face;
+// points already above PATH_LIFT_MM (retracts) keep their real height.
 // Points below the machining plane (a step-down layer) keep their real depth as well: they sit
 // inside the workpiece, which setResult renders translucent so they stay visible.
 // Exported like uncutGeometry so the Z rule can be checked in Node without a browser.
@@ -78,9 +78,9 @@ function liftPaths(polylines) {
   return polylines.map(liftPath);
 }
 
-// 未切除区域的叠加显示：每个矩形两个三角形，贴在加工面上方一点点
-// （低于刀路的 0.05，免得把刀路盖住）。
-// 导出这个纯函数是为了能在 Node 里用仓库自带的 three.js 直接验证它，不必开浏览器。
+// Uncut area overlay: two triangles per rectangle, sitting just above the machining plane
+// (below the toolpath lift of 0.05, so it never covers the toolpath).
+// Exported so this pure function can be checked in Node with the bundled three.js, no browser needed.
 // Cutting moves do not all run at the same feed once corner slowdown (or any strategy that varies
 // the feed) is on: the fastest cutting feed in the toolpath is the programmed one, anything below it
 // is a slowed stretch. Split them so the slow bits can be drawn in their own colour; exported for the
@@ -204,7 +204,7 @@ export class Viewport {
     }
   }
 
-  // ------------------------------------------------------------ 生命周期
+  // ------------------------------------------------------------ lifecycle
   resize() {
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
@@ -221,7 +221,7 @@ export class Viewport {
     this.renderer.render(this.scene, this.camera);
   }
 
-  // ---------------------------------------------------------------- 结果
+  // ---------------------------------------------------------------- result
   setResult(payload) {
     this._clear(this.workpieceGroup);
     this._clear(this.uncutGroup);
@@ -278,12 +278,12 @@ export class Viewport {
       this.pathGroup.add(this._line(liftPaths(slow), COLORS.cutSlow, 1.2));
     }
     this.pathGroup.add(this._line(liftPaths(groups.link), COLORS.link, 1));
-    // 快移段按真实 Z 画：抬刀与下刀是竖直线，横移在安全高度上，一眼能看出安全高度设成了多少。
+    // Rapids use their real Z: retract and plunge are vertical, traverses sit at the safe height.
     this.rapidLine = this._line(groups.rapid, COLORS.rapid, 0.75, true);
     this.pathGroup.add(this.rapidLine);
 
     if (payload.timeline && payload.timeline.positions) {
-      // 已走轨迹与刀路一致：加工面上的部分抬高，抬刀段保留真实高度。
+      // The trace matches the toolpath: lifted on the machining plane, real height on retracts.
       const geometry = polylineGeometry([liftPath(payload.timeline.positions)]);
       this.traceLine = new THREE.LineSegments(
         geometry,
@@ -298,7 +298,7 @@ export class Viewport {
     this.bounds = new THREE.Box3().setFromObject(this.workpieceGroup);
     const pathBounds = new THREE.Box3().setFromObject(this.pathGroup);
     if (!pathBounds.isEmpty()) this.bounds.union(pathBounds);
-    // 让刀具的上半截也落在取景范围内（长度直接来自响应，不依赖调用顺序）。
+    // Keep the upper half of the cutter inside the framing too (its length comes from the response).
     const toolLength = Number((payload.tool && payload.tool.length_mm) || 0);
     if (toolLength > 0) {
       this.bounds.expandByPoint(new THREE.Vector3(0, 0, toolLength * 0.5));
@@ -308,8 +308,8 @@ export class Viewport {
     this._autoFrame();
   }
 
-  // 只在"工件尺寸变了"或第一次出结果时重新取景：
-  // 调一个切宽就把视角拉回默认，是很烦人的体验。
+  // Re-frame only when the workpiece size changed or on the first result:
+  // a changed stepover pulling the camera back to default is a very annoying experience.
   _autoFrame() {
     const size = this.bounds.getSize(new THREE.Vector3());
     const diagonal = size.length();
@@ -334,8 +334,8 @@ export class Viewport {
     const flute = Math.min(length * 0.65, radius * 6);
     const holder = Math.max(length - flute, length * 0.2);
 
-    // 两段都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
-    // 黄色切削段对齐 UGNX 的刀具配色。
+    // Both segments use closed cylinders (with end caps), so the cutter is a solid and not a shell;
+    // the yellow cutting part matches the UGNX cutter colour scheme.
     const cutting = new THREE.Mesh(
       new THREE.CylinderGeometry(radius, radius, flute, 64),
       new THREE.MeshStandardMaterial({
@@ -397,7 +397,7 @@ export class Viewport {
     }
   }
 
-  // ---------------------------------------------------------------- 视角
+  // ---------------------------------------------------------------- view
   applyView(view) {
     if (!this.bounds || this.bounds.isEmpty()) return;
     const { direction, up } = orientation(view);
@@ -408,7 +408,7 @@ export class Viewport {
     const verticalLimit = Math.tan(THREE.MathUtils.degToRad(this.camera.getEffectiveFOV() / 2)) * 0.82;
     const horizontalLimit = verticalLimit * this.camera.aspect;
 
-    // 把包围盒八个角都放进视锥：每个角还有自己的进深，取最远的那个。
+    // Put all eight corners of the bounding box in the frustum: each has its own depth, take the farthest.
     let distance = radius * 2;
     for (const x of [this.bounds.min.x, this.bounds.max.x]) {
       for (const y of [this.bounds.min.y, this.bounds.max.y]) {
@@ -441,15 +441,15 @@ export class Viewport {
     return OPPOSITE_VIEW[view] || "fit";
   }
 
-  // -------------------------------------------------------------- 几何构造
+  // -------------------------------------------------------------- geometry
   _thickness(span, lowestZ = 0) {
     // The blank also has to be thick enough for the deepest layer to stay inside the solid.
     return Math.max(Math.min(Math.max(span * 0.09, 4), 24), -lowestZ + 2);
   }
 
   _workpiece(region, thickness, translucent = false) {
-    // 工件由区域边界多边形挤出：换形状（矩形、椭圆、以后的凹多边形）都不需要动这里。
-    // ExtrudeGeometry 沿 +Z 挤出，平移一个厚度后上表面正好落在 Z = 0，也就是加工面。
+    // The workpiece is extruded from the region boundary polygon, so a new shape needs no change here.
+    // ExtrudeGeometry extrudes along +Z; translating it by the thickness puts the top face at Z = 0.
     const shape = new THREE.Shape(
       region.boundary.map((point) => new THREE.Vector2(point[0], point[1]))
     );
@@ -498,7 +498,7 @@ export class Viewport {
     const size = Math.max(Math.ceil((span * 3) / 20) * 20, 100);
     const grid = new THREE.GridHelper(size, Math.max(4, Math.round(size / 10)), 0x2d6c69, 0x173331);
     grid.rotation.x = Math.PI / 2;
-    // 网格是"地面"：铺在工件底面，而不是穿过工件。
+    // The grid is the "floor": it lies on the bottom face of the workpiece, not through it.
     grid.position.z = -thickness - 0.1;
     grid.material.transparent = true;
     grid.material.opacity = 0.7;

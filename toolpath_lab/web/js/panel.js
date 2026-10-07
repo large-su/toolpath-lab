@@ -1,5 +1,5 @@
-// 参数面板完全由 /api/catalog 生成：每个能力在 Python 里声明一次参数，
-// 这里负责把它们渲染出来。新增一个区域形状或策略，刷新页面就会出现，不用改本文件。
+// The parameter panel comes entirely from /api/catalog: each capability declares its parameters
+// once in Python, this file renders them. A new shape or strategy appears on refresh, no change here.
 
 const DISPLAY_OPTIONS = [
   { key: "showWorkpiece", label: "工件" },
@@ -70,7 +70,7 @@ export class ParameterPanel {
     return Object.assign({}, this.state.display);
   }
 
-  // ------------------------------------------------------------- 渲染
+  // ------------------------------------------------------------- render
   render() {
     this.rows = [];
     this.root.replaceChildren(
@@ -198,7 +198,7 @@ export class ParameterPanel {
     return section;
   }
 
-  // ------------------------------------------------------------- 控件
+  // ------------------------------------------------------------- controls
   _item(items, id) {
     return items.find((item) => item.id === id) || items[0];
   }
@@ -221,7 +221,7 @@ export class ParameterPanel {
     }
     row.append(label, cell);
     if (control.slider) {
-      // 滑块单独占一行，数值框因此永远不会被挤出面板。
+      // The slider gets a row of its own, so the number box is never squeezed out of the panel.
       row.appendChild(control.slider);
     }
     this.rows.push({ row, spec, values });

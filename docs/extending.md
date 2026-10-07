@@ -205,5 +205,6 @@ def toolpath_to_xxx(toolpath: Toolpath, *, decimals: int = 3, **options) -> str:
 - 坐标：右手系、Z 轴向上、XY 是加工平面；数组一律 float64；
 - 错误：参数问题抛 ParameterError（HTTP 400），几何不可行抛 PlanningError（HTTP 422）；
 - 用户可见文案用中文（放在 label / help），代码注释与文档字符串用英文（这两条由
-  `tests/test_conventions.py` 机器检查，全仓库无例外）；
+  `tests/test_conventions.py` 与 `tests/test_asset_conventions.py` 机器检查，全仓库无例外：
+  前者走 Python 的 AST，后者用一个小扫描器看 `web/` 与 `electron/main.mjs` 的注释）；
 - 每个新能力都要补测试，`python -m unittest discover -s tests` 必须全绿。

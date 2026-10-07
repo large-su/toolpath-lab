@@ -1,4 +1,4 @@
-// 后端 JSON 接口的薄封装：任何错误都变成带后端消息的 Error，界面直接显示。
+// Thin wrapper around the backend JSON API: any failure becomes an Error with the backend message.
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -7,7 +7,7 @@ async function readError(response) {
     const data = await response.json();
     if (data && typeof data.error === "string") return data.error;
   } catch (error) {
-    /* 退回到状态行 */
+    /* Falls back to the status line */
   }
   return response.status + " " + response.statusText;
 }
@@ -28,7 +28,7 @@ export async function requestPlan(payload) {
   return response.json();
 }
 
-// 导出：后端一律回 Content-Disposition，文件名与类型都由它决定，前端只负责触发下载。
+// Export: the backend always answers with Content-Disposition, so it owns the file name and type.
 const FALLBACK_NAMES = { gcode: "toolpath.nc", csv: "toolpath.csv" };
 
 export async function downloadExport(kind, payload) {

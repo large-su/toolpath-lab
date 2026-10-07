@@ -1,12 +1,12 @@
-// Electron 桌面壳。
+// The Electron desktop shell.
 //
-// 只做三件事：拉起 Python 后端（自己挑一个空闲端口）、把本地地址装进原生窗口、
-// 关窗时结束后端。启动过程刻意做成"先出窗口再等后端"：
-// 窗口先显示一张内置的加载页（几十毫秒），后端就绪后再换成真正的界面，
-// 因此双击之后是"立刻看到窗口"，而不是先干等一段时间。
+// It does three things: start the Python backend (picking a free port itself), load the local
+// address into a native window, and stop the backend when the window closes. Startup is deliberately
+// "window first, backend after": the window shows a built-in loading page within tens of milliseconds
+// and swaps in the real interface once the backend is ready, so a double click never means waiting.
 //
-// 启动耗时写在 %TEMP%\toolpathlab-launch.log 里（也可以用 TOOLPATH_LAB_TIMING_LOG 改路径），
-// 启动脚本出错时会把它打印出来。
+// Startup timings go to %TEMP%\toolpathlab-launch.log (override with TOOLPATH_LAB_TIMING_LOG),
+// and the launcher prints that file when something goes wrong.
 
 import { app, BrowserWindow, dialog, shell } from "electron";
 import { spawn } from "node:child_process";
@@ -20,15 +20,15 @@ const startedAt = Date.now();
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STARTUP_TIMEOUT_MS = 30000;
 
-// 应用图标：Windows 用多尺寸 .ico（任务栏小图标更清晰），其它平台用 PNG。
+// App icon: a multi-size .ico on Windows (crisper small taskbar icons), PNG elsewhere.
 const WEB_ICON_DIR = path.join(projectRoot, "toolpath_lab", "web");
 const APP_ICON = path.join(
   WEB_ICON_DIR,
   process.platform === "win32" ? "icon.ico" : "icon.png"
 );
 
-// 依次尝试：启动脚本传来的解释器、PATH 里的 python / python3 / py。
-// 直接 npm start 时也能自己找到可用的解释器。
+// Tried in order: the interpreter handed over by the launcher, then python / python3 / py on PATH.
+// So a plain npm start can find a usable interpreter on its own.
 const PYTHON_CANDIDATES = [
   process.env.TOOLPATH_LAB_PYTHON,
   "python",
@@ -43,7 +43,7 @@ const LOG_FILE =
 let backend = null;
 let output = "";
 
-// 启动计时：卡住时能看出卡在哪一段；启动脚本也会读这个文件判断是否成功。
+// Startup timing: it shows which stage hangs, and the launcher reads the file to tell success.
 function report(message) {
   const line =
     "[toolpath-lab] " + ((Date.now() - startedAt) / 1000).toFixed(2) + "s  " + message;
@@ -51,7 +51,7 @@ function report(message) {
   try {
     fs.appendFileSync(LOG_FILE, line + "\n");
   } catch (error) {
-    /* 记不下来就算了，不影响启动 */
+    /* Failing to record it is fine, startup does not depend on it */
   }
 }
 
@@ -62,11 +62,11 @@ function resetLog() {
       "ToolpathLab " + new Date().toISOString() + "  " + process.platform + "\n"
     );
   } catch (error) {
-    /* 同上 */
+    /* Same as above */
   }
 }
 
-// 窗口先显示的内置加载页：不依赖后端，也不依赖任何外部文件。
+// The built-in loading page shown first: it needs neither the backend nor any external file.
 const LOADING_PAGE =
   "data:text/html;charset=utf-8," +
   encodeURIComponent(
@@ -101,7 +101,7 @@ async function waitForBackend(url) {
       const response = await fetch(url + "api/health");
       if (response.ok) return true;
     } catch (error) {
-      /* 还没起来，继续等 */
+      /* Not up yet, keep waiting */
     }
     await new Promise((resolve) => setTimeout(resolve, 60));
   }
@@ -172,7 +172,7 @@ function createWindow() {
     window.show();
     report("窗口已显示");
   });
-  // 外链一律交给系统浏览器，窗口本身只装本机界面。
+  // External links go to the system browser; the window itself only ever hosts the local interface.
   window.webContents.setWindowOpenHandler(({ url: target }) => {
     shell.openExternal(target);
     return { action: "deny" };
@@ -182,13 +182,13 @@ function createWindow() {
 }
 
 async function boot() {
-  // 窗口与后端同时起步：窗口先显示加载页，后端在后台准备。
+  // Window and backend start together: the window shows the loading page while the backend prepares.
   const window = createWindow();
   const backendUrl = startFirstWorkingBackend();
   try {
     const url = await backendUrl;
     await window.loadURL(url);
-    // UI-READY 这个 ASCII 标记是给启动脚本看的（批处理里用中文字符串匹配不可靠）。
+    // The ASCII marker UI-READY is for the launcher (matching Chinese text in a batch file is unreliable).
     report("界面就绪 UI-READY");
   } catch (error) {
     stopBackend();
@@ -198,9 +198,9 @@ async function boot() {
   }
 }
 
-// 已经有实例在运行时，把已有窗口带到前面，而不是再开一个后端和窗口。
+// With an instance already running, bring its window forward instead of starting another backend and window.
 if (!app.requestSingleInstanceLock()) {
-  // 已经有实例在跑：把成功标记写给启动脚本，然后安静退出。
+  // An instance is already running: report success to the launcher and exit quietly.
   report("已有实例在运行，已切到已打开的窗口 UI-READY");
   app.quit();
 } else {
@@ -214,8 +214,8 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     resetLog();
-    // 独立的 AppUserModelID：否则 Windows 可能把这个窗口归到机器上另一个 Electron 应用的
-    // 任务栏图标下。
+    // A distinct AppUserModelID: otherwise Windows may file this window under another Electron app
+    // in the taskbar.
     if (process.platform === "win32") app.setAppUserModelId("com.toolpathlab.desktop");
     report("桌面壳就绪");
     await boot();

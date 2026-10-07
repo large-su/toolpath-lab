@@ -1,4 +1,4 @@
-/* ToolpathLab —— 深色工业风配色与控件样式。 */
+/* ToolpathLab -- dark industrial palette and widget styling. */
 :root {
   color-scheme: dark;
   --bg: #071014;
@@ -40,7 +40,7 @@ input {
   color: var(--text);
 }
 
-/* ------------------------------------------------------------------ 顶栏 */
+/* ------------------------------------------------------------------ top bar */
 .topbar {
   display: flex;
   align-items: center;
@@ -80,7 +80,7 @@ input {
   gap: 8px;
 }
 
-/* ---------------------------------------------------------------- 控件 */
+/* ---------------------------------------------------------------- widgets */
 .button {
   padding: 6px 14px;
   border: 1px solid var(--line);
@@ -165,7 +165,7 @@ input[type="checkbox"] {
   accent-color: var(--teal);
 }
 
-/* ---------------------------------------------------------------- 布局 */
+/* ---------------------------------------------------------------- layout */
 .layout {
   display: grid;
   grid-template-columns: 264px 1fr;
@@ -196,7 +196,7 @@ input[type="checkbox"] {
   display: block;
 }
 
-/* -------------------------------------------------------------- 参数面板 */
+/* -------------------------------------------------------------- parameter panel */
 .section {
   margin-bottom: 18px;
 }
@@ -294,7 +294,7 @@ input[type="checkbox"] {
   font-weight: 500;
 }
 
-/* ------------------------------------------------------------ 视图工具条 */
+/* ------------------------------------------------------------ view toolbar */
 .view-toolbar {
   position: absolute;
   top: 14px;
@@ -380,7 +380,7 @@ input[type="checkbox"] {
   background: var(--teal-soft);
 }
 
-/* ---------------------------------------------------------------- 统计 */
+/* ---------------------------------------------------------------- statistics */
 .stats {
   position: absolute;
   top: 14px;
@@ -422,7 +422,7 @@ input[type="checkbox"] {
   text-align: right;
 }
 
-/* 刀路说明：默认收起。面板本身 pointer-events: none，所以这里要单独打开。 */
+/* Notes list: collapsed by default. The panel itself is pointer-events: none, so open it here. */
 .stats .notes {
   margin-top: 8px;
   pointer-events: auto;
@@ -480,7 +480,7 @@ input[type="checkbox"] {
   display: none;
 }
 
-/* -------------------------------------------------------------- 播放条 */
+/* -------------------------------------------------------------- playback bar */
 .playbar {
   display: flex;
   align-items: center;
@@ -502,7 +502,7 @@ input[type="checkbox"] {
   text-align: right;
 }
 
-/* -------------------------------------------------------------- 滚动条 */
+/* -------------------------------------------------------------- scrollbars */
 .panel::-webkit-scrollbar {
   width: 9px;
 }

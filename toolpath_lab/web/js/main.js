@@ -1,4 +1,4 @@
-// 应用装配：目录 -> 参数面板 -> 规划请求 -> 视口与播放。
+// App assembly: catalog -> parameter panel -> planning request -> viewport and playback.
 
 import { downloadExport, fetchCatalog, requestPlan } from "./api.js";
 import { ParameterPanel } from "./panel.js";
@@ -32,7 +32,7 @@ let debounceTimer = 0;
 let scrubbing = false;
 let lastResult = null;
 
-// ------------------------------------------------------------------ 工具
+// ------------------------------------------------------------------ tools
 function seconds(value) {
   if (!Number.isFinite(value)) return "—";
   if (value < 60) return value.toFixed(1) + " s";
@@ -53,7 +53,7 @@ function hideBanner() {
   dom.banner.className = "banner hidden";
 }
 
-// ------------------------------------------------------------------ 启动
+// ------------------------------------------------------------------ startup
 async function boot() {
   viewport = new Viewport(dom.viewport);
   playback = new Playback();
@@ -84,7 +84,7 @@ async function boot() {
   });
   viewport.setDisplayOptions(panel.displayOptions());
   wireButtons();
-  // 控制台入口：想在做实验时直接操作视口/参数，可以在浏览器 DevTools 里用这个对象。
+  // Console entry point: to poke at the viewport or the parameters while experimenting, use this in DevTools.
   window.toolpathLab = { viewport, panel, playback, regenerate };
   await regenerate();
   requestAnimationFrame(animate);
@@ -151,7 +151,7 @@ function wireButtons() {
   });
 }
 
-// ------------------------------------------------------------------ 规划
+// ------------------------------------------------------------------ planning
 function scheduleRegenerate() {
   hideBanner();
   window.clearTimeout(debounceTimer);
@@ -195,7 +195,7 @@ async function exportFile(kind) {
   }
 }
 
-// ------------------------------------------------------------------ 渲染
+// ------------------------------------------------------------------ rendering
 function statRow(label, value) {
   const term = document.createElement("dt");
   term.textContent = label;
@@ -204,7 +204,7 @@ function statRow(label, value) {
   return [term, detail];
 }
 
-// 区域尺寸按"该形状自己声明的参数"生成，所以新增形状（矩形、椭圆……）不用改这里。
+// The region size comes from the parameters the shape declares, so a new shape needs no change here.
 function regionSummary(region) {
   const shapes = (catalog && catalog.regions && catalog.regions.shapes) || [];
   const shape = shapes.find((item) => item.id === region.id);
@@ -215,8 +215,9 @@ function regionSummary(region) {
   return parts.length ? parts.join(" · ") : (region.label || region.id);
 }
 
-// 刀路说明（notes）：后端的策略会把"环数/层数、环绕向、自适应各轮实测"这类过程信息写在这里。
-// 默认收起，展开可以看性价比曲线；用 textContent 填，绝不拼 HTML。
+// Notes (the collapsible list in the statistics panel): strategies record process facts here -
+// ring and layer counts, ring direction, adaptive rounds.
+// Collapsed by default, expand it for the cost/benefit curve. Filled with textContent, never HTML.
 function renderNotes(result) {
   const notes = (result.toolpath && result.toolpath.notes) || [];
   if (!notes.length) return null;
@@ -274,7 +275,7 @@ function renderPlaybar(state) {
   dom.play.textContent = state.playing ? "❚❚" : "▶";
 }
 
-// ------------------------------------------------------------------ 循环
+// ------------------------------------------------------------------ loop
 let previousTime = 0;
 
 function animate(now) {

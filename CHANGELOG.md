@@ -6,6 +6,18 @@
 
 ### 工程
 
+- **Web 资源与 Electron 壳的注释也改成英文，并纳入机器检查**：`web/js`、`style.css`、`index.html`
+  与 `electron/main.mjs` 的注释此前是中文（老师"代码注释与文档字符串用英文"这条，之前只用机器覆盖了
+  `*.py`）。新增 `tests/test_asset_conventions.py`：一个小扫描器识别 `//`、`/* */`、`<!-- -->`
+  （含 `<script>` / `<style>` 块、跳过字符串、跳过 `web/vendor` 的第三方代码），统计注释里的中文字，
+  配一份**只减不增**的待译清单，并正向检查 `index.html` 里的界面文案仍是中文。
+  **全部完成**：`api.js`、`main.js`、`panel.js`、`playback.js`、`viewport.js`、`style.css`、
+  `electron/main.mjs`（以及本来就没有注释的 `index.html`）共 104 段注释译为英文，清单已清空，
+  这条约定现在对 Python 与非 Python 代码都**无例外**。
+  - 转换方式与 Python 那批同源但更强：按文件内出现顺序替换第 k 段中文注释，并强制**"去掉注释后的内容
+    逐字节不变"**。这条守卫两次拦下真错误：一是 Python 的 `read_text`/`write_text` 默认换行翻译把
+    LF 文件整体写成 CRLF（已改回并修正读写），二是行注释正文把 CRLF 结尾的 `\r` 一起吃掉
+    （`api.js` / `playback.js` 在工作区里是 CRLF，提交时由 `.gitattributes` 的 `eol=lf` 归一化）。
 - **同步 `README.en.md`**：它此前停在 0.0.1 的状态（只有方形/圆形、只有栅格、参数还写成"常量"、
   导出只有 NC），现在与中文 README 对齐：7 种区域形状、3 个策略（含自适应环切与性价比曲线）、
   覆盖率分析、拐角减速、分层深度、导出自述（NC 头 + CSV 注释块）、`selfcheck.py` 与 CI、
