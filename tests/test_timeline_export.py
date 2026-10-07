@@ -1,13 +1,15 @@
-"""时间参数化与 NC 导出。"""
+"""时间参数化与 NC / CSV 导出。"""
 
 from __future__ import annotations
 
+import csv
+import io
 import unittest
 
 from toolpath_lab.core.path import MoveKind
 from toolpath_lab.core.region import build_region
 from toolpath_lab.core.tool import Tool, ToolKind
-from toolpath_lab.export import toolpath_to_gcode
+from toolpath_lab.export import CSV_COLUMNS, toolpath_to_csv, toolpath_to_gcode
 from toolpath_lab.planning import run_plan
 from toolpath_lab.simulation import build_timeline
 
@@ -101,6 +103,50 @@ class GcodeTests(unittest.TestCase):
 
     def test_notes_are_written_as_comments(self) -> None:
         self.assertTrue(any("往复" in line or "单向" in line for line in self.lines))
+
+
+class CsvTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.toolpath = _toolpath()
+        self.text = toolpath_to_csv(self.toolpath)
+        self.rows = list(csv.reader(io.StringIO(self.text)))
+
+    def test_header_is_the_declared_columns(self) -> None:
+        self.assertEqual(tuple(self.rows[0]), CSV_COLUMNS)
+
+    def test_one_row_per_toolpath_point(self) -> None:
+        self.assertEqual(len(self.rows) - 1, self.toolpath.point_count)
+        self.assertEqual(len(self.text.splitlines()), self.toolpath.point_count + 1)
+
+    def test_every_row_has_the_same_number_of_fields(self) -> None:
+        for row in self.rows:
+            self.assertEqual(len(row), len(CSV_COLUMNS))
+
+    def test_rows_follow_the_moves_and_their_points(self) -> None:
+        index = 1
+        for move_index, move in enumerate(self.toolpath.moves):
+            for point_index, point in enumerate(move.points):
+                row = self.rows[index]
+                self.assertEqual(row[0], str(move_index))
+                self.assertEqual(row[1], str(move.pass_index))
+                self.assertEqual(row[2], move.kind.value)
+                self.assertEqual(row[4], str(point_index))
+                self.assertEqual([float(value) for value in row[5:8]],
+                                 [round(float(value), 3) for value in point])
+                index += 1
+
+    def test_non_cutting_rows_have_no_pass_index(self) -> None:
+        pass_indices = {row[2]: row[1] for row in self.rows[1:]}
+        self.assertEqual(pass_indices["rapid"], "-1")
+        self.assertNotEqual(pass_indices["cut"], "-1")
+
+    def test_file_is_pure_ascii(self) -> None:
+        # 不带 BOM 的纯 ASCII：Excel、pandas 与 csv.reader 都不需要处理编码。
+        self.assertTrue(self.text.isascii())
+
+    def test_decimals_option(self) -> None:
+        row = toolpath_to_csv(self.toolpath, decimals=1).splitlines()[1].split(",")
+        self.assertEqual(len(row[5].split(".")[1]), 1)
 
 
 if __name__ == "__main__":

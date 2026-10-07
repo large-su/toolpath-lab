@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlsplit
 
 from toolpath_lab import __version__
 from toolpath_lab.core.errors import ParameterError, PlanningError, RegistryError
-from toolpath_lab.export import toolpath_to_gcode
+from toolpath_lab.export import toolpath_to_csv, toolpath_to_gcode
 from toolpath_lab.server.catalog import catalog_payload
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.server.service import execute_plan
@@ -113,11 +113,12 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             return json_response(result.to_payload())
         if path == "/api/export/gcode" and method == "POST":
             return self._export_gcode(self._read_json())
+        if path == "/api/export/csv" and method == "POST":
+            return self._export_csv(self._read_json())
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
 
     def _export_gcode(self, payload: Mapping[str, Any] | None) -> Response:
         result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         content = toolpath_to_gcode(
             result.toolpath,
             program_name="TOOLPATH_LAB",
@@ -126,8 +127,21 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         return text_response(
             content,
             content_type="text/plain; charset=utf-8",
-            filename=f"toolpath_{result.request.planner_id}_{stamp}.nc",
+            filename=self._export_filename(result.request, "nc"),
         )
+
+    def _export_csv(self, payload: Mapping[str, Any] | None) -> Response:
+        result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
+        return text_response(
+            toolpath_to_csv(result.toolpath),
+            content_type="text/csv; charset=utf-8",
+            filename=self._export_filename(result.request, "csv"),
+        )
+
+    @staticmethod
+    def _export_filename(request: PlanRequest, suffix: str) -> str:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return f"toolpath_{request.planner_id}_{stamp}.{suffix}"
 
     # -- 静态文件 ----------------------------------------------------------
     def _serve_static(self, path: str) -> Response:

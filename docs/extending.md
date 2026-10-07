@@ -157,8 +157,30 @@ class StadiumRegion(RegionShape):
 
 ## 4. 新增导出格式
 
-在 export/ 写一个纯函数 `toolpath_to_xxx(toolpath, **options) -> str`，在 export/__init__.py 里导出，
-再在 server/app.py 的 `_route_api` 里加一个分支。
+套路固定：**写纯函数 → 在 `export/__init__.py` 导出 → 在 `server/app.py` 的 `_route_api` 加一个分支**。
+内置两个例子：[export/gcode.py](../toolpath_lab/export/gcode.py)（NC 程序）与
+[export/csv.py](../toolpath_lab/export/csv.py)（点表）。签名照抄它们：
+
+```python
+def toolpath_to_xxx(toolpath: Toolpath, *, decimals: int = 3, **options) -> str:
+    ...
+```
+
+约定：
+
+- **纯函数**：输入 `Toolpath`，输出 `str`；不要碰 HTTP、文件系统或全局状态，这样它既能被接口用，
+  也能被 `examples/` 里的脚本直接用；
+- **不要再造一份刀路数据**：一切都从 `toolpath.moves`（类型 / 进给 / `pass_index` / 点）和
+  `toolpath.notes` 里取，统计用 `toolpath.statistics()`；
+- **编码尽量选安全的那一边**：csv.py 刻意只输出 ASCII（不带 BOM 的 UTF-8 也能被 Excel、pandas、
+  `csv.reader` 直接读），gcode.py 用 UTF-8 输出中文注释——文本文件按各自生态的惯例挑；
+- 路由里用 `text_response(..., content_type=..., filename=...)` 返回，文件名统一走
+  `_export_filename(request, "后缀")`；
+- 参数不合法/几何不可行仍然由 `PlanRequest.from_payload` 与规划层抛出，
+  接口层不需要额外校验（400 / 422 自动生效）。
+
+记得补测试：纯函数用数值断言（列名、行数 = 刀点数、坐标与 `move.points` 一致），
+接口参考 `tests/test_api.py` 的 `ExportTests`（状态码、`Content-Type`、`Content-Disposition`、行数）。
 
 ## 5. 约定与检查清单
 

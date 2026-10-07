@@ -6,7 +6,7 @@ The package is organised in strictly inward-pointing layers:
               toolpath/move model
 - planning    toolpath strategies built on top of core
 - simulation  feed-rate based time parameterisation of a toolpath
-- export      the G-code writer
+- export      the G-code and CSV writers
 - server      HTTP adapter (Python standard library) exposing the layers above
               to the web front-end
 - web         static three.js front-end served by the server

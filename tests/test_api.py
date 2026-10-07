@@ -222,8 +222,27 @@ class ExportTests(ApiTestCase):
         self.assertIn("G21", text)
         self.assertIn("M30", text)
 
+    def test_csv_download(self) -> None:
+        status, body, headers = self.post("/api/export/csv", {})
+        self.assertEqual(status, 200)
+        self.assertIn("text/csv", headers["Content-Type"])
+        self.assertTrue(headers["Content-Disposition"].endswith('.csv"'))
+        lines = body.decode("utf-8").splitlines()
+        self.assertEqual(
+            lines[0], "move_index,pass_index,kind,feed_mm_per_min,point_index,x_mm,y_mm,z_mm"
+        )
+        # 行数 = 刀点数 + 表头；默认请求（80 方形 + D6 + 切宽 6）是 58 个刀点。
+        self.assertEqual(len(lines), 59)
+        self.assertTrue(all(len(line.split(",")) == 8 for line in lines))
+
+    def test_csv_and_gcode_describe_the_same_toolpath(self) -> None:
+        _, plan_body, _ = self.post("/api/plan", {})
+        point_count = json.loads(plan_body)["toolpath"]["statistics"]["point_count"]
+        _, csv_body, _ = self.post("/api/export/csv", {})
+        self.assertEqual(len(csv_body.decode("utf-8").splitlines()) - 1, point_count)
+
     def test_other_formats_are_gone(self) -> None:
-        for kind in ("csv", "json", "step"):
+        for kind in ("json", "step", "dxf"):
             with self.subTest(kind=kind):
                 status, _, _ = self.post(f"/api/export/{kind}", {})
                 self.assertEqual(status, 404)

@@ -6,6 +6,10 @@
 
 ### 能力
 
+- **CSV 点表导出**：新增 `POST /api/export/csv` 与 `export/csv.py`（纯函数 `toolpath_to_csv`），
+  一个刀点一行：`move_index,pass_index,kind,feed_mm_per_min,point_index,x_mm,y_mm,z_mm`，
+  非切削段的 `pass_index` 为 -1。刻意保持纯 ASCII（不带 BOM），Excel、pandas 与 `csv.reader`
+  都能直接读。导出路由里重复的时间戳/文件名顺手收进 `_export_filename()`。
 - **区域形状新增矩形与椭圆**：`rectangle`（宽 W × 高 H，默认 100 × 60）与 `ellipse`
   （长半轴 a / 短半轴 b，默认 60 / 40，长半轴沿 X）。界面"区域 → 形状"、`/api/catalog`
   与 `POST /api/plan` 都会自动包含它们，刀路代码一行没改。
@@ -39,6 +43,10 @@
 
 ### 修复
 
+- 三维视图里快移段按**真实 Z** 绘制（原先所有刀路都被拍平到 Z = 0.05，安全高度改了也看不出来）：
+  切削 / 连接段与已走轨迹仍然只抬高到 0.05 mm 防 z-fighting，抬刀段保留真实高度。
+- 播放到结尾时播放键图标不复位：`Playback.update()` 在自然播放结束时没有通知状态变化，
+  界面因此停在"暂停"图标上；现在结束时也会 `_notify()` 一次。
 - `python examples/headless_plan.py` 现在按文档写的那样可以直接运行：脚本先把仓库根补进
   `sys.path`（此前 `sys.path[0]` 是 `examples/`，裸跑会 `ModuleNotFoundError`，
   只有设了 `PYTHONPATH` 或 `pip install -e .` 才行）。这也是 CONTRIBUTING 提交前自检的第 2 条。
@@ -59,6 +67,9 @@
 - `tests/test_region.py` 扩到四形状：矩形 / 椭圆的边界数值（面积、包围盒、点都落在椭圆上、
   半轴互换只是旋转 90°）、新增 `ShapeContractTests`（每个形状都必须逆时针、不重复首点、
   以原点为中心），`tests/test_planners.py` 新增 `EveryShapeTests`（四种形状 × 两个策略都能规划）。
+- `tests/test_timeline_export.py` 新增 `CsvTests`（列名、行数 = 刀点数、逐点坐标与 `move.points`
+  一致、非切削段 pass_index、纯 ASCII、decimals 选项），`tests/test_api.py` 的 `ExportTests`
+  新增 CSV 下载与"CSV 行数与 /api/plan 的刀点数一致"。
 
 ## [0.0.1] - 2026-09-10
 

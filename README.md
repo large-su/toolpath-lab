@@ -28,7 +28,8 @@ ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形�
   与**边界余量**。控件由后端的参数声明自动生成，见[参数与固定值](#参数与固定值)。
 - **三维视图**：工件实体、区域轮廓、刀路（切削 / 连接 / 快移分色）、刀具实体、已走轨迹、实时阴影。
 - **播放**：按每段运动自己的进给速度做时间参数化，支持播放 / 暂停、拖动进度，并给出切削长度与预计工时。
-- **导出**：NC 程序（G-code，G21 / G90 / G17 加 G0 / G1 带 F）。
+- **导出**：NC 程序（G-code，G21 / G90 / G17 加 G0 / G1 带 F）与 **CSV 点表**（一个刀点一行，
+  可直接丢进 Excel / pandas）。
 - **HTTP 接口**：能力目录、规划、导出三个接口，便于脚本调用与集成。
 
 ## 界面
@@ -110,6 +111,7 @@ print(outcome.toolpath.statistics())
 | `GET /api/catalog` | 能力目录：区域形状、刀路策略、参数声明与默认值 |
 | `POST /api/plan` | 生成刀路，返回刀路运动段、统计与播放时间轴 |
 | `POST /api/export/gcode` | 导出 NC 程序 |
+| `POST /api/export/csv` | 导出 CSV 点表（`move_index,pass_index,kind,feed_mm_per_min,point_index,x_mm,y_mm,z_mm`，非切削段 `pass_index` 为 -1） |
 
 ```bash
 curl http://127.0.0.1:8770/api/catalog
@@ -122,6 +124,9 @@ curl -X POST http://127.0.0.1:8770/api/plan \
 
 curl -X POST http://127.0.0.1:8770/api/export/gcode \
   -H "Content-Type: application/json" -d '{}' -o toolpath.nc
+
+curl -X POST http://127.0.0.1:8770/api/export/csv \
+  -H "Content-Type: application/json" -d '{}' -o toolpath.csv
 ```
 
 参数非法返回 `400`；参数合法但几何上无法加工（例如刀具直径大于区域尺寸）返回 `422`，
@@ -181,7 +186,8 @@ docs/          架构与扩展文档
   就是"一个策略需要写什么"的完整例子。
 - **新增区域形状**：实现一个返回逆时针边界多边形的 `boundary()`，栅格刀路与三维工件都会自动适配
   ——工件就是按这条边界挤出的，所以矩形、椭圆（甚至凹多边形）都不需要改刀路或前端代码。
-- **新增导出格式**：在 `export/` 中写一个纯函数，并在 HTTP 路由中加一个分支。
+- **新增导出格式**：在 `export/` 中写一个纯函数，并在 HTTP 路由中加一个分支——
+  `gcode.py` 与 `csv.py` 就是现成的两个例子。
 - 完整说明见 [docs/extending.md](docs/extending.md)，开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 测试

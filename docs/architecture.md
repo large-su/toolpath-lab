@@ -57,6 +57,7 @@ planning ── simulation ┘
 ### export / server / web / electron
 
 - `export/gcode.py`：G21 / G90 / G17 + G0 / G1 带 F 的最常见 ISO 子集；
+- `export/csv.py`：一个刀点一行的点表（纯 ASCII，`move_index,pass_index,kind,feed,…,x,y,z`）；
 - `server`：标准库 `ThreadingHTTPServer`。`schema.py` 是唯一的请求校验入口，`service.py` 组装响应，
   `catalog.py` 生成能力目录，`app.py` 只做路由与错误码映射（400 参数错误 / 422 几何不可行 / 404 / 405）；
   静态文件只从 `web/` 提供并做了路径穿越防护；
