@@ -28,8 +28,11 @@ export async function requestPlan(payload) {
   return response.json();
 }
 
-export async function downloadGcode(payload) {
-  const response = await fetch("/api/export/gcode", {
+// 导出：后端一律回 Content-Disposition，文件名与类型都由它决定，前端只负责触发下载。
+const FALLBACK_NAMES = { gcode: "toolpath.nc", csv: "toolpath.csv" };
+
+export async function downloadExport(kind, payload) {
+  const response = await fetch("/api/export/" + kind, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
@@ -38,7 +41,7 @@ export async function downloadGcode(payload) {
   const blob = await response.blob();
   const disposition = response.headers.get("Content-Disposition") || "";
   const match = /filename="?([^"]+)"?/.exec(disposition);
-  const name = match ? match[1] : "toolpath.nc";
+  const name = match ? match[1] : (FALLBACK_NAMES[kind] || "toolpath.dat");
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
