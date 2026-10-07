@@ -63,7 +63,10 @@ class ParameterSpecTests(unittest.TestCase):
         self.assertIn("one_way", str(context.exception))
 
     def test_disabled_choice_is_refused_by_the_parameter_layer(self) -> None:
-        """标成"待拓展"的取值：界面不可选，接口也不能用，否则界面与接口自相矛盾。"""
+        """A value marked "to be extended" cannot be picked in the UI nor used through the API.
+
+        Anything else would make the UI and the API contradict each other.
+        """
 
         item = spec(
             "kind", "类型", ParameterKind.CHOICE, "flat",

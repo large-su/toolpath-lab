@@ -1,4 +1,4 @@
-"""运动段与刀路模型：播放、导出、统计共用的一份数据。"""
+"""Moves and the toolpath model: the one data structure playback, export and statistics share."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ class ToolpathTests(unittest.TestCase):
 
     def test_lengths_are_split_by_kind(self) -> None:
         self.assertAlmostEqual(self.toolpath.cut_length_mm, 10.0)
-        # 抬刀 5 + 横移 10 + 下刀 5
+        # retract 5 + traverse 10 + plunge 5
         self.assertAlmostEqual(self.toolpath.rapid_length_mm, 20.0)
         self.assertAlmostEqual(self.toolpath.total_length_mm, 35.0)
 

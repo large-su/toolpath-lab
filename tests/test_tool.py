@@ -1,4 +1,4 @@
-"""刀具几何：足迹半径、参数构造与校验。"""
+"""Tool geometry: footprint radius, construction from parameters, validation."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class ToolGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(tool.corner_radius_mm, 0.0)
 
     def test_ball_tool_touches_with_its_tip(self) -> None:
-        """球头刀将来启用时，足迹半径为 0（只有刀尖接触）。"""
+        """Once a ball nose tool is enabled its footprint radius is 0 (only the tip touches)."""
 
         tool = Tool(ToolKind.BALL, diameter_mm=8.0, length_mm=40.0)
         self.assertAlmostEqual(tool.footprint_radius_mm, 0.0)
@@ -48,7 +48,7 @@ class ToolParameterTests(unittest.TestCase):
         self.assertTrue(disabled["bull"])
 
     def test_the_parameter_layer_refuses_the_pending_kinds(self) -> None:
-        """界面上不可选 = 接口也不能用；否则"待拓展"就成了一句空话。"""
+        """Not selectable in the UI means unusable through the API, or "to be extended" is hollow."""
 
         for kind in ("ball", "bull"):
             with self.subTest(kind=kind):
@@ -57,7 +57,8 @@ class ToolParameterTests(unittest.TestCase):
                 self.assertIn("待拓展", str(context.exception))
 
     def test_the_domain_still_models_the_pending_kinds(self) -> None:
-        """参数层拒绝 ≠ 领域层不会算：直接构造仍然可用，将来启用时不必改这里。"""
+        """Rejected by the parameter layer does not mean unmodelled: direct construction still works,
+        so enabling these tools later needs no change here."""
 
         ball = Tool(ToolKind.BALL, diameter_mm=8.0, length_mm=40.0)
         self.assertAlmostEqual(ball.footprint_radius_mm, 0.0)

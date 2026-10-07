@@ -34,17 +34,11 @@ SOURCE_ROOTS = ("toolpath_lab", "tests", "examples")
 #: `toolpath_lab/` is fully converted; what remains is the test suite and the examples.
 _PENDING_ENGLISH = (
     "tests/test_adaptive.py",  # 327
-    "tests/test_api.py",  # 170
     "tests/test_contour.py",  # 347
     "tests/test_coverage.py",  # 236
     "tests/test_geometry2d.py",  # 736
-    "tests/test_motion_parameters.py",  # 117
-    "tests/test_parameters.py",  # 30
-    "tests/test_path.py",  # 27
     "tests/test_planners.py",  # 177
     "tests/test_region.py",  # 239
-    "tests/test_timeline_export.py",  # 21
-    "tests/test_tool.py",  # 87
     "examples/headless_plan.py",  # 117
     "examples/plugins/contour_planner.py",  # 598
 )

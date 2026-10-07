@@ -1,4 +1,4 @@
-"""抬刀高度 / 快移速度 / 边界处理：从固定常量改成策略参数之后的行为。"""
+"""Retract height / rapid feed / boundary handling: behaviour after turning constants into parameters."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ _BASE = {"mode": "zigzag", "stepover_mm": 6.0, "direction_deg": 0.0, "feed_mm_pe
 
 
 def _plan(planner_id: str = "raster", parameters=None) -> Toolpath:
-    """按栅格的默认参数规划（contour 会忽略它不认识的键）。"""
+    """Plan with the raster defaults (contour ignores keys it does not know)."""
 
     return run_plan(
         planner_id=planner_id,
@@ -60,7 +60,7 @@ class DeclarationTests(unittest.TestCase):
                 self.assertEqual(defaults["rapid_feed_mm_per_min"], RAPID_FEED_MM_PER_MIN)
 
     def test_the_motion_parameters_are_one_shared_declaration(self) -> None:
-        # 共用同一份声明：以后改范围/单位只需要动 MOTION_PARAMETERS 一处。
+        # One shared declaration: changing a range or unit later touches MOTION_PARAMETERS only.
         self.assertEqual([item.key for item in MOTION_PARAMETERS],
                          ["safe_height_mm", "rapid_feed_mm_per_min"])
         for planner_id in PLANNERS.ids():
@@ -130,7 +130,7 @@ class RapidFeedTests(unittest.TestCase):
 
 
 class FallbackTests(unittest.TestCase):
-    """第三方策略没声明这两个参数时，退回默认值，而不是 KeyError。"""
+    """A third party strategy that declares neither parameter falls back to the defaults, not KeyError."""
 
     def test_context_without_motion_parameters_falls_back_to_the_defaults(self) -> None:
         context = PlanningContext(
@@ -181,7 +181,8 @@ class BoundaryModeTests(unittest.TestCase):
         contour = [item.key for item in PLANNERS.get("contour").parameters]
         self.assertIn("boundary_mode", raster)
         self.assertIn("stock_allowance_mm", raster)
-        # 环切的第一环永远内缩一个足迹半径：它的偏置几何只支持向内，见 contour.py。
+        # The first contour ring is always inset by one footprint radius: its offset geometry only
+    # supports inward offsets, see contour.py.
         self.assertNotIn("boundary_mode", contour)
 
     def test_unknown_boundary_mode_is_rejected(self) -> None:

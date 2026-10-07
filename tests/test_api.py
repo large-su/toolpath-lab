@@ -1,4 +1,4 @@
-"""HTTP 层：路由、校验、错误码与静态前端。"""
+"""HTTP layer: routing, validation, status codes and the static front end."""
 
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ class StaticTests(ApiTestCase):
         self.assertTrue(body.startswith(b"\x89PNG"))
 
     def test_favicon_route_returns_the_icon(self) -> None:
-        # 浏览器会直接请求 /favicon.ico，这里返回同一张 PNG，而不是空响应。
+        # Browsers request /favicon.ico directly; answer with the same PNG instead of an empty reply.
         status, body, headers = self.get("/favicon.ico")
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], "image/png")
@@ -114,7 +114,8 @@ class CatalogTests(ApiTestCase):
                          ["kind", "diameter_mm", "length_mm"])
 
     def test_catalog_reports_the_motion_parameters_instead_of_fixed_values(self) -> None:
-        # 安全高度 / 快移速度曾经写在 catalog 的 "fixed" 段里只作展示，现在是策略参数。
+        # Safe height and rapid feed used to sit in the catalogue's "fixed" section for display only;
+        # they are strategy parameters now.
         _, body, _ = self.get("/api/catalog")
         payload = json.loads(body)
         self.assertNotIn("fixed", payload)
@@ -190,7 +191,8 @@ class PlanTests(ApiTestCase):
         self.assertIn("diameter_mm", payload["error"])
 
     def test_impossible_geometry_is_unprocessable(self) -> None:
-        # 参数本身合法（D60 在允许范围内），但足迹半径超过区域宽度：这是几何不可行，不是参数错误。
+        # The parameters themselves are legal (D60 is within range) but the footprint radius exceeds
+        # the width of the region: that is infeasible geometry, not a parameter error.
         status, payload, _ = self.plan(
             {"tool": {"diameter_mm": 60.0}, "region": {"shape": "square", "parameters": {"side_mm": 40.0}}}
         )
@@ -198,7 +200,8 @@ class PlanTests(ApiTestCase):
         self.assertTrue(payload["error"])
 
     def test_a_pending_tool_kind_is_a_bad_request(self) -> None:
-        # 目录里标了"待拓展"的刀具类型，接口也要拒绝，不能悄悄按平底刀算。
+        # Tool kinds marked "to be extended" must be refused by the API as well, never quietly
+        # computed as if they were flat mills.
         for kind in ("ball", "bull"):
             with self.subTest(kind=kind):
                 status, payload, _ = self.plan({"tool": {"kind": kind}})
@@ -212,7 +215,8 @@ class PlanTests(ApiTestCase):
         self.assertAlmostEqual(coverage["ratio"], 1.0, delta=0.05)
         self.assertIn("uncut_area_mm2", coverage)
         self.assertIn("patches", coverage)
-        # 三维叠加显示的矩形：默认请求残留很少，但确实有（边界附近那点）
+        # Rectangles for the 3D overlay: a default request leaves little uncut, but something at the
+        # boundary does remain.
         self.assertTrue(coverage["uncut_rects"])
         self.assertIsInstance(coverage["uncut_rects_truncated"], bool)
         self.assertEqual(len(coverage["uncut_rects"][0]), 4)
@@ -252,7 +256,7 @@ class ExportTests(ApiTestCase):
         self.assertEqual(
             lines[0], "move_index,pass_index,kind,feed_mm_per_min,point_index,x_mm,y_mm,z_mm"
         )
-        # 行数 = 刀点数 + 表头；默认请求（80 方形 + D6 + 切宽 6）是 58 个刀点。
+        # Rows = tool points + header; a default request (80 square, D6, stepover 6) has 58 points.
         self.assertEqual(len(lines), 59)
         self.assertTrue(all(len(line.split(",")) == 8 for line in lines))
 

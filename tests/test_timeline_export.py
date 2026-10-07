@@ -1,4 +1,4 @@
-"""时间参数化与 NC / CSV 导出。"""
+"""Time parameterisation plus NC / CSV export."""
 
 from __future__ import annotations
 
@@ -141,7 +141,7 @@ class CsvTests(unittest.TestCase):
         self.assertNotEqual(pass_indices["cut"], "-1")
 
     def test_file_is_pure_ascii(self) -> None:
-        # 不带 BOM 的纯 ASCII：Excel、pandas 与 csv.reader 都不需要处理编码。
+        # Pure ASCII without a BOM: Excel, pandas and csv.reader need no encoding handling.
         self.assertTrue(self.text.isascii())
 
     def test_decimals_option(self) -> None:

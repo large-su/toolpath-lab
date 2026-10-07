@@ -10,9 +10,10 @@
   中文）：这两份文档都在「代码约定」里写了"代码注释与文档字符串用英文"，但仓库里 46 个 Python
   文件中有 134 个文档字符串、56 条注释是中文（连原有的 core / simulation / export / server
   也一样），等于这条要求全仓库都没做到。分批转换，**`toolpath_lab/` 整个包已经清零**
-  （28 个模块，文档字符串与注释里再没有一个中文字），中文字数 11,926 降到 3,229（约 73%），
-  剩下的全在 tests（2,514 字）与 examples（715 字）里，清单见 `tests/test_conventions.py` 的
-  `_PENDING_ENGLISH`。转换过程中用"AST 去掉文档字符串后逐文件比对"证明
+  （28 个模块，文档字符串与注释里再没有一个中文字），中文字数 11,926 降到 2,777（约 77%），
+  剩下的全在 tests（6 个文件，2,062 字）与 examples（715 字）里，清单见
+  `tests/test_conventions.py` 的 `_PENDING_ENGLISH`。测试文件只翻译文档字符串与注释，
+  断言消息保持中文（它们是给开发者看的诊断输出，不是用户可见文案）。转换过程中用"AST 去掉文档字符串后逐文件比对"证明
   **代码一行没动**（唯一例外是 `geometry2d.py`：`Callable` 只在注解里用过却没导入，靠
   `from __future__ import annotations` 侥幸没报错，顺手补上了导入）。
 - **新增 `tests/test_conventions.py`（5 项）**：把这两条约定变成机器检查。
