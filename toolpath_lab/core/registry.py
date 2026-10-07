@@ -1,7 +1,7 @@
 """A tiny name -> capability registry.
 
-Region shapes, surfaces and planners all follow the same pattern: a class with
-an "id", a human readable "label", an optional description and a ParameterSet.
+Region shapes and planners follow the same pattern: a class with an "id", a
+human readable "label", an optional description and a ParameterSet.
 The Registry collects them, builds the /api/catalog payload and resolves build
 requests.  A contributor registering a new class therefore gets the HTTP API,
 the UI panel and the documentation entry for free.

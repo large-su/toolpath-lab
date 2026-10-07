@@ -10,13 +10,19 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from toolpath_lab.core.region import build_region
-from toolpath_lab.core.tool import Tool, ToolKind
-from toolpath_lab.export import toolpath_to_gcode
-from toolpath_lab.planning import run_plan
-from toolpath_lab.simulation import build_timeline
+# 直接运行本脚本时，sys.path[0] 是 examples/ 而不是仓库根，所以 toolpath_lab 不在导入路径上。
+# 把仓库根补进去，"python examples/headless_plan.py" 才能像文档写的那样直接可用。
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from toolpath_lab.core.region import build_region  # noqa: E402
+from toolpath_lab.core.tool import Tool, ToolKind  # noqa: E402
+from toolpath_lab.export import toolpath_to_gcode  # noqa: E402
+from toolpath_lab.planning import run_plan  # noqa: E402
+from toolpath_lab.simulation import build_timeline  # noqa: E402
 
 
 def main() -> None:

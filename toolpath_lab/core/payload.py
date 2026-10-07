@@ -5,8 +5,7 @@ same payload shape::
 
     {
       "tool":    {"kind": "flat", "diameter_mm": 6, ...},
-      "region":  {"shape": "rectangle", "parameters": {"width_mm": 80, ...}},
-      "surface": {"type": "flat", "parameters": {"tilt_deg": 0}},
+      "region":  {"shape": "square", "parameters": {"side_mm": 80, ...}},
       "planner": {"id": "raster", "parameters": {"mode": "zigzag", ...}}
     }
 

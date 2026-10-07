@@ -16,4 +16,4 @@ class PlanningError(ToolpathLabError, RuntimeError):
 
 
 class RegistryError(ToolpathLabError, KeyError):
-    """An unknown tool, region shape, surface or planner identifier was requested."""
+    """An unknown tool, region shape or planner identifier was requested."""

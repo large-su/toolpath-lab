@@ -2,11 +2,11 @@
 
 The package is organised in strictly inward-pointing layers:
 
-- core        domain types: parameter declarations, tool, region, surface
-              height field and the toolpath/move model
+- core        domain types: parameter declarations, tool, region and the
+              toolpath/move model
 - planning    toolpath strategies built on top of core
 - simulation  feed-rate based time parameterisation of a toolpath
-- export      G-code / JSON / CSV writers
+- export      the G-code writer
 - server      HTTP adapter (Python standard library) exposing the layers above
               to the web front-end
 - web         static three.js front-end served by the server

@@ -4,7 +4,7 @@
 
 1. **界面**：前端按声明渲染控件，所以"新增一个策略"只需要写 Python，不用碰 JavaScript；
 2. **校验**：HTTP 适配层用同一份声明做类型与范围检查，手写请求也塞不进非法值；
-3. **文档**：GET /api/catalog 把声明导出，docs/parameters.md 可以直接照抄。
+3. **文档**：GET /api/catalog 把声明导出，新增或改动了参数就同步 README 的「参数与固定值」表格。
 
 因此新增一个参数 = 新增一行 ParameterSpec。
 """
