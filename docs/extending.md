@@ -5,17 +5,21 @@
 
 ## 1. 新增一个刀路策略（推荐从这里开始）
 
-最完整的例子就在仓库里：examples/plugins/contour_planner.py（环切，自带它需要的等距偏置几何）。
-复制进主程序即可：
-
-```bash
-cp examples/plugins/contour_planner.py toolpath_lab/planning/contour.py
-```
+仓库里有两个可以直接读的完整例子：内置的 [contour.py](../toolpath_lab/planning/contour.py)（环切，
+自带它需要的等距偏置几何）与同源的模板 [examples/plugins/contour_planner.py](../examples/plugins/contour_planner.py)。
+新增一个策略只要两步——放一个模块，再在 `planning/__init__.py` 里导入一行：
 
 ```python
-# toolpath_lab/planning/__init__.py
-from toolpath_lab.planning import contour as _contour  # noqa: F401
+# toolpath_lab/planning/__init__.py（导入顺序 = 界面上的排列顺序）
+from toolpath_lab.planning import my_strategy as _my_strategy  # noqa: F401
 ```
+
+重启程序，界面"刀路"分组与 `GET /api/catalog` 里就会出现它，`POST /api/plan` 也会接受
+`{"planner": {"id": "my_strategy", ...}}`。
+
+**id 必须唯一**：注册表遇到重复 id 会直接抛 `RegistryError`。示例模板的 id 是 `contour_demo`
+（特意与内置的 `contour` 区分开），所以你可以直接把它复制进 `planning/` 启用，也可以改掉 id
+再写成自己的策略。
 
 最短的骨架长这样：
 

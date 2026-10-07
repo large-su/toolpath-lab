@@ -1,32 +1,24 @@
-"""示例插件：环切（等距轮廓）策略。
+"""环切（等距轮廓）刀路。
 
-这是一个完整、可直接使用的策略实现：它自带所需的几何（多边形等距偏置），
-只依赖公开接口，可以当作编写其它策略的参考。它与内置的
-toolpath_lab/planning/contour.py 同源，区别只在 id / label / description。
+从区域轮廓开始，每向内偏置一个切宽就得到一环，一直偏置到结果退化为止：
 
-**注意**：环切已经内置为 toolpath_lab/planning/contour.py（id `contour`），所以本文件的 id 特意
-写成 `contour_demo`，直接启用不会和内置策略撞车。两种用法：
+1. 第一环把轮廓向内偏置"刀具在加工面上的足迹半径"，保证刀不切出区域；
+2. 之后每环再向内偏置一个切宽；
+3. 每环按采样步长离散成闭合折线，相邻环的绕行方向交替（顺铣/逆铣交替）；
+4. 环与环之间不抬刀，直接用连接进给过渡；首尾补下刀与抬刀。
 
-1. 照着写自己的策略：复制成 toolpath_lab/planning/my_strategy.py，改掉 id / label，再在
-   toolpath_lab/planning/__init__.py 里加一行（导入顺序即界面上的排列顺序）：
+偏置几何（凸角用斜接、凹角插圆弧接头、再用"到原始边界的距离"过滤自交顶点）目前只被环切
+用到，因此留在这个模块里；等有第二个策略需要它，再提到 core 或 planning/geometry2d.py。
 
-       from toolpath_lab.planning import my_strategy as _my_strategy  # noqa: F401
-
-2. 想直接在界面上看到这个示例：复制成 toolpath_lab/planning/contour_demo.py，再加一行
-   `from toolpath_lab.planning import contour_demo as _contour_demo  # noqa: F401`，
-   重启后会多出一个"环切(示例插件)"策略。
-
-注册表遇到重复 id 会抛 RegistryError，所以无论哪种用法，都不要保留两个相同的 id。
-
-**当前限制**：偏置量超过局部内切半径时，环会断开；本实现每个偏置层只保留一条环，
-因此凹形状的窄颈区域会提前结束。需要覆盖这类区域时，可改为每层输出多条环
-（Toolpath 的运动段模型本身支持）。
+**已知限制**：偏置量超过局部内切半径时环会断开，本实现每层只保留一条环，因此凹形状的窄颈
+区域会提前结束。需要覆盖这类区域时，改成每层输出多条环即可——Toolpath 的运动段模型本来就
+支持（一次规划里可以有任意多段）。
 """
 
 from __future__ import annotations
 
 from math import atan2, ceil, cos, pi, sin
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -39,11 +31,12 @@ from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
 from toolpath_lab.planning.registry import PLANNERS
 
 _EPS = 1e-9
+#: 偏置到这一步就认为没有可加工面积了（mm²）。
 _MIN_RING_AREA_MM2 = 0.5
 
 
 # --------------------------------------------------------------------------
-# 这份几何只被环切用到，所以放在插件里；将来有第二个策略需要它，再提到 core 里。
+# 偏置几何
 # --------------------------------------------------------------------------
 def _inward_normals(polygon: NDArray[np.float64]) -> NDArray[np.float64]:
     """每条边的单位左法向（逆时针多边形时为内法向）。"""
@@ -57,6 +50,8 @@ def _inward_normals(polygon: NDArray[np.float64]) -> NDArray[np.float64]:
 def _distance_to_boundary(
     points: NDArray[np.float64], polygon: NDArray[np.float64]
 ) -> NDArray[np.float64]:
+    """每个点到多边形各边的最近距离。"""
+
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)[:, None, :]
     start = polygon[None, :, :]
     end = np.roll(polygon, -1, axis=0)[None, :, :]
@@ -79,8 +74,9 @@ def offset_polygon(
     凸角用斜接（miter）交点，凹角插入圆弧接头——多边形内缩在凹角处本来就是圆弧；
     最后用"到原始边界的距离 >= 偏置量"过滤掉自交产生的顶点。
 
-    只做向内偏置：向外偏置的凸角要补圆弧、凹角反而要斜接，"到边界距离"这条过滤规则
-    也不再成立，是另一套几何；用不到，所以负值直接报错。
+    只做向内偏置：向外偏置的凸角必须补圆弧、凹角反而要斜接，"到边界距离"这条过滤规则
+    也不再成立，是另一套几何。这里用不到，因此直接拒绝负值，避免悄悄返回一条跑到区域
+    外面的环。
     """
 
     if distance < 0.0:
@@ -165,15 +161,16 @@ def resample_ring(polygon: NDArray[np.float64], step_mm: float) -> NDArray[np.fl
 class ContourPlanner(Planner):
     """沿区域轮廓逐圈向内偏置的环切刀路。"""
 
-    id: ClassVar[str] = "contour_demo"
-    label: ClassVar[str] = "环切(示例插件)"
-    description: ClassVar[str] = "示例插件：与内置环切同源，id 特意与内置策略区分开，方便照着改"
+    id: ClassVar[str] = "contour"
+    label: ClassVar[str] = "环切"
+    description: ClassVar[str] = "从轮廓逐圈向内偏置（等距轮廓），适合圆形等规则区域"
     parameters: ClassVar[ParameterSet] = ParameterSet(
         (
             spec("stepover_mm", "切宽 ae", K.FLOAT, 6.0, minimum=0.5, maximum=50.0,
                  step=0.5, unit="mm", group="刀路", help="相邻两环的间距"),
             spec("sample_step_mm", "采样步长", K.FLOAT, 1.0, minimum=0.1, maximum=20.0,
-                 step=0.1, unit="mm", group="刀路"),
+                 step=0.1, unit="mm", group="刀路",
+                 help="每环离散成折线的点距；越小越贴合曲线，刀点也越多"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
         )
@@ -208,6 +205,7 @@ class ContourPlanner(Planner):
             sampled = resample_ring(ring, sample_step)
             closed = np.vstack([sampled, sampled[:1]])
             if index % 2 == 1:
+                # 奇数环反向，顺铣/逆铣因此交替，和往复栅格同一个道理。
                 closed = closed[::-1]
             positions = context.to_positions(closed)
             if previous is None:
@@ -229,12 +227,8 @@ class ContourPlanner(Planner):
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
-            notes=(f"环切：共 {len(rings)} 环，切宽 {stepover:g} mm",),
+            notes=(
+                f"环切：共 {len(rings)} 环，切宽 {stepover:g} mm，采样步长 {sample_step:g} mm",
+                "相邻环绕行方向交替（顺铣/逆铣交替），环间不抬刀直接过渡",
+            ),
         )
-
-
-def describe_plugin() -> dict[str, Any]:
-    """给好奇的人看的自检信息。"""
-
-    return {"id": ContourPlanner.id, "label": ContourPlanner.label,
-            "parameters": [item.key for item in ContourPlanner.parameters]}

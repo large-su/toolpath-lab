@@ -40,11 +40,13 @@ def _cut_moves(toolpath: Toolpath):
 
 
 class RegistryTests(unittest.TestCase):
-    def test_only_the_raster_strategy_is_registered(self) -> None:
-        self.assertEqual(PLANNERS.ids(), ["raster"])
+    def test_registered_strategies_are_listed_in_import_order(self) -> None:
+        # 顺序 = planning/__init__.py 的导入顺序 = 界面上的排列顺序。
+        self.assertEqual(PLANNERS.ids(), ["raster", "contour"])
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:
         entry = planner_catalog()[0]
+        self.assertEqual(entry["id"], "raster")
         keys = [item["key"] for item in entry["parameters"]]
         self.assertEqual(keys, ["mode", "stepover_mm", "direction_deg", "feed_mm_per_min"])
         self.assertEqual(entry["label"], "栅格刀路")
