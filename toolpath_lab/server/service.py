@@ -30,6 +30,22 @@ class PlanResult:
     coverage: Coverage | None
     warnings: tuple[str, ...]
 
+    def result_lines(self) -> list[str]:
+        """Facts only the service knows, for the header of an exported file.
+
+        Coverage is computed for exports too (the timeline is not: it is expensive and irrelevant to
+        a file), so a downloaded program can state how much material it leaves behind.
+        """
+
+        lines: list[str] = []
+        if self.coverage is not None:
+            lines.append(
+                f"coverage {self.coverage.ratio * 100:.2f} % "
+                f"(uncut {self.coverage.uncut_area_mm2:.1f} mm2 in {self.coverage.patch_count} patches)"
+            )
+        lines.extend(self.warnings)
+        return lines
+
     def to_payload(self) -> dict[str, Any]:
         request = self.request
         boundary = request.region.boundary()

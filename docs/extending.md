@@ -182,8 +182,14 @@ def toolpath_to_xxx(toolpath: Toolpath, *, decimals: int = 3, **options) -> str:
   也能被 `examples/` 里的脚本直接用；
 - **不要再造一份刀路数据**：一切都从 `toolpath.moves`（类型 / 进给 / `pass_index` / 点）和
   `toolpath.notes` 里取，统计用 `toolpath.statistics()`；
+- **让文件能自述来历**：`export/summary.py` 提供 `toolpath_summary_lines(toolpath)`（策略、刀轨数、
+  刀点数、切削与快移长度、预计工时——全都从刀路上读得到）和 `provenance_lines(lines)`（清理调用方
+  给的多行文本）。新格式建议接受一个 `provenance: Iterable[str] = ()` 参数，把"只有调用方知道的
+  事实"（回显的请求、覆盖率、提醒）写进注释头；默认值应为空，让纯函数保持"只有数据"的形态——
+  csv.py 就是这么做的：不带 `provenance` 时是一个纯点表，界面的下载会传它，于是多出 `#` 注释块；
 - **编码尽量选安全的那一边**：csv.py 刻意只输出 ASCII（不带 BOM 的 UTF-8 也能被 Excel、pandas、
   `csv.reader` 直接读），gcode.py 用 UTF-8 输出中文注释——文本文件按各自生态的惯例挑；
+  （注意 csv.py 注释块里的提醒与策略中文名按约定是中文，所以数据行是 ASCII、注释块是 UTF-8）
 - 路由里用 `text_response(..., content_type=..., filename=...)` 返回，文件名统一走
   `_export_filename(request, "后缀")`；
 - 参数不合法/几何不可行仍然由 `PlanRequest.from_payload` 与规划层抛出，

@@ -253,18 +253,27 @@ class ExportTests(ApiTestCase):
         self.assertIn("text/csv", headers["Content-Type"])
         self.assertTrue(headers["Content-Disposition"].endswith('.csv"'))
         lines = body.decode("utf-8").splitlines()
+        comments = [line for line in lines if line.startswith("#")]
+        rows = [line for line in lines if not line.startswith("#")]
+        # The download explains itself: a comment block with the summary, the request and coverage.
+        self.assertTrue(comments)
+        self.assertTrue(any("coverage" in line for line in comments))
         self.assertEqual(
-            lines[0], "move_index,pass_index,kind,feed_mm_per_min,point_index,x_mm,y_mm,z_mm"
+            rows[0], "move_index,pass_index,kind,feed_mm_per_min,point_index,x_mm,y_mm,z_mm"
         )
-        # Rows = tool points + header; a default request (80 square, D6, stepover 6) has 58 points.
-        self.assertEqual(len(lines), 59)
-        self.assertTrue(all(len(line.split(",")) == 8 for line in lines))
+        # Data rows = tool points + header; a default request (80 square, D6, stepover 6) has 58.
+        self.assertEqual(len(rows), 59)
+        self.assertTrue(all(len(line.split(",")) == 8 for line in rows))
 
     def test_csv_and_gcode_describe_the_same_toolpath(self) -> None:
         _, plan_body, _ = self.post("/api/plan", {})
         point_count = json.loads(plan_body)["toolpath"]["statistics"]["point_count"]
         _, csv_body, _ = self.post("/api/export/csv", {})
-        self.assertEqual(len(csv_body.decode("utf-8").splitlines()) - 1, point_count)
+        rows = [
+            line for line in csv_body.decode("utf-8").splitlines()
+            if line and not line.startswith("#")
+        ]
+        self.assertEqual(len(rows) - 1, point_count)
 
     def test_other_formats_are_gone(self) -> None:
         for kind in ("json", "step", "dxf"):

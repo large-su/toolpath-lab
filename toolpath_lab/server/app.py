@@ -118,13 +118,12 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
 
     def _export_gcode(self, payload: Mapping[str, Any] | None) -> Response:
-        result = execute_plan(
-            PlanRequest.from_payload(payload), with_timeline=False, with_coverage=False
-        )
+        result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
         content = toolpath_to_gcode(
             result.toolpath,
             program_name="TOOLPATH_LAB",
             description="\n".join(result.request.header_lines()),
+            provenance=result.result_lines(),
         )
         return text_response(
             content,
@@ -133,11 +132,12 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         )
 
     def _export_csv(self, payload: Mapping[str, Any] | None) -> Response:
-        result = execute_plan(
-            PlanRequest.from_payload(payload), with_timeline=False, with_coverage=False
-        )
+        result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
         return text_response(
-            toolpath_to_csv(result.toolpath),
+            toolpath_to_csv(
+                result.toolpath,
+                provenance=[*result.request.header_lines(), *result.result_lines()],
+            ),
             content_type="text/csv; charset=utf-8",
             filename=self._export_filename(result.request, "csv"),
         )
