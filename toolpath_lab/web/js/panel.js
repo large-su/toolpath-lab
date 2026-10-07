@@ -78,6 +78,7 @@ export class ParameterPanel {
     this.rows = [];
     this.root.replaceChildren(
       this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
+      this._toolInfoSection(),
       this._regionSection(),
       this._plannerSection(),
       this._displaySection(),
@@ -106,6 +107,55 @@ export class ParameterPanel {
       section.appendChild(this._wrapRow(spec, control, capability, values));
     }
     return section;
+  }
+
+  // ------------------------------------------------------------- 刀具信息卡
+  _toolInfoSection() {
+    const section = this._section("刀具信息");
+    const fields = [
+      ["类型", "kind_label", ""],
+      ["直径", "diameter_mm", "mm"],
+      ["半径", "radius_mm", "mm"],
+      ["圆角半径", "corner_radius_mm", "mm"],
+      ["足迹半径", "footprint_radius_mm", "mm"],
+      ["长度", "length_mm", "mm"],
+      ["行距", "stepover_mm", "mm"],
+      ["残留高度", "residual_height_mm", "mm"],
+      ["推荐行距", "recommended_stepover_mm", "mm"],
+    ];
+    this._infoNodes = {};
+    for (const [label, key, unit] of fields) {
+      const row = document.createElement("div");
+      row.className = "info-grid";
+      const term = document.createElement("span");
+      term.textContent = label;
+      const value = document.createElement("b");
+      value.textContent = "—";
+      row.append(term, value);
+      if (unit) {
+        const unitNode = document.createElement("span");
+        unitNode.className = "unit";
+        unitNode.textContent = unit;
+        row.appendChild(unitNode);
+      }
+      section.appendChild(row);
+      this._infoNodes[key] = value;
+    }
+    const hint = document.createElement("div");
+    hint.className = "note";
+    hint.textContent = "残留高度 = 相邻刀轨间未切削的凸起高度；推荐行距按目标残留 0.02 mm 反推。";
+    section.appendChild(hint);
+    return section;
+  }
+
+  setToolInfo(info) {
+    for (const key of Object.keys(this._infoNodes)) {
+      const value = info ? info[key] : undefined;
+      this._infoNodes[key].textContent = (value === undefined || value === null)
+        ? "—" : formatNumber(value);
+    }
+    const residual = this._infoNodes.residual_height_mm;
+    residual.classList.toggle("warn", info && Number(info.residual_height_mm) > 0.02);
   }
 
   _regionSection() {

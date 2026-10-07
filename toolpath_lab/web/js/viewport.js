@@ -272,6 +272,7 @@ export class Viewport {
         new THREE.SphereGeometry(radius, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
         toolMaterial()
       );
+      tip.rotation.x = Math.PI / 2; // 半球平底朝上接刀体、刀尖朝下
       tip.position.z = radius; // 球心在 z=radius，刀尖正好落在 z=0 加工面
       cuttingParts.push(body, tip);
     } else if (tool.kind === "bull") {

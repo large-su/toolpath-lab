@@ -92,6 +92,73 @@ class ToolParameterTests(unittest.TestCase):
         with self.assertRaises(ParameterError):
             tool_parameters().coerce({"diameter_mm": 0.1})
 
+    def test_stepover_parameter_is_published_and_validated(self) -> None:
+        spec = tool_parameters().spec("stepover_mm")
+        self.assertEqual(spec.default, 1.0)
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, stepover_mm=0.0)
+        with self.assertRaises(ParameterError):
+            tool_parameters().coerce({"stepover_mm": -0.5})
+
+
+class ResidualHeightTests(unittest.TestCase):
+    """残留高度：平底刀无残留，球头/圆鼻刀由刀尖几何决定。"""
+
+    def test_flat_tool_leaves_no_residual(self) -> None:
+        tool = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, stepover_mm=1.0)
+        self.assertAlmostEqual(tool.residual_height_mm(), 0.0)
+        self.assertAlmostEqual(tool.residual_height_mm(5.0), 0.0)
+
+    def test_ball_tool_residual_follows_arc_formula(self) -> None:
+        # R=3，行距 s=2：h = 3 - sqrt(9 - 1) ≈ 0.1716
+        tool = Tool(ToolKind.BALL, diameter_mm=6.0, length_mm=30.0, stepover_mm=2.0)
+        self.assertAlmostEqual(tool.residual_height_mm(), 3.0 - (9.0 - 1.0) ** 0.5, places=4)
+
+    def test_ball_tool_fully_apart_returns_the_radius(self) -> None:
+        # 行距 ≥ 直径：相邻刀轨不相交，残留达到半径
+        tool = Tool(ToolKind.BALL, diameter_mm=6.0, length_mm=30.0, stepover_mm=6.0)
+        self.assertAlmostEqual(tool.residual_height_mm(), 3.0)
+
+    def test_bull_tool_flat_bottom_leaves_no_residual(self) -> None:
+        # D6 Rc1：平底半径 2，行距 4（=2*base）以内无残留
+        tool = Tool(ToolKind.BULL, diameter_mm=6.0, length_mm=30.0,
+                    corner_mm=1.0, stepover_mm=4.0)
+        self.assertAlmostEqual(tool.residual_height_mm(), 0.0)
+
+    def test_bull_tool_residual_comes_from_the_corner(self) -> None:
+        # D6 Rc1：行距 5 时 half=(5-4)/2=0.5，h = 1 - sqrt(1-0.25) ≈ 0.1340
+        tool = Tool(ToolKind.BULL, diameter_mm=6.0, length_mm=30.0,
+                    corner_mm=1.0, stepover_mm=5.0)
+        self.assertAlmostEqual(tool.residual_height_mm(), 1.0 - 0.75 ** 0.5, places=4)
+
+    def test_bull_tool_fully_apart_returns_the_corner(self) -> None:
+        tool = Tool(ToolKind.BULL, diameter_mm=6.0, length_mm=30.0,
+                    corner_mm=1.0, stepover_mm=6.0)
+        self.assertAlmostEqual(tool.residual_height_mm(), 1.0)
+
+    def test_recommended_stepover_inverts_the_formula(self) -> None:
+        # 球头刀 R3：目标残留 0.02 → 行距 = 2*sqrt(R^2-(R-h)^2)
+        tool = Tool(ToolKind.BALL, diameter_mm=6.0, length_mm=30.0)
+        recommended = tool.recommended_stepover_mm(0.02)
+        self.assertAlmostEqual(recommended, 2.0 * (9.0 - (3.0 - 0.02) ** 2) ** 0.5, places=4)
+        # 用推荐行距算回去，残留应回到 0.02
+        self.assertAlmostEqual(tool.residual_height_mm(recommended), 0.02, places=4)
+
+    def test_recommended_stepover_for_bull_uses_flat_bottom_first(self) -> None:
+        tool = Tool(ToolKind.BULL, diameter_mm=6.0, length_mm=30.0, corner_mm=1.0)
+        # 目标残留 0 → 最多只用到平底覆盖：2*base = 4
+        self.assertAlmostEqual(tool.recommended_stepover_mm(0.0), 4.0)
+        # 圆鼻刀目标残留 0.02 时行距大于平底覆盖
+        self.assertGreater(tool.recommended_stepover_mm(0.02), 4.0)
+
+    def test_describe_exposes_residual_metrics(self) -> None:
+        payload = Tool.from_parameters(
+            {"kind": "ball", "diameter_mm": 6.0, "length_mm": 30.0, "stepover_mm": 2.0}
+        ).describe()
+        self.assertAlmostEqual(payload["residual_height_mm"], 3.0 - 8.0 ** 0.5, places=4)
+        self.assertGreater(payload["recommended_stepover_mm"], 0.0)
+        self.assertEqual(payload["stepover_mm"], 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

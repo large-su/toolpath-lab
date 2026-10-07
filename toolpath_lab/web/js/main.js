@@ -168,6 +168,7 @@ async function regenerate() {
     lastResult = result;
     viewport.setResult(result);
     viewport.setTool(result.tool);
+    panel.setToolInfo(result.tool);
     playback.load(result.timeline);
     renderStats(result);
     if (result.warnings && result.warnings.length) showBanner(result.warnings.join("；"));

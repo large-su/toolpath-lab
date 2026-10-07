@@ -17,6 +17,7 @@ bull         R - Rc              Rc                 R - Rc
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from math import isfinite
@@ -62,6 +63,9 @@ def tool_parameters() -> ParameterSet:
                  step=0.5, unit="mm", group="刀具", help="仅圆鼻刀生效；球头刀的圆角恒等于刀具半径"),
             spec("length_mm", "刀具长度 L", K.FLOAT, 30.0, minimum=2.0, maximum=300.0,
                  step=1.0, unit="mm", group="刀具", help="参与三维显示，也是将来做碰撞检查的输入"),
+            spec("stepover_mm", "行距（步距）", K.FLOAT, 1.0, minimum=0.1, maximum=50.0,
+                 step=0.1, unit="mm", group="刀具",
+                 help="相邻刀轨的间距；配合刀尖圆角几何估算加工表面残留高度"),
         )
     )
 
@@ -74,6 +78,7 @@ class Tool:
     diameter_mm: float = 6.0
     length_mm: float = 30.0
     corner_mm: float = 0.0
+    stepover_mm: float = 1.0
 
     def __post_init__(self) -> None:
         if not isfinite(self.diameter_mm) or self.diameter_mm <= 0:
@@ -84,6 +89,8 @@ class Tool:
             raise ParameterError("刀具圆角半径必须是有限非负数")
         if self.corner_mm >= self.radius_mm:
             raise ParameterError("刀具圆角半径必须小于刀具半径")
+        if not isfinite(self.stepover_mm) or self.stepover_mm <= 0:
+            raise ParameterError("行距必须是有限正数")
 
     @classmethod
     def from_parameters(cls, params: Mapping[str, Any]) -> "Tool":
@@ -94,6 +101,7 @@ class Tool:
             diameter_mm=float(params["diameter_mm"]),
             length_mm=float(params["length_mm"]),
             corner_mm=float(params.get("corner_mm", 0.0)),
+            stepover_mm=float(params.get("stepover_mm", 1.0)),
         )
 
     @property
@@ -120,6 +128,57 @@ class Tool:
             return max(0.0, self.radius_mm - self.corner_mm)
         return self.radius_mm
 
+    def residual_height_mm(self, stepover: float | None = None) -> float:
+        """估算相邻刀轨之间的残留高度（加工表面质量的核心指标）。
+
+        平底刀在平面加工中刀轨完全覆盖，残留为零；
+        球头刀按圆弧截面估算：h = R - sqrt(R^2 - (s/2)^2)；
+        圆鼻刀底部有半径 R-Rc 的平底：行距不超过 2(R-Rc) 时无残留，
+        超过后由刀尖圆角圆弧决定残留。
+        """
+
+        s = max(0.0, self.stepover_mm if stepover is None else stepover)
+        if self.kind is ToolKind.FLAT:
+            return 0.0
+        radius = self.radius_mm
+        if self.kind is ToolKind.BALL:
+            if s >= 2.0 * radius:
+                return radius
+            return radius - math.sqrt(radius * radius - (s / 2.0) ** 2)
+        # 圆鼻刀：平底半径 base = R - Rc，圆角半径 Rc
+        corner = self.corner_radius_mm
+        base = max(0.0, radius - corner)
+        if s <= 2.0 * base:
+            return 0.0
+        if s >= 2.0 * radius:
+            return corner
+        half = (s - 2.0 * base) / 2.0
+        if half >= corner:
+            return corner
+        return corner - math.sqrt(corner * corner - half * half)
+
+    def recommended_stepover_mm(self, target_height: float = 0.02) -> float:
+        """由允许残留高度反推最大行距（残留高度公式的反函数）。
+
+        target_height 默认取 0.02 mm，是精加工常见的表面残留要求。
+        """
+
+        h = max(0.0, target_height)
+        if self.kind is ToolKind.FLAT:
+            return self.diameter_mm
+        radius = self.radius_mm
+        if self.kind is ToolKind.BALL:
+            if h >= radius:
+                return 2.0 * radius
+            return 2.0 * math.sqrt(radius * radius - (radius - h) ** 2)
+        corner = self.corner_radius_mm
+        base = max(0.0, radius - corner)
+        if h <= 0.0:
+            return 2.0 * base
+        if h >= corner:
+            return 2.0 * radius
+        return 2.0 * base + 2.0 * math.sqrt(corner * corner - (corner - h) ** 2)
+
     def describe(self) -> dict[str, Any]:
         """界面与接口使用的摘要。"""
 
@@ -131,4 +190,7 @@ class Tool:
             "corner_radius_mm": self.corner_radius_mm,
             "length_mm": self.length_mm,
             "footprint_radius_mm": self.footprint_radius_mm,
+            "stepover_mm": self.stepover_mm,
+            "residual_height_mm": self.residual_height_mm(),
+            "recommended_stepover_mm": self.recommended_stepover_mm(),
         }

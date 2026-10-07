@@ -294,6 +294,29 @@ input[type="checkbox"] {
   font-weight: 500;
 }
 
+.info-grid {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.info-grid > span:first-child {
+  flex: 1;
+}
+
+.info-grid b {
+  color: var(--text-dim);
+  font-weight: 600;
+  font-family: var(--mono);
+}
+
+.info-grid b.warn {
+  color: var(--orange);
+}
+
 /* ------------------------------------------------------------ 视图工具条 */
 .view-toolbar {
   position: absolute;
