@@ -1,20 +1,22 @@
-"""刀具几何。
+"""Tool geometry.
 
-刀具不是装饰：栅格刀路的边界偏置量由"刀具在加工面上的足迹半径"决定，
-将来接入球头/圆鼻刀时，残留高度、刀轴姿态也都从这里出发。
+The tool is not decoration: the raster strategy's boundary offset comes from "the tool's footprint
+radius on the machining plane", and once ball or bull nose tools are wired up, the scallop height and
+the tool axis orientation start from here too.
 
 ===========  ==================  =================  =======================
-类型         底面半径 Rf        圆角半径 Rc        足迹半径（用于偏置）
+kind         bottom radius Rf    corner radius Rc   footprint radius
 ===========  ==================  =================  =======================
 flat         R                   -                  R
 ball         -                   R                  0
 bull         R - Rc              Rc                 R - Rc
 ===========  ==================  =================  =======================
 
-当前对外只开放平底刀：其余两种在参数目录里标记为"待拓展"（Choice.disabled），
-参数层因此会拒绝这两个取值（HTTP 400），不会悄悄按平底刀算；
-想启用它们只需去掉那个标记、补上刀尖圆角参数与对应的三维显示（领域层的公式已经就位，
-直接构造 Tool(ToolKind.BALL, ...) 是可用的）。
+Only the flat end mill is exposed today: the other two are marked "to be extended"
+(`Choice.disabled`) in the parameter catalogue, so the parameter layer rejects those values with
+HTTP 400 instead of quietly computing as if the tool were flat. Enabling them means dropping that
+flag and adding a corner radius parameter plus the matching 3D display -- the domain layer formulas
+are already in place, and constructing `Tool(ToolKind.BALL, ...)` directly works.
 """
 
 from __future__ import annotations
@@ -34,14 +36,14 @@ from toolpath_lab.core.parameters import (
 
 
 class ToolKind(str, Enum):
-    """本工程建模的刀具类型。"""
+    """Tool kinds modelled by this project."""
 
     FLAT = "flat"
     BALL = "ball"
     BULL = "bull"
 
 
-#: 参数目录里的刀具类型选项；disabled 的项在界面上不可选。
+#: Tool kind choices in the parameter catalogue; disabled entries cannot be picked in the UI.
 TOOL_KINDS: tuple[Choice, ...] = (
     Choice(ToolKind.FLAT.value, "平底刀 Flat end mill"),
     Choice(ToolKind.BALL.value, "球头刀 Ball nose（待拓展）", disabled=True),
@@ -52,7 +54,7 @@ TOOL_KIND_LABELS: dict[str, str] = {choice.value: choice.label for choice in TOO
 
 
 def tool_parameters() -> ParameterSet:
-    """刀具分组的参数声明（同时驱动界面与请求校验）。"""
+    """Parameter declarations for the tool group (drives both the UI and request validation)."""
 
     return ParameterSet(
         (
@@ -68,7 +70,7 @@ def tool_parameters() -> ParameterSet:
 
 @dataclass(frozen=True, slots=True)
 class Tool:
-    """一把经过校验的刀具。"""
+    """A validated tool."""
 
     kind: ToolKind = ToolKind.FLAT
     diameter_mm: float = 6.0
@@ -82,7 +84,7 @@ class Tool:
 
     @classmethod
     def from_parameters(cls, params: Mapping[str, Any]) -> "Tool":
-        """由界面/接口的参数字典构造刀具。"""
+        """Build a tool from the parameter dictionary of the UI/API."""
 
         return cls(
             kind=ToolKind(str(params["kind"])),
@@ -96,7 +98,7 @@ class Tool:
 
     @property
     def corner_radius_mm(self) -> float:
-        """刀尖圆角半径（平底刀为 0，球头刀等于半径）。"""
+        """Corner radius of the cutting tip (0 for a flat mill, the radius for a ball nose)."""
 
         if self.kind is ToolKind.BALL:
             return self.radius_mm
@@ -104,7 +106,7 @@ class Tool:
 
     @property
     def footprint_radius_mm(self) -> float:
-        """刀具在加工面上的足迹半径，即刀路相对区域轮廓的偏置量。"""
+        """Footprint radius on the machining plane, i.e. the path's offset from the outline."""
 
         if self.kind is ToolKind.BALL:
             return 0.0
@@ -113,7 +115,7 @@ class Tool:
         return self.radius_mm
 
     def describe(self) -> dict[str, Any]:
-        """界面与接口使用的摘要。"""
+        """Summary used by the UI and the API."""
 
         return {
             "kind": self.kind.value,

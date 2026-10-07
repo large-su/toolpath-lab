@@ -1,20 +1,22 @@
-"""加工区域。
+"""Machining regions.
 
-区域就是"要加工的那块地方"，它替代了"导入模型 + 提取特征"这一整套前置环节：
-直接给定一个规则区域即可开始规划。当前提供四种形状：
+A region is "the area to be machined", which replaces the whole "import a model, extract features"
+front end: give it a regular region and planning can start. Seven shapes are available:
 
-- 方形（square）：一个边长；
-- 矩形（rectangle）：宽 × 高；
-- 圆形（circle）：一个直径；
-- 椭圆（ellipse）：长半轴 / 短半轴；
-- U 形（u_shape）：外宽 / 外高 / 壁厚，一个凹多边形；
-- 哑铃形（dumbbell）：两端方头 + 细颈，细颈被偏置吃掉后同一层会分裂成两条环；
-- 三角形（triangle）：底边与高，顶角可以调得很尖。
+- square: one side length;
+- rectangle: width x height;
+- circle: one diameter;
+- ellipse: semi-major / semi-minor axis;
+- u_shape: outer width / outer height / wall thickness, a concave polygon;
+- dumbbell: two pads joined by a narrow neck; once the offset eats the neck, one layer splits into
+  two loops;
+- triangle: base and height, the apex angle can be made very sharp.
 
-所有形状统一归约为一条**逆时针、不重复首点**的边界多边形。栅格刀路只会用到
-"一条直线与多边形求交"，三维工件也直接按这条边界挤出，因此新增形状（跑道形、带缺口的多边形……）
-只要实现一个 boundary() 就能直接参与规划与显示，不需要改任何刀路或前端代码；
-凹形状（U 形）一条扫描线会得到多段，于是同一行里出现多条独立刀轨。
+Every shape reduces to a single **counter-clockwise boundary polygon without a repeated first point**.
+The raster strategy only needs "intersect a line with a polygon", and the 3D workpiece is extruded from
+the same boundary, so a new shape (a stadium, a notched polygon, ...) only has to implement boundary()
+to take part in planning and display -- no toolpath or front end change; a scanline through a concave
+shape (the U) yields several intervals, so one row can carry several independent toolpaths.
 """
 
 from __future__ import annotations
@@ -36,13 +38,14 @@ from toolpath_lab.core.registry import Registry
 
 REGION_SHAPES: Registry[type["RegionShape"]] = Registry("region shape")
 
-#: 曲线边界（圆、椭圆）用多少段折线逼近；固定值，避免把离散精度暴露成一个意义不大的参数。
+#: How many polyline segments approximate a curved boundary (circle, ellipse). Fixed on purpose:
+#: exposing the discretisation as a parameter would add a knob with very little meaning.
 CURVE_SEGMENTS = 180
 
 
 @dataclass(frozen=True, slots=True)
 class RegionShape:
-    """所有区域形状的基类。"""
+    """Base class of every region shape."""
 
     id: ClassVar[str] = ""
     label: ClassVar[str] = ""
@@ -50,7 +53,7 @@ class RegionShape:
     parameters: ClassVar[ParameterSet] = ParameterSet()
 
     def boundary(self) -> NDArray[np.float64]:
-        """逆时针闭合边界，形状 (N, 2)，不重复首点。"""
+        """Closed counter-clockwise boundary, shape (N, 2), without repeating the first point."""
 
         raise NotImplementedError
 
@@ -70,7 +73,7 @@ class RegionShape:
 
 
 def polygon_area(polygon: NDArray[np.float64]) -> float:
-    """多边形的有向面积（逆时针为正）。"""
+    """Signed polygon area (positive for counter-clockwise winding)."""
 
     x = polygon[:, 0]
     y = polygon[:, 1]
@@ -78,7 +81,7 @@ def polygon_area(polygon: NDArray[np.float64]) -> float:
 
 
 def polygon_bounds(polygon: NDArray[np.float64]) -> list[list[float]]:
-    """轴对齐包围盒，形式为 [[x_min, x_max], [y_min, y_max]]。"""
+    """Axis aligned bounding box as [[x_min, x_max], [y_min, y_max]]."""
 
     return [
         [float(polygon[:, 0].min()), float(polygon[:, 0].max())],
@@ -89,7 +92,7 @@ def polygon_bounds(polygon: NDArray[np.float64]) -> list[list[float]]:
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class SquareRegion(RegionShape):
-    """以原点为中心的方形区域。"""
+    """Square region centred on the origin."""
 
     side_mm: float = 80.0
 
@@ -118,7 +121,7 @@ class SquareRegion(RegionShape):
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class CircleRegion(RegionShape):
-    """以原点为中心的圆形区域。"""
+    """Circular region centred on the origin."""
 
     diameter_mm: float = 80.0
 
@@ -145,7 +148,7 @@ class CircleRegion(RegionShape):
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class RectangleRegion(RegionShape):
-    """以原点为中心的矩形区域（宽沿 X 轴，高沿 Y 轴）。"""
+    """Rectangular region centred on the origin (width along X, height along Y)."""
 
     width_mm: float = 100.0
     height_mm: float = 60.0
@@ -183,7 +186,7 @@ class RectangleRegion(RegionShape):
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class EllipseRegion(RegionShape):
-    """以原点为中心的椭圆区域（长半轴沿 X 轴，短半轴沿 Y 轴）。"""
+    """Elliptical region centred on the origin (semi-major along X, semi-minor along Y)."""
 
     semi_major_mm: float = 60.0
     semi_minor_mm: float = 40.0
@@ -214,7 +217,7 @@ class EllipseRegion(RegionShape):
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class UShapeRegion(RegionShape):
-    """以原点为中心、开口朝上的 U 形区域（凹多边形）。"""
+    """U shaped region centred on the origin, opening upwards (a concave polygon)."""
 
     width_mm: float = 100.0
     height_mm: float = 80.0
@@ -269,7 +272,7 @@ class UShapeRegion(RegionShape):
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class DumbbellRegion(RegionShape):
-    """以原点为中心的哑铃形：两端方块用一根细颈连起来。"""
+    """Dumbbell centred on the origin: two pads joined by a narrow neck."""
 
     width_mm: float = 160.0
     pad_mm: float = 60.0
@@ -330,7 +333,7 @@ class DumbbellRegion(RegionShape):
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
 class TriangleRegion(RegionShape):
-    """以原点为中心的等腰三角形（底边在下、顶点朝上）。"""
+    """Isosceles triangle centred on the origin (base at the bottom, apex at the top)."""
 
     width_mm: float = 80.0
     height_mm: float = 60.0
@@ -366,7 +369,7 @@ class TriangleRegion(RegionShape):
 
 
 def build_region(shape_id: str, raw_parameters: Mapping[str, Any] | None = None) -> RegionShape:
-    """由接口参数构造一个已注册的区域形状。"""
+    """Build a registered region shape from API parameters."""
 
     cls = REGION_SHAPES.get(shape_id)
     return cls(**cls.parameters.coerce(raw_parameters))

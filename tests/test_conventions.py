@@ -32,21 +32,8 @@ SOURCE_ROOTS = ("toolpath_lab", "tests", "examples")
 #: Files whose docstrings and comments are still Chinese. Remove an entry as soon as its file is
 #: translated; never add one. (Comment shows how many Chinese characters were left when listed.)
 _PENDING_ENGLISH = (
-    "toolpath_lab/core/__init__.py",  # 20
-    "toolpath_lab/core/mathutil.py",  # 111
-    "toolpath_lab/core/parameters.py",  # 317
-    "toolpath_lab/core/path.py",  # 191
-    "toolpath_lab/core/region.py",  # 489
-    "toolpath_lab/core/tool.py",  # 299
-    "toolpath_lab/export/__init__.py",  # 14
     "toolpath_lab/export/csv.py",  # 171
-    "toolpath_lab/export/gcode.py",  # 63
-    "toolpath_lab/planning/__init__.py",  # 80
-    "toolpath_lab/planning/registry.py",  # 68
-    "toolpath_lab/planning/service.py",  # 60
     "toolpath_lab/server/app.py",  # 117
-    "toolpath_lab/server/catalog.py",  # 88
-    "toolpath_lab/server/schema.py",  # 121
     "toolpath_lab/server/service.py",  # 112
     "toolpath_lab/simulation/timeline.py",  # 253
     "tests/test_adaptive.py",  # 327

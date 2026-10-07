@@ -1,12 +1,16 @@
-"""声明式参数。
+"""Declarative parameters.
 
-本工程里每一个能力（区域形状、刀路策略）都发布一个 ParameterSet。这一份声明同时驱动三件事：
+Every capability in this project (region shapes, toolpath strategies) publishes a ParameterSet. That
+one declaration drives three things:
 
-1. **界面**：前端按声明渲染控件，所以"新增一个策略"只需要写 Python，不用碰 JavaScript；
-2. **校验**：HTTP 适配层用同一份声明做类型与范围检查，手写请求也塞不进非法值；
-3. **文档**：GET /api/catalog 把声明导出，新增或改动了参数就同步 README 的「参数与固定值」表格。
+1. **UI**: the front end renders controls from the declaration, so "add a strategy" only means writing
+   Python, never JavaScript;
+2. **Validation**: the HTTP layer validates types and ranges against the same declaration, so a
+   hand-written request cannot smuggle in an invalid value;
+3. **Documentation**: GET /api/catalog exports the declaration; adding or changing a parameter means
+   updating the parameter table in the README as well.
 
-因此新增一个参数 = 新增一行 ParameterSpec。
+So adding a parameter = adding one ParameterSpec line.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from toolpath_lab.core.errors import ParameterError
 
 
 class ParameterKind(str, Enum):
-    """单个参数的控件类型与校验方式。"""
+    """Control type and validation of a single parameter."""
 
     FLOAT = "float"
     INT = "int"
@@ -29,10 +33,11 @@ class ParameterKind(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class Choice:
-    """CHOICE 型参数的一个选项。
+    """One option of a CHOICE parameter.
 
-    disabled=True 的选项会在界面上显示但不可选，表示该选项尚未实现；
-    参数层也会拒绝这个取值（HTTP 400），免得"界面上不可选、接口却能用"这种自相矛盾的状态。
+    An option with disabled=True is shown in the UI but cannot be picked, marking work that is not
+    implemented yet; the parameter layer rejects that value too (HTTP 400), so "not selectable in the
+    UI but accepted by the API" cannot happen.
     """
 
     value: str
@@ -45,7 +50,7 @@ class Choice:
 
 @dataclass(frozen=True, slots=True)
 class ParameterSpec:
-    """一个面向用户的参数声明。"""
+    """One user facing parameter declaration."""
 
     key: str
     label: str
@@ -67,7 +72,7 @@ class ParameterSpec:
             raise ValueError(f"选项型参数 {self.key!r} 至少要有一个选项")
 
     def to_dict(self) -> dict[str, Any]:
-        """给前端使用的 JSON 描述。"""
+        """JSON description used by the front end."""
 
         return {
             "key": self.key,
@@ -85,7 +90,7 @@ class ParameterSpec:
         }
 
     def coerce(self, raw: Any) -> Any:
-        """校验 raw 并返回规范类型的值。"""
+        """Validate `raw` and return the value in its canonical type."""
 
         if self.kind is ParameterKind.BOOL:
             return self._coerce_bool(raw)
@@ -150,7 +155,7 @@ class ParameterSpec:
 
 @dataclass(frozen=True, slots=True)
 class ParameterSet:
-    """一组按顺序排列、键唯一的 ParameterSpec。"""
+    """An ordered group of ParameterSpec with unique keys."""
 
     specs: tuple[ParameterSpec, ...] = field(default_factory=tuple)
 
@@ -179,10 +184,10 @@ class ParameterSet:
         return {item.key: item.default for item in self.specs}
 
     def coerce(self, raw: Mapping[str, Any] | None) -> dict[str, Any]:
-        """返回补全默认值、通过校验的参数字典。
+        """Return a validated parameter dictionary with defaults filled in.
 
-        未知的键会被忽略（向后兼容新客户端），缺失的键取默认值，
-        非法值抛 ParameterError 并指出是哪个键。
+        Unknown keys are ignored (so older clients keep working), missing keys take their default,
+        and an invalid value raises ParameterError naming the key.
         """
 
         source: Mapping[str, Any] = raw or {}
@@ -213,7 +218,7 @@ def spec(
     choices: Iterable[Choice] = (),
     visible_if: Mapping[str, str] | None = None,
 ) -> ParameterSpec:
-    """给各能力模块用的简写构造器。"""
+    """Shorthand constructor used by the capability modules."""
 
     return ParameterSpec(
         key=key,

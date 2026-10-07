@@ -1,4 +1,4 @@
-"""领域层：纯数据类型与几何，不含任何 I/O 或框架依赖。"""
+"""Domain layer: plain data types and geometry, with no I/O or framework dependency."""
 
 from toolpath_lab.core.errors import (
     ParameterError,

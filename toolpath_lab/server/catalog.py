@@ -1,7 +1,8 @@
-"""能力目录：界面需要的一切都由它生成。
+"""Capability catalogue: everything the UI needs is generated from it.
 
-目录来自与请求校验同一份 ParameterSet 声明，所以界面不可能出现后端不认识的控件；
-反过来，新注册一个区域形状或策略，刷新页面就会自动出现——不需要改一行 JavaScript。
+The catalogue comes from the same ParameterSet declarations that validate requests, so the UI can
+never show a control the backend does not understand; conversely, registering a new region shape or
+strategy makes it appear on a page refresh -- without touching a single line of JavaScript.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ def default_planner_parameters(planner_id: str = DEFAULT_PLANNER_ID) -> dict[str
 
 
 def catalog_payload() -> dict[str, Any]:
-    """能力、参数声明与默认值。"""
+    """Capabilities, parameter declarations and defaults."""
 
     return {
         "version": __version__,

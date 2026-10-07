@@ -1,13 +1,14 @@
-"""刀路模型。
+"""Toolpath model.
 
-所有策略都返回同一种东西：一串有序的**运动段**。每个运动段是一条折线加一个进给速度和
-一个类型。播放、G-code 导出、统计都读这一份结构，因此新增策略不需要再写任何"适配层"。
+Every strategy returns the same thing: a sequence of ordered **moves**. A move is a polyline plus a
+feed rate and a kind. Playback, G-code export and the statistics all read this one structure, so a
+new strategy never needs an adapter layer.
 
-运动段类型
+Move kinds
 ----------
-cut   沿一刀的切削进给
-link  把两刀连起来、不抬刀的短进给
-rapid 不切削的定位（抬刀、横移、下刀）
+cut    cutting feed along one pass
+link   short feed joining two passes without retracting
+rapid  non-cutting positioning (retract, traverse, plunge)
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from toolpath_lab.core.mathutil import cumulative_lengths
 
 
 class MoveKind(str, Enum):
-    """单个运动段的类型。"""
+    """Kind of a single move."""
 
     CUT = "cut"
     LINK = "link"
@@ -41,7 +42,7 @@ MOVE_KIND_LABELS: dict[str, str] = {
 
 @dataclass(frozen=True, slots=True)
 class Move:
-    """刀路里的一段运动。"""
+    """One move inside a toolpath."""
 
     kind: MoveKind
     points: NDArray[np.float64]
@@ -72,7 +73,7 @@ class Move:
 
     @property
     def duration_s(self) -> float:
-        """按自己的进给速度走完这段所需的时间。"""
+        """Time needed to travel this move at its own feed rate."""
 
         return self.length_mm / self.feed_mm_per_min * 60.0
 
@@ -90,7 +91,7 @@ class Move:
 
 @dataclass(frozen=True, slots=True)
 class Toolpath:
-    """一条完整刀路：有序运动段 + 来源信息。"""
+    """A complete toolpath: ordered moves plus where it came from."""
 
     moves: tuple[Move, ...] = field(default_factory=tuple)
     planner: str = ""
@@ -160,7 +161,7 @@ def retract_move(
     safe_z_mm: float,
     feed_mm_per_min: float,
 ) -> Move:
-    """抬刀 → 横移 → 下刀 这段最经典的快速定位。"""
+    """Retract, traverse, plunge: the classic rapid positioning move."""
 
     start = np.asarray(start, dtype=np.float64).reshape(3)
     end = np.asarray(end, dtype=np.float64).reshape(3)
@@ -178,7 +179,7 @@ def retract_move(
 
 
 def polyline_length(points: NDArray[np.float64]) -> float:
-    """折线长度（供测试与外部脚本使用）。"""
+    """Length of a polyline (used by tests and external scripts)."""
 
     array = np.asarray(points, dtype=np.float64)
     if array.shape[0] < 2:

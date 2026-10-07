@@ -1,4 +1,4 @@
-"""策略查找与执行——脚本与接口共用的入口。"""
+"""Strategy lookup and execution -- the entry point shared by scripts and the API."""
 
 from __future__ import annotations
 
@@ -14,14 +14,14 @@ from toolpath_lab.planning.registry import PLANNERS
 
 @dataclass(frozen=True, slots=True)
 class PlanningOutcome:
-    """一条刀路，以及调用方需要知道的提醒。"""
+    """One toolpath plus the warnings the caller needs to know about."""
 
     toolpath: Toolpath
     warnings: tuple[str, ...] = ()
 
 
 def get_planner(planner_id: str) -> Planner:
-    """按 id 实例化一个已注册的策略。"""
+    """Instantiate a registered strategy by id."""
 
     return PLANNERS.get(planner_id)()
 
@@ -33,7 +33,7 @@ def run_plan(
     region: RegionShape,
     parameters: Mapping[str, Any] | None = None,
 ) -> PlanningOutcome:
-    """为一份刀具/区域/参数组合生成刀路。"""
+    """Generate a toolpath for one tool / region / parameter combination."""
 
     planner = get_planner(planner_id)
     validated = planner.parameters.coerce(parameters)

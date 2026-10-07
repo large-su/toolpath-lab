@@ -1,7 +1,7 @@
-"""HTTP 接口的请求解析与校验。
+"""Request parsing and validation for the HTTP API.
 
-原始 JSON 在这里、也只在这里被转成经过校验的领域对象，于是策略层不必关心传输细节，
-所有接口共享同一套默认值、校验与错误信息。
+Raw JSON is turned into validated domain objects here and only here, so the strategy layer never
+deals with transport details and every endpoint shares the same defaults, validation and messages.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from toolpath_lab.server.catalog import DEFAULT_PLANNER_ID, DEFAULT_REGION_ID
 
 @dataclass(frozen=True, slots=True)
 class PlanRequest:
-    """一次经过校验的规划请求。"""
+    """One validated planning request."""
 
     tool: Tool
     region: RegionShape
@@ -32,7 +32,7 @@ class PlanRequest:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None) -> "PlanRequest":
-        """由 JSON 请求体构造，补齐默认值并完成校验。"""
+        """Build from a JSON request body, filling in defaults and validating."""
 
         if payload is not None and not isinstance(payload, Mapping):
             raise ParameterError("请求体必须是 JSON 对象")
@@ -67,7 +67,7 @@ class PlanRequest:
         )
 
     def to_payload(self) -> dict[str, Any]:
-        """规范化后的请求，回显给界面用于同步状态。"""
+        """The normalised request, echoed back to the UI so it can sync its state."""
 
         return {
             "tool": dict(self.tool_parameters),
@@ -76,7 +76,7 @@ class PlanRequest:
         }
 
     def header_lines(self) -> list[str]:
-        """导出文件头部用的配置说明。"""
+        """Configuration summary used in the export file header."""
 
         planner_label = PLANNERS.get(self.planner_id).label
         return [

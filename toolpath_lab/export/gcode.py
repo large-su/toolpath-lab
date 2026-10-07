@@ -1,8 +1,8 @@
-"""G-code（NC 程序）导出。
+"""G-code (NC program) export.
 
-用的是最常见的 ISO 子集：G21/G90/G17，快移 G0、切削 G1 带 F，
-Fanuc、Siemens 以及绝大多数 hobby 控制器都认。
-新增导出格式：在 export/ 下写一个纯函数，再在 server/app.py 里加一个分支即可。
+Uses the most common ISO subset: G21/G90/G17, G0 for rapids and G1 with F for cutting, which Fanuc,
+Siemens and virtually every hobby controller understand. To add another export format, write a pure
+function under export/ and add one branch in server/app.py.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ def toolpath_to_gcode(
     decimals: int = 3,
     extra_header: dict[str, Any] | None = None,
 ) -> str:
-    """把一条刀路渲染成 NC 程序。"""
+    """Render one toolpath as an NC program."""
 
     lines: list[str] = [f"({program_name})"]
     if description:

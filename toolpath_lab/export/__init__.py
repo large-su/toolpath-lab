@@ -1,4 +1,4 @@
-"""导出器：把一次规划结果写成文件。"""
+"""Exporters: write one planning result out as a file."""
 
 from toolpath_lab.export.csv import CSV_COLUMNS, toolpath_to_csv
 from toolpath_lab.export.gcode import toolpath_to_gcode
