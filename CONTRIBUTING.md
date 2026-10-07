@@ -32,7 +32,8 @@ node --check toolpath_lab/web/js/main.js    # 前端语法（换成任一模块�
 - **依赖方向**：core 不导入其它层；planning / simulation / export 只依赖 core；server 组装全部；
   web 只通过 HTTP 说话。新增第三方依赖前先开 Issue 讨论。
 - **参数**：任何面向用户的开关都写成 ParameterSpec，不要另建配置系统——它同时驱动界面与校验。
-  暂时不开放的分支用 Choice(..., disabled=True) 标成"待拓展"，而不是删掉。
+  暂时不开放的分支用 Choice(..., disabled=True) 标成"待拓展"，而不是删掉；标了 disabled 的取值
+  参数层会直接拒绝（界面不可选、接口返回 400），所以"待拓展"不会变成"界面上藏起来但接口能用"。
 - **单位与坐标**：毫米 / 秒 / 度（内部弧度）；右手系、Z 轴向上、XY 是加工平面。
 - **错误类型**：ParameterError（用户输入）、PlanningError（几何不可行）、ToolpathLabError（其它）。
 - **不变式**：区域边界逆时针且不含重复点；Toolpath 至少一段运动；Move 至少两个点。

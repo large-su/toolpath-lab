@@ -31,7 +31,8 @@ class ParameterKind(str, Enum):
 class Choice:
     """CHOICE 型参数的一个选项。
 
-    disabled=True 的选项会在界面上显示但不可选，表示该选项尚未实现。
+    disabled=True 的选项会在界面上显示但不可选，表示该选项尚未实现；
+    参数层也会拒绝这个取值（HTTP 400），免得"界面上不可选、接口却能用"这种自相矛盾的状态。
     """
 
     value: str
@@ -115,6 +116,12 @@ class ParameterSpec:
         if value not in allowed:
             options = ", ".join(sorted(allowed))
             raise ParameterError(f"参数 {self.key!r} 只能是 [{options}] 之一（收到 {value!r}）")
+        pending = {choice.value for choice in self.choices if choice.disabled}
+        if value in pending:
+            raise ParameterError(
+                f"参数 {self.key!r} 的取值 {value!r} 标为「待拓展」：界面上不可选，接口也不接受；"
+                "实现方式见 docs/extending.md"
+            )
         return value
 
     def _coerce_number(self, raw: Any) -> float:

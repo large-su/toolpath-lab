@@ -105,7 +105,7 @@ class CatalogTests(ApiTestCase):
         )
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]),
-            ["circle", "ellipse", "rectangle", "square"],
+            ["circle", "ellipse", "rectangle", "square", "u_shape"],
         )
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
@@ -195,6 +195,14 @@ class PlanTests(ApiTestCase):
         )
         self.assertEqual(status, 422)
         self.assertTrue(payload["error"])
+
+    def test_a_pending_tool_kind_is_a_bad_request(self) -> None:
+        # 目录里标了"待拓展"的刀具类型，接口也要拒绝，不能悄悄按平底刀算。
+        for kind in ("ball", "bull"):
+            with self.subTest(kind=kind):
+                status, payload, _ = self.plan({"tool": {"kind": kind}})
+                self.assertEqual(status, 400)
+                self.assertIn("待拓展", payload["error"])
 
     def test_warnings_are_returned(self) -> None:
         _, payload, _ = self.plan(

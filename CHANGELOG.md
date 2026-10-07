@@ -6,6 +6,12 @@
 
 ### 能力
 
+- **U 形区域（凹多边形）**：新增 `u_shape`（外宽 / 外高 / 壁厚，默认 100 / 80 / 25）。
+  它验证了两件事：一条横穿两条臂的扫描线会切出**两段独立刀轨**（同一水平层出现两刀），
+  而工件会被挤出成真正的 U 形而不是方盒——刀路与前端都没有为它加任何特判。
+  壁厚 >= 外宽的一半时 `__post_init__` 直接报 `ParameterError`（那样两条臂会贴在一起）。
+- **界面新增「导出 CSV」按钮**：`api.js` 的下载逻辑从写死 gcode 改成 `downloadExport(kind, payload)`
+  （文件名仍由后端的 `Content-Disposition` 决定，缺失时按格式回退），顶栏因此有两个导出按钮。
 - **CSV 点表导出**：新增 `POST /api/export/csv` 与 `export/csv.py`（纯函数 `toolpath_to_csv`），
   一个刀点一行：`move_index,pass_index,kind,feed_mm_per_min,point_index,x_mm,y_mm,z_mm`，
   非切削段的 `pass_index` 为 -1。刻意保持纯 ASCII（不带 BOM），Excel、pandas 与 `csv.reader`
@@ -43,6 +49,10 @@
 
 ### 修复
 
+- `Choice(disabled=True)` 的取值现在会被参数层拒绝（`ParameterError` → HTTP 400）：
+  「界面上不可选、接口却能传」是自相矛盾的状态，而球头刀 / 圆鼻刀在没有刀尖圆角参数与三维
+  刀型显示之前，按平底刀算出来的结果是错的。领域层不受影响——`Tool(ToolKind.BALL, ...)` 直接
+  构造仍然可用（`test_tool.py` 里两条测试分别钉住这两件事）。
 - 三维视图里快移段按**真实 Z** 绘制（原先所有刀路都被拍平到 Z = 0.05，安全高度改了也看不出来）：
   切削 / 连接段与已走轨迹仍然只抬高到 0.05 mm 防 z-fighting，抬刀段保留真实高度。
 - 播放到结尾时播放键图标不复位：`Playback.update()` 在自然播放结束时没有通知状态变化，
@@ -64,12 +74,13 @@
 - 新增 `tests/test_contour.py`（24 项）：等距偏置的数值断言（方形内缩保持方形、圆形内缩后
   半径、超过内切半径退化、重采样等弧长）、环数与切削长度的精确值、闭环与 Z=0、方向交替、
   环间不抬刀、安全高度与快移进给、几何不可行。
-- `tests/test_region.py` 扩到四形状：矩形 / 椭圆的边界数值（面积、包围盒、点都落在椭圆上、
-  半轴互换只是旋转 90°）、新增 `ShapeContractTests`（每个形状都必须逆时针、不重复首点、
-  以原点为中心），`tests/test_planners.py` 新增 `EveryShapeTests`（四种形状 × 两个策略都能规划）。
+- `tests/test_region.py` 扩到五形状：矩形 / 椭圆 / U 形的边界数值（面积、包围盒、点都落在椭圆上、
+  半轴互换只是旋转 90°、U 形一条扫描线两段区间）、新增 `ShapeContractTests`（每个形状都必须
+  逆时针、不重复首点、包围盒对称），`tests/test_planners.py` 新增 `EveryShapeTests`
+  （五种形状 × 两个策略都能规划）与"凹形状同一层出两刀"的断言。
 - `tests/test_timeline_export.py` 新增 `CsvTests`（列名、行数 = 刀点数、逐点坐标与 `move.points`
   一致、非切削段 pass_index、纯 ASCII、decimals 选项），`tests/test_api.py` 的 `ExportTests`
-  新增 CSV 下载与"CSV 行数与 /api/plan 的刀点数一致"。
+  新增 CSV 下载与"CSV 行数与 /api/plan 的刀点数一致"，`PlanTests` 新增"待拓展"刀具类型返回 400。
 
 ## [0.0.1] - 2026-09-10
 

@@ -62,6 +62,21 @@ class ParameterSpecTests(unittest.TestCase):
             item.coerce("spiral")
         self.assertIn("one_way", str(context.exception))
 
+    def test_disabled_choice_is_refused_by_the_parameter_layer(self) -> None:
+        """标成"待拓展"的取值：界面不可选，接口也不能用，否则界面与接口自相矛盾。"""
+
+        item = spec(
+            "kind", "类型", ParameterKind.CHOICE, "flat",
+            choices=(
+                Choice("flat", "平底刀"),
+                Choice("ball", "球头刀（待拓展）", disabled=True),
+            ),
+        )
+        self.assertEqual(item.coerce("flat"), "flat")
+        with self.assertRaises(ParameterError) as context:
+            item.coerce("ball")
+        self.assertIn("待拓展", str(context.exception))
+
     def test_to_dict_is_json_ready(self) -> None:
         payload = self.number.to_dict()
         self.assertEqual(payload["key"], "stepover_mm")

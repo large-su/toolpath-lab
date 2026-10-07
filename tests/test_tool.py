@@ -47,6 +47,21 @@ class ToolParameterTests(unittest.TestCase):
         self.assertTrue(disabled["ball"])
         self.assertTrue(disabled["bull"])
 
+    def test_the_parameter_layer_refuses_the_pending_kinds(self) -> None:
+        """界面上不可选 = 接口也不能用；否则"待拓展"就成了一句空话。"""
+
+        for kind in ("ball", "bull"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(ParameterError) as context:
+                    tool_parameters().coerce({"kind": kind})
+                self.assertIn("待拓展", str(context.exception))
+
+    def test_the_domain_still_models_the_pending_kinds(self) -> None:
+        """参数层拒绝 ≠ 领域层不会算：直接构造仍然可用，将来启用时不必改这里。"""
+
+        ball = Tool(ToolKind.BALL, diameter_mm=8.0, length_mm=40.0)
+        self.assertAlmostEqual(ball.footprint_radius_mm, 0.0)
+
     def test_parameter_choices_are_published_in_the_catalog(self) -> None:
         kind_spec = tool_parameters().spec("kind")
         self.assertEqual(len(kind_spec.choices), 3)
