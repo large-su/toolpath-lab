@@ -3,8 +3,9 @@
 一个策略拿到 PlanningContext（刀具 + 区域 + 自己的参数），返回一个 Toolpath。
 它不知道 HTTP、JSON 与界面的存在，因此可以脱离服务单独测试、单独调用。
 
-下面这些量在本工程里是**固定常量**而不是参数：安全高度、快移速度、边界处理方式。
-如需改为可在界面上调整的参数，见 docs/extending.md。
+"抬刀高度"与"快移速度"是每个策略都要用的动作参数，但具体数值属于调用方的选择，
+因此在这里声明成一份共用的 MOTION_PARAMETERS，由策略并进自己的 ParameterSet；
+策略没有声明时，PlanningContext 退回下面的默认值（第三方插件因此不会被这个约定绊住）。
 """
 
 from __future__ import annotations
@@ -17,16 +18,32 @@ import numpy as np
 from numpy.typing import NDArray
 
 from toolpath_lab.core.errors import PlanningError
-from toolpath_lab.core.parameters import ParameterSet
+from toolpath_lab.core.parameters import (
+    ParameterKind as K,
+    ParameterSet,
+    spec,
+)
 from toolpath_lab.core.path import Move, MoveKind, Toolpath, retract_move
 from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.geometry2d import ensure_ccw
 
-#: 快速移动时相对工件上表面抬起的距离（mm）。
+#: 快速移动时相对工件上表面抬起的距离（mm）的默认值。
 SAFE_HEIGHT_MM = 5.0
-#: 快速移动的进给速度（mm/min）。
+#: 快速移动的进给速度（mm/min）的默认值。
 RAPID_FEED_MM_PER_MIN = 5000.0
+
+#: 所有策略共用的动作参数：策略把它并进自己的 ParameterSet 即可在界面上调。
+MOTION_PARAMETERS: ParameterSet = ParameterSet(
+    (
+        spec("safe_height_mm", "安全高度", K.FLOAT, SAFE_HEIGHT_MM, minimum=0.0,
+             maximum=200.0, step=0.5, unit="mm", group="刀路",
+             help="快移时抬到工件上表面（Z = 0）之上的高度；0 表示不抬刀"),
+        spec("rapid_feed_mm_per_min", "快移速度", K.FLOAT, RAPID_FEED_MM_PER_MIN,
+             minimum=100.0, maximum=50000.0, step=100.0, unit="mm/min", group="刀路",
+             help="抬刀 / 横移 / 下刀的进给速度，会计入预计工时"),
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +59,18 @@ class PlanningContext:
     @property
     def feed_mm_per_min(self) -> float:
         return float(self.parameters["feed_mm_per_min"])
+
+    @property
+    def safe_height_mm(self) -> float:
+        """抬刀高度；策略声明了 safe_height_mm 就用它的值，否则用默认值。"""
+
+        return float(self.parameters.get("safe_height_mm", SAFE_HEIGHT_MM))
+
+    @property
+    def rapid_feed_mm_per_min(self) -> float:
+        """快移进给；策略声明了 rapid_feed_mm_per_min 就用它的值，否则用默认值。"""
+
+        return float(self.parameters.get("rapid_feed_mm_per_min", RAPID_FEED_MM_PER_MIN))
 
     # -- 几何 --------------------------------------------------------------
     @property
@@ -81,22 +110,22 @@ class PlanningContext:
         )
 
     def rapid_between(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> Move:
-        return retract_move(start, end, SAFE_HEIGHT_MM, RAPID_FEED_MM_PER_MIN)
+        return retract_move(start, end, self.safe_height_mm, self.rapid_feed_mm_per_min)
 
     def approach_move_down(self, point: NDArray[np.float64]) -> Move:
         """从安全高度下刀到该点。"""
 
         target = np.asarray(point, dtype=np.float64).reshape(3)
-        start = np.array([target[0], target[1], SAFE_HEIGHT_MM], dtype=np.float64)
-        return Move(MoveKind.RAPID, np.vstack([start, target]), RAPID_FEED_MM_PER_MIN,
+        start = np.array([target[0], target[1], self.safe_height_mm], dtype=np.float64)
+        return Move(MoveKind.RAPID, np.vstack([start, target]), self.rapid_feed_mm_per_min,
                     label="下刀")
 
     def retract_move_up(self, point: NDArray[np.float64]) -> Move:
         """从该点抬刀到安全高度。"""
 
         start = np.asarray(point, dtype=np.float64).reshape(3)
-        end = np.array([start[0], start[1], SAFE_HEIGHT_MM], dtype=np.float64)
-        return Move(MoveKind.RAPID, np.vstack([start, end]), RAPID_FEED_MM_PER_MIN,
+        end = np.array([start[0], start[1], self.safe_height_mm], dtype=np.float64)
+        return Move(MoveKind.RAPID, np.vstack([start, end]), self.rapid_feed_mm_per_min,
                     label="抬刀")
 
 

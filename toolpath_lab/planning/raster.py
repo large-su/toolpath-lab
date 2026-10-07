@@ -33,11 +33,17 @@ from toolpath_lab.core.parameters import (
     spec,
 )
 from toolpath_lab.core.path import Move, Toolpath
-from toolpath_lab.planning.base import Planner, PlanningContext
+from toolpath_lab.planning.base import MOTION_PARAMETERS, Planner, PlanningContext
 from toolpath_lab.planning.geometry2d import scanline_intervals
 from toolpath_lab.planning.registry import PLANNERS
 
 _MODE_LABELS = {"zigzag": "往复", "one_way": "单向"}
+
+#: 边界处理方式 → 说明文案。
+#: 不提供"外扩（负偏置）"：扫描线在轮廓外取不到区间，负偏置会让 v 方向的刀线被静默丢掉，
+#: 结果是 u 方向切出轮廓、v 方向却留下一条不对称的未切带——那不是"外扩"，是错的。
+#: 想少切一圈就用 stock_allowance_mm（沿轮廓留余量），它的几何是自洽的。
+_BOUNDARY_LABELS = {"inset": "内缩一个刀具半径", "none": "贴轮廓（不内缩）"}
 
 #: 末刀余量小于切宽的多少倍时补一刀，保证区域被切满。
 _ALIGN_TOLERANCE = 0.05
@@ -58,19 +64,29 @@ class RasterPlanner(Planner):
             )),
             spec("stepover_mm", "切宽 ae", K.FLOAT, 6.0, minimum=0.5, maximum=100.0,
                  step=0.5, unit="mm", group="刀路", help="相邻两条刀线的间距"),
+            spec("boundary_mode", "边界处理", K.CHOICE, "inset", group="刀路",
+                 choices=(
+                     Choice("inset", "内缩一个刀具半径"),
+                     Choice("none", "贴轮廓（不内缩）"),
+                 ),
+                 help="内缩保证刀不切出区域；贴轮廓表示刀心走在轮廓线上，会切出区域一圈"),
+            spec("stock_allowance_mm", "边界余量", K.FLOAT, 0.0, minimum=0.0, maximum=20.0,
+                 step=0.5, unit="mm", group="刀路",
+                 help="在轮廓内侧再留一圈余量（精加工前留量）；0 表示切到轮廓",
+                 visible_if={"boundary_mode": "inset"}),
             spec("direction_deg", "走刀方向", K.FLOAT, 0.0, minimum=0.0, maximum=180.0,
                  step=5.0, unit="°", group="刀路", help="扫描线的行进方向；切宽方向与之垂直"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
         )
-    )
+    ) + MOTION_PARAMETERS
 
     def plan(self, context: PlanningContext) -> Toolpath:
         mode = str(context.parameters["mode"])
         stepover = self.require_positive(
             float(context.parameters["stepover_mm"]), "切宽 stepover_mm"
         )
-        offset = context.tool.footprint_radius_mm
+        offset = self._boundary_offset(context)
         self._warn_if_stepover_too_large(context, stepover)
 
         boundary = context.boundary
@@ -125,6 +141,19 @@ class RasterPlanner(Planner):
 
     # -- 内部步骤 ----------------------------------------------------------
     @staticmethod
+    def _boundary_offset(context: PlanningContext) -> float:
+        """边界处理方式 + 边界余量 → 刀路相对区域轮廓的偏置量（正值内缩，0 表示贴轮廓）。"""
+
+        mode = str(context.parameters.get("boundary_mode", "inset"))
+        if mode == "none":
+            context.warn(
+                "边界处理选了贴轮廓：刀心走在轮廓线上，刀会切出区域外一个刀具半径"
+            )
+            return 0.0
+        allowance = max(0.0, float(context.parameters.get("stock_allowance_mm", 0.0)))
+        return context.tool.footprint_radius_mm + allowance
+
+    @staticmethod
     def _to_world(
         item: tuple[float, float, float], frame: np.ndarray, *, reverse: bool
     ) -> np.ndarray:
@@ -164,9 +193,14 @@ class RasterPlanner(Planner):
         context: PlanningContext, mode: str, stepover: float, pass_count: int
     ) -> tuple[str, ...]:
         direction = float(context.parameters["direction_deg"])
+        boundary_mode = str(context.parameters.get("boundary_mode", "inset"))
+        boundary = _BOUNDARY_LABELS.get(boundary_mode, _BOUNDARY_LABELS["inset"])
+        allowance = float(context.parameters.get("stock_allowance_mm", 0.0))
+        allowance_note = f"，边界余量 {allowance:g} mm" if allowance > 0.0 else ""
         return (
             f"{_MODE_LABELS[mode]}走刀，共 {pass_count} 刀，"
             f"切宽 {stepover:g} mm，走刀方向 {direction:g}°",
-            f"边界内缩一个刀具半径（本刀 R{context.tool.footprint_radius_mm:g} mm），"
-            "安全高度 5 mm、快移 5000 mm/min 为固定值",
+            f"边界处理：{boundary}（刀具足迹半径 R{context.tool.footprint_radius_mm:g} mm）"
+            f"{allowance_note}，安全高度 {context.safe_height_mm:g} mm、"
+            f"快移 {context.rapid_feed_mm_per_min:g} mm/min",
         )

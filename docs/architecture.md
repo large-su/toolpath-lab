@@ -39,7 +39,9 @@ planning ── simulation ┘
 
 ### planning —— 策略层
 
-- `base.py`：`PlanningContext`（刀具 + 区域 + 参数）与 `Planner` 基类；固定的安全高度与快移速度也在这里；
+- `base.py`：`PlanningContext`（刀具 + 区域 + 参数）与 `Planner` 基类；
+  **动作参数**（抬刀高度、快移速度）在这里声明成共用的 `MOTION_PARAMETERS`，
+  具体数值由策略参数给出，策略没声明时 `PlanningContext` 退回默认值；
 - `geometry2d.py`：`scanline_intervals`（直线与多边形求交、偶奇配对）与多边形规范化——
   栅格刀路只靠这一个几何操作就能支持任意形状；
 - `raster.py`：往复与单向两种模式；
@@ -94,6 +96,7 @@ planning ── simulation ┘
 ## 想动手改的时候
 
 - 想加**参数**：在对应能力的 `ParameterSet` 里加一行 `spec(...)`，界面与校验自动跟上；
+  所有策略都用得到的动作参数并进 `MOTION_PARAMETERS`，只有单个策略需要的写在它自己的 set 里；
 - 想加**形状**：写一个 `boundary()` 返回逆时针多边形；
 - 想加**策略**：继承 `Planner` 并注册，见 extending.md；
 - 想加**曲面 / 三维区域**：给区域加高度场、给 `Move` 加刀轴字段，再在策略里逐点采样；

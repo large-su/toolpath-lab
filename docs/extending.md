@@ -56,7 +56,9 @@ class SpiralPlanner(Planner):
 | boundary | 逆时针、无重复点的区域轮廓 (N, 2) |
 | tool / region | 刀具与区域对象 |
 | parameters | 已经过校验的参数（含默认值） |
-| feed_mm_per_min | 当前进给 |
+| feed_mm_per_min | 当前切削进给 |
+| safe_height_mm | 抬刀高度（读参数 safe_height_mm，没声明时用默认值） |
+| rapid_feed_mm_per_min | 快移进给（读参数 rapid_feed_mm_per_min，没声明时用默认值） |
 | to_positions(points_xy) | 平面点 (N, 2) → 工件坐标 (N, 3)，Z = 0 |
 | cut_move / link_move | 切削段 / 连接段 |
 | rapid_between | 抬刀 → 横移 → 下刀 |
@@ -106,18 +108,39 @@ class EllipseRegion(RegionShape):
 只要返回**逆时针、不重复首点**的多边形，栅格刀路与三维显示都会自动适配——连凹多边形都能直接
 工作，因为裁剪用的是扫描线求交。
 
-## 3. 把固定值变成参数
+## 3. 再加一个参数（示范：抬刀高度、快移速度、边界处理）
 
-planning/base.py 里现在是常量：
+安全高度、快移速度、边界处理方式过去是 planning 里的常量，现在已经全部参数化，可以直接照抄这个
+模式给新能力加参数：
 
-```python
-SAFE_HEIGHT_MM = 5.0
-RAPID_FEED_MM_PER_MIN = 5000.0
-```
+1. **声明**：抬刀高度与快移速度是所有策略都要的，因此声明成一份共用的
+   `MOTION_PARAMETERS`（planning/base.py），策略只要并进自己的 ParameterSet：
 
-想在界面上可调，就在策略的 ParameterSet 里加一条 spec("safe_height_mm", ...)，把
-`context.rapid_between(...)` 换成读参数即可。**边界处理方式**（现在固定为"内缩一个刀具半径"）
-同理：把 `context.tool.footprint_radius_mm` 换成按参数取 0 / 半径 / 负半径。
+   ```python
+   parameters: ClassVar[ParameterSet] = ParameterSet(
+       (
+           spec("stepover_mm", "切宽 ae", K.FLOAT, 6.0, minimum=0.5, maximum=50.0,
+                step=0.5, unit="mm", group="刀路"),
+       )
+   ) + MOTION_PARAMETERS
+   ```
+
+   只有某一个策略才需要的参数就直接写在它自己的 set 里，
+   [raster.py](../toolpath_lab/planning/raster.py) 的 `boundary_mode` / `stock_allowance_mm` 是例子；
+   联动显隐用 `visible_if={"boundary_mode": "inset"}`（界面按它自动折叠）。
+
+2. **读取**：值从 `context.parameters` 取，构造器一律读 `PlanningContext` 上的属性——
+   `context.safe_height_mm`、`context.rapid_feed_mm_per_min`。策略没有声明这两个键时，
+   context 会退回 `SAFE_HEIGHT_MM` / `RAPID_FEED_MM_PER_MIN` 默认值，第三方插件因此不会被绊住。
+
+3. **两个注意事项**：
+   - 参数化的值如果会影响"几何是否可行"，就让规划失败抛 `PlanningError`（HTTP 422），
+     而不是静默生成一条错误的刀路；
+   - 别把偏置量随手取负：`boundary_mode` 只有 `inset` / `none`，因为扫描线在轮廓**外**取不到
+     区间，负偏置会让 v 方向的刀线被静默丢掉（u 方向切出轮廓、v 方向却留下不对称的未切带）。
+     想少切一圈就用 `stock_allowance_mm`，它的几何是自洽的。
+
+4. 记得同步 README 的「参数与固定值」表格、CHANGELOG 的「未发布」，并补测试（见 §5）。
 
 ## 4. 新增导出格式
 

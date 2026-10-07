@@ -59,7 +59,8 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(entry["label"], "环切")
         self.assertEqual(
             [item["key"] for item in entry["parameters"]],
-            ["stepover_mm", "sample_step_mm", "feed_mm_per_min"],
+            ["stepover_mm", "sample_step_mm", "feed_mm_per_min",
+             "safe_height_mm", "rapid_feed_mm_per_min"],
         )
 
 

@@ -13,6 +13,10 @@
 **已知限制**：偏置量超过局部内切半径时环会断开，本实现每层只保留一条环，因此凹形状的窄颈
 区域会提前结束。需要覆盖这类区域时，改成每层输出多条环即可——Toolpath 的运动段模型本来就
 支持（一次规划里可以有任意多段）。
+
+**边界处理**：第一环永远内缩一个刀具足迹半径，这里没有"贴轮廓/外扩"的选项——偏置几何只支持
+向内（向外偏置是另一套规则，见 offset_polygon 的说明）。抬刀高度与快移速度则和别的策略一样，
+来自共用的 MOTION_PARAMETERS。
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from numpy.typing import NDArray
 from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.parameters import ParameterKind as K, ParameterSet, spec
 from toolpath_lab.core.path import Move, MoveKind, Toolpath
-from toolpath_lab.planning.base import Planner, PlanningContext
+from toolpath_lab.planning.base import MOTION_PARAMETERS, Planner, PlanningContext
 from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
 from toolpath_lab.planning.registry import PLANNERS
 
@@ -174,7 +178,7 @@ class ContourPlanner(Planner):
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
         )
-    )
+    ) + MOTION_PARAMETERS
 
     def plan(self, context: PlanningContext) -> Toolpath:
         stepover = self.require_positive(
@@ -230,5 +234,8 @@ class ContourPlanner(Planner):
             notes=(
                 f"环切：共 {len(rings)} 环，切宽 {stepover:g} mm，采样步长 {sample_step:g} mm",
                 "相邻环绕行方向交替（顺铣/逆铣交替），环间不抬刀直接过渡",
+                f"边界固定内缩一个刀具足迹半径（R{context.tool.footprint_radius_mm:g} mm），"
+                f"安全高度 {context.safe_height_mm:g} mm、"
+                f"快移 {context.rapid_feed_mm_per_min:g} mm/min",
             ),
         )

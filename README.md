@@ -23,7 +23,8 @@ ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形�
   - **往复 Zigzag**：奇数刀反向，相邻两刀在端头直接连过去；
   - **单向 One-way**：每刀同向，刀与刀之间抬刀到安全面再回到起点；
   - **环切 Contour**：从区域轮廓逐圈向内偏置（等距轮廓），相邻环方向交替、环间不抬刀。
-- **参数**：切宽、走刀方向角、进给速度。安全高度、快移速度、边界处理方式等为固定值，见[配置常量](#配置常量)。
+- **参数**：切宽、走刀方向角、进给速度、安全高度、快移速度；栅格策略另有**边界处理方式**
+  与**边界余量**。控件由后端的参数声明自动生成，见[参数与固定值](#参数与固定值)。
 - **三维视图**：工件实体、区域轮廓、刀路（切削 / 连接 / 快移分色）、刀具实体、已走轨迹、实时阴影。
 - **播放**：按每段运动自己的进给速度做时间参数化，支持播放 / 暂停、拖动进度，并给出切削长度与预计工时。
 - **导出**：NC 程序（G-code，G21 / G90 / G17 加 G0 / G1 带 F）。
@@ -105,7 +106,7 @@ print(outcome.toolpath.statistics())
 | 接口 | 说明 |
 | --- | --- |
 | `GET /api/health` | 健康检查与版本号 |
-| `GET /api/catalog` | 能力目录：区域形状、刀路策略、参数声明、默认值与固定值 |
+| `GET /api/catalog` | 能力目录：区域形状、刀路策略、参数声明与默认值 |
 | `POST /api/plan` | 生成刀路，返回刀路运动段、统计与播放时间轴 |
 | `POST /api/export/gcode` | 导出 NC 程序 |
 
@@ -145,18 +146,30 @@ docs/          架构与扩展文档
 `server` 负责组装，`web` 只通过 HTTP 与后端通信，`electron` 只负责窗口。
 因此刀路算法可以脱离界面单独运行。详见 [docs/architecture.md](docs/architecture.md)。
 
-## 配置常量
+## 参数与固定值
 
-以下数值定义在代码中，不在界面上暴露：
+**可在界面上调整的参数**（接口里是同名的请求字段）：
 
-| 常量 | 值 | 位置 |
+| 参数 | 键 | 默认值 | 范围 | 作用范围 |
+| --- | --- | --- | --- | --- |
+| 安全高度 | `safe_height_mm` | 5 mm | 0–200 | 所有策略（快移时抬到 Z = 0 之上多高；0 = 不抬刀） |
+| 快移速度 | `rapid_feed_mm_per_min` | 5000 mm/min | 100–50000 | 所有策略（抬刀 / 横移 / 下刀，计入预计工时） |
+| 边界处理 | `boundary_mode` | 内缩一个刀具半径 | inset / none | 栅格策略（`none` = 刀心走在轮廓线上，会切出区域一圈） |
+| 边界余量 | `stock_allowance_mm` | 0 mm | 0–20 | 栅格策略（在轮廓内侧留一圈余量，`none` 时不生效） |
+
+前两项声明在 `toolpath_lab/planning/base.py` 的 `MOTION_PARAMETERS`，由各策略并进自己的
+`ParameterSet`，所以新增策略只要 `+ MOTION_PARAMETERS` 就自动获得；后两项是栅格策略特有的。
+
+**仍然是固定的设计选择**：
+
+| 事项 | 值 | 位置 |
 | --- | --- | --- |
-| 安全高度 | 5 mm | `toolpath_lab/planning/base.py` |
-| 快移速度 | 5000 mm/min | `toolpath_lab/planning/base.py` |
-| 边界处理 | 刀路相对区域轮廓内缩一个刀具足迹半径 | `toolpath_lab/planning/raster.py` |
-| 每刀采样 | 两个端点（加工面为平面） | `toolpath_lab/planning/raster.py` |
+| 每刀采样 | 两个端点（加工面是平面，所以一刀两个点） | `toolpath_lab/planning/raster.py` |
+| 圆形离散 | 180 段折线逼近 | `toolpath_lab/core/region.py` |
+| 环切边界 | 第一环永远内缩一个刀具足迹半径（偏置几何只支持向内） | `toolpath_lab/planning/contour.py` |
+| 刀路显示 | 抬高 0.05 mm 画在工件上表面之上，避免 z-fighting | `toolpath_lab/web/js/viewport.js` |
 
-把它们改成可在界面上调整的参数，做法见 [docs/extending.md](docs/extending.md)。
+再加一个参数的完整做法（声明 → 读取 → 补测试 → 记 CHANGELOG）见 [docs/extending.md](docs/extending.md) §3。
 
 ## 扩展
 

@@ -11,7 +11,6 @@ from typing import Any
 from toolpath_lab import __version__
 from toolpath_lab.core.region import REGION_SHAPES, region_catalog
 from toolpath_lab.core.tool import tool_parameters
-from toolpath_lab.planning import RAPID_FEED_MM_PER_MIN, SAFE_HEIGHT_MM
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
 
 DEFAULT_REGION_ID = "square"
@@ -52,10 +51,5 @@ def catalog_payload() -> dict[str, Any]:
             "list": planner_catalog(),
             "default_id": DEFAULT_PLANNER_ID,
             "defaults": default_planner_parameters(),
-        },
-        # 这些量在主程序里是固定的，界面上只做展示；想变成参数就在 planning/base.py 里改。
-        "fixed": {
-            "safe_height_mm": SAFE_HEIGHT_MM,
-            "rapid_feed_mm_per_min": RAPID_FEED_MM_PER_MIN,
         },
     }

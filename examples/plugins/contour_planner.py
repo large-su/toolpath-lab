@@ -34,7 +34,7 @@ from numpy.typing import NDArray
 from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.parameters import ParameterKind as K, ParameterSet, spec
 from toolpath_lab.core.path import Move, MoveKind, Toolpath
-from toolpath_lab.planning.base import Planner, PlanningContext
+from toolpath_lab.planning.base import MOTION_PARAMETERS, Planner, PlanningContext
 from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
 from toolpath_lab.planning.registry import PLANNERS
 
@@ -177,7 +177,7 @@ class ContourPlanner(Planner):
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
         )
-    )
+    ) + MOTION_PARAMETERS  # 抬刀高度与快移速度是每个策略都要的，直接并进来
 
     def plan(self, context: PlanningContext) -> Toolpath:
         stepover = self.require_positive(
@@ -229,7 +229,12 @@ class ContourPlanner(Planner):
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
-            notes=(f"环切：共 {len(rings)} 环，切宽 {stepover:g} mm",),
+            notes=(
+                f"环切(示例插件)：共 {len(rings)} 环，切宽 {stepover:g} mm",
+                f"边界固定内缩一个刀具足迹半径（R{context.tool.footprint_radius_mm:g} mm），"
+                f"安全高度 {context.safe_height_mm:g} mm、"
+                f"快移 {context.rapid_feed_mm_per_min:g} mm/min",
+            ),
         )
 
 

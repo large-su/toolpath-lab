@@ -48,7 +48,12 @@ class RegistryTests(unittest.TestCase):
         entry = planner_catalog()[0]
         self.assertEqual(entry["id"], "raster")
         keys = [item["key"] for item in entry["parameters"]]
-        self.assertEqual(keys, ["mode", "stepover_mm", "direction_deg", "feed_mm_per_min"])
+        self.assertEqual(
+            keys,
+            ["mode", "stepover_mm", "boundary_mode", "stock_allowance_mm",
+             "direction_deg", "feed_mm_per_min", "safe_height_mm",
+             "rapid_feed_mm_per_min"],
+        )
         self.assertEqual(entry["label"], "栅格刀路")
 
 
@@ -154,13 +159,13 @@ class CircleRegionTests(unittest.TestCase):
 
 
 class SafetyTests(unittest.TestCase):
-    def test_rapid_moves_use_the_fixed_safe_height(self) -> None:
+    def test_rapid_moves_use_the_default_safe_height(self) -> None:
         rapid = [m for m in _plan({"mode": "one_way"}).toolpath.moves
                  if m.kind is MoveKind.RAPID]
         highest = max(float(move.points[:, 2].max()) for move in rapid)
         self.assertAlmostEqual(highest, SAFE_HEIGHT_MM, places=6)
 
-    def test_rapid_moves_use_the_fixed_rapid_feed(self) -> None:
+    def test_rapid_moves_use_the_default_rapid_feed(self) -> None:
         rapid = [m for m in _plan({"mode": "one_way"}).toolpath.moves
                  if m.kind is MoveKind.RAPID]
         self.assertTrue(all(move.feed_mm_per_min == RAPID_FEED_MM_PER_MIN for move in rapid))
@@ -181,7 +186,7 @@ class SafetyTests(unittest.TestCase):
     def test_notes_describe_the_configuration(self) -> None:
         notes = _plan({"mode": "one_way", "stepover_mm": 6.0}).toolpath.notes
         self.assertTrue(any("单向" in note for note in notes))
-        self.assertTrue(any("固定值" in note for note in notes))
+        self.assertTrue(any("边界处理" in note for note in notes))
 
     def test_statistics_are_consistent(self) -> None:
         statistics = _plan().toolpath.statistics()

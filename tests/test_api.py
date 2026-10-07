@@ -111,11 +111,19 @@ class CatalogTests(ApiTestCase):
         self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
                          ["kind", "diameter_mm", "length_mm"])
 
-    def test_catalog_reports_the_fixed_settings(self) -> None:
+    def test_catalog_reports_the_motion_parameters_instead_of_fixed_values(self) -> None:
+        # 安全高度 / 快移速度曾经写在 catalog 的 "fixed" 段里只作展示，现在是策略参数。
         _, body, _ = self.get("/api/catalog")
-        fixed = json.loads(body)["fixed"]
-        self.assertEqual(fixed["safe_height_mm"], 5.0)
-        self.assertEqual(fixed["rapid_feed_mm_per_min"], 5000.0)
+        payload = json.loads(body)
+        self.assertNotIn("fixed", payload)
+        defaults = payload["planners"]["defaults"]
+        self.assertEqual(defaults["safe_height_mm"], 5.0)
+        self.assertEqual(defaults["rapid_feed_mm_per_min"], 5000.0)
+        raster = payload["planners"]["list"][0]["parameters"]
+        keys = [item["key"] for item in raster]
+        self.assertIn("safe_height_mm", keys)
+        self.assertIn("rapid_feed_mm_per_min", keys)
+        self.assertIn("boundary_mode", keys)
 
     def test_disabled_tool_kinds_are_published(self) -> None:
         _, body, _ = self.get("/api/catalog")

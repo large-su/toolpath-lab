@@ -9,11 +9,6 @@ const DISPLAY_OPTIONS = [
   { key: "showTool", label: "刀具" },
 ];
 
-const FIXED_NOTES = [
-  ["安全高度", "fixed.safe_height_mm", "mm"],
-  ["快移速度", "fixed.rapid_feed_mm_per_min", "mm/min"],
-];
-
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -80,8 +75,7 @@ export class ParameterPanel {
       this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
       this._regionSection(),
       this._plannerSection(),
-      this._displaySection(),
-      this._noteSection()
+      this._displaySection()
     );
     this.refreshVisibility();
   }
@@ -199,30 +193,6 @@ export class ParameterPanel {
       row.appendChild(text);
       section.appendChild(row);
     }
-    return section;
-  }
-
-  _noteSection() {
-    const section = this._section("固定设置");
-    const note = document.createElement("div");
-    note.className = "note";
-    const fixed = this.catalog.fixed || {};
-    const lines = [
-      ["安全高度", fixed.safe_height_mm, "mm"],
-      ["快移速度", fixed.rapid_feed_mm_per_min, "mm/min"],
-    ];
-    for (const [label, value, unit] of lines) {
-      const line = document.createElement("div");
-      line.append(label + " ");
-      const strong = document.createElement("b");
-      strong.textContent = value + " " + unit;
-      line.appendChild(strong);
-      note.appendChild(line);
-    }
-    const hint = document.createElement("div");
-    hint.textContent = "边界内缩一个刀具半径；想改成可调参数，见 docs/extending.md";
-    note.appendChild(hint);
-    section.appendChild(note);
     return section;
   }
 
