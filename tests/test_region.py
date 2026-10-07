@@ -13,18 +13,20 @@ from toolpath_lab.core.region import (
     REGION_SHAPES,
     EllipseRegion,
     RectangleRegion,
+    UShapeRegion,
     build_region,
     polygon_area,
     polygon_bounds,
     region_catalog,
 )
-from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
+from toolpath_lab.planning.geometry2d import ensure_ccw, scanline_intervals, signed_area
 
 
 class RegionCatalogTests(unittest.TestCase):
     def test_registered_shapes(self) -> None:
         self.assertEqual(
-            sorted(REGION_SHAPES.ids()), ["circle", "ellipse", "rectangle", "square"]
+            sorted(REGION_SHAPES.ids()),
+            ["circle", "ellipse", "rectangle", "square", "u_shape"],
         )
 
     def test_catalog_publishes_labels_and_parameters(self) -> None:
@@ -45,6 +47,11 @@ class RegionCatalogTests(unittest.TestCase):
         self.assertEqual(
             [item["key"] for item in entries["ellipse"]["parameters"]],
             ["semi_major_mm", "semi_minor_mm"],
+        )
+        self.assertEqual(entries["u_shape"]["label"], "U 形")
+        self.assertEqual(
+            [item["key"] for item in entries["u_shape"]["parameters"]],
+            ["width_mm", "height_mm", "wall_mm"],
         )
 
     def test_unknown_shape_raises(self) -> None:
@@ -75,14 +82,14 @@ class ShapeContractTests(unittest.TestCase):
                 )
 
     def test_every_shape_is_centred_on_the_origin(self) -> None:
+        # 契约只要求包围盒对称：凹形状（U 形）的材料重心并不在原点，
+        # 而三维取景与工件厚度都是按包围盒算的。
         for shape_id in REGION_SHAPES.ids():
             polygon = ensure_ccw(build_region(shape_id, {}).boundary())
             [(x_min, x_max), (y_min, y_max)] = polygon_bounds(polygon)
             with self.subTest(shape=shape_id):
                 self.assertAlmostEqual(x_min, -x_max, places=6)
                 self.assertAlmostEqual(y_min, -y_max, places=6)
-                self.assertAlmostEqual(float(polygon[:, 0].mean()), 0.0, places=6)
-                self.assertAlmostEqual(float(polygon[:, 1].mean()), 0.0, places=6)
 
 
 class SquareRegionTests(unittest.TestCase):
@@ -177,6 +184,47 @@ class EllipseRegionTests(unittest.TestCase):
             build_region("ellipse", {"semi_major_mm": 0.5})
         with self.assertRaises(ParameterError):
             EllipseRegion(semi_major_mm=60.0, semi_minor_mm=0.0)
+
+
+class UShapeRegionTests(unittest.TestCase):
+    """凹多边形：一条扫描线会切出两段，刀路与三维显示都不需要特判。"""
+
+    def test_boundary_is_an_eight_vertex_concave_polygon(self) -> None:
+        region = build_region(
+            "u_shape", {"width_mm": 100.0, "height_mm": 80.0, "wall_mm": 25.0}
+        )
+        polygon = ensure_ccw(region.boundary())
+        self.assertEqual(polygon.shape, (8, 2))
+        # 100 × 80 减去 50 × 55 的槽
+        self.assertAlmostEqual(signed_area(polygon), 8000.0 - 2750.0, places=6)
+        self.assertEqual(polygon_bounds(polygon), [[-50.0, 50.0], [-40.0, 40.0]])
+
+    def test_a_scanline_across_the_arms_yields_two_intervals(self) -> None:
+        polygon = ensure_ccw(build_region("u_shape", {}).boundary())
+        arms = scanline_intervals(polygon, 0.0)
+        self.assertEqual(len(arms), 2)
+        self.assertAlmostEqual(arms[0].start, -50.0, places=6)
+        self.assertAlmostEqual(arms[0].end, -25.0, places=6)
+        self.assertAlmostEqual(arms[1].start, 25.0, places=6)
+        self.assertAlmostEqual(arms[1].end, 50.0, places=6)
+
+    def test_a_scanline_below_the_channel_yields_one_interval(self) -> None:
+        polygon = ensure_ccw(build_region("u_shape", {}).boundary())
+        base = scanline_intervals(polygon, -30.0)
+        self.assertEqual(len(base), 1)
+        self.assertAlmostEqual(base[0].start, -50.0, places=6)
+        self.assertAlmostEqual(base[0].end, 50.0, places=6)
+
+    def test_a_wall_that_would_close_the_channel_is_rejected(self) -> None:
+        # 壁厚 >= 外宽的一半时两条臂会贴在一起，形状就不再是 U 形了。
+        with self.assertRaises(ParameterError):
+            build_region("u_shape", {"width_mm": 100.0, "wall_mm": 50.0})
+        with self.assertRaises(ParameterError):
+            build_region("u_shape", {"wall_mm": 80.0, "height_mm": 80.0})
+
+    def test_the_class_itself_keeps_the_invariant(self) -> None:
+        with self.assertRaises(ParameterError):
+            UShapeRegion(width_mm=100.0, height_mm=80.0, wall_mm=60.0)
 
 
 if __name__ == "__main__":

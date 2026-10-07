@@ -73,7 +73,7 @@ class SpiralPlanner(Planner):
 
 ## 2. 新增一个区域形状
 
-内置四种形状：方形、矩形、圆形、椭圆（都在 `toolpath_lab/core/region.py`）。
+内置五种形状：方形、矩形、圆形、椭圆、U 形（凹多边形），都在 `toolpath_lab/core/region.py`。
 再加一种就是照着它们写一个类——下面以"跑道形"为例（`__post_init__` 要守住自己的不变式）：
 
 ```python
@@ -114,12 +114,15 @@ class StadiumRegion(RegionShape):
 **形状契约**（`tests/test_region.py` 的 `ShapeContractTests` 会逐条检查）：
 
 - 返回 `(N, 2)` 的 float64 多边形：**逆时针**、**不重复首点**、至少三个点、坐标有限；
-- 以原点为中心（包围盒左右 / 上下对称）——三维取景与工件厚度都按包围盒算；
+- 包围盒左右 / 上下对称（三维取景与工件厚度都按包围盒算；材料重心不必在原点，凹形状就不在）；
 - 曲线边界用共用的 `CURVE_SEGMENTS`（180）段折线逼近，别再引入新的魔数；
-- 参数用 `spec(...)` 声明，界面控件自动生成，`build_region(id, params)` 自动校验范围。
+- 参数用 `spec(...)` 声明，界面控件自动生成，`build_region(id, params)` 自动校验范围；
+  参数之间的耦合关系（例如"壁厚必须小于外宽的一半"）写在 `__post_init__` 里抛 `ParameterError`。
 
 做到这些之后**刀路与三维显示都不需要改**：栅格刀路靠扫描线求交，工件直接按这条边界挤出
-（`web/js/viewport.js`），连凹多边形都能直接工作。
+（`web/js/viewport.js`）。**凹形状**是这条承诺的试金石：U 形横穿两条臂的扫描线会得到两段独立刀轨
+（`tests/test_planners.py` 的 `test_a_concave_region_puts_two_passes_on_the_same_level`），
+工件也会被挤出成真正的 U 形而不是方盒。
 
 ## 3. 再加一个参数（示范：抬刀高度、快移速度、边界处理）
 

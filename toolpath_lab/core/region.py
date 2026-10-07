@@ -6,11 +6,13 @@
 - 方形（square）：一个边长；
 - 矩形（rectangle）：宽 × 高；
 - 圆形（circle）：一个直径；
-- 椭圆（ellipse）：长半轴 / 短半轴。
+- 椭圆（ellipse）：长半轴 / 短半轴；
+- U 形（u_shape）：外宽 / 外高 / 壁厚，一个凹多边形。
 
 所有形状统一归约为一条**逆时针、不重复首点**的边界多边形。栅格刀路只会用到
-"一条直线与多边形求交"，三维工件也直接按这条边界挤出，因此新增形状（跑道形、凹多边形……）
-只要实现一个 boundary() 就能直接参与规划与显示，不需要改任何刀路或前端代码。
+"一条直线与多边形求交"，三维工件也直接按这条边界挤出，因此新增形状（跑道形、带缺口的多边形……）
+只要实现一个 boundary() 就能直接参与规划与显示，不需要改任何刀路或前端代码；
+凹形状（U 形）一条扫描线会得到多段，于是同一行里出现多条独立刀轨。
 """
 
 from __future__ import annotations
@@ -204,6 +206,61 @@ class EllipseRegion(RegionShape):
         angles = np.linspace(0.0, 2.0 * pi, CURVE_SEGMENTS, endpoint=False)
         return np.column_stack(
             (self.semi_major_mm * np.cos(angles), self.semi_minor_mm * np.sin(angles))
+        )
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class UShapeRegion(RegionShape):
+    """以原点为中心、开口朝上的 U 形区域（凹多边形）。"""
+
+    width_mm: float = 100.0
+    height_mm: float = 80.0
+    wall_mm: float = 25.0
+
+    id: ClassVar[str] = "u_shape"
+    label: ClassVar[str] = "U 形"
+    description: ClassVar[str] = "开口槽：一条扫描线会在两条臂上切出两段刀轨，用来验证凹形状"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("width_mm", "外宽 W", K.FLOAT, 100.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域", help="沿 X 轴的总宽"),
+            spec("height_mm", "外高 H", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域", help="沿 Y 轴的总高"),
+            spec("wall_mm", "壁厚 t", K.FLOAT, 25.0, minimum=1.0, maximum=500.0,
+                 step=1.0, unit="mm", group="区域",
+                 help="两侧臂与底部的厚度；必须小于外宽的一半，槽口才不会被填满"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.width_mm <= 0 or self.height_mm <= 0 or self.wall_mm <= 0:
+            raise ParameterError("U 形的外宽、外高与壁厚都必须为正")
+        if self.wall_mm >= self.width_mm / 2.0:
+            raise ParameterError(
+                f"壁厚 {self.wall_mm:g} mm 不能大于等于外宽的一半 "
+                f"（{self.width_mm / 2.0:g} mm），否则两条臂会贴在一起"
+            )
+        if self.wall_mm >= self.height_mm:
+            raise ParameterError(f"壁厚 {self.wall_mm:g} mm 必须小于外高 {self.height_mm:g} mm")
+
+    def boundary(self) -> NDArray[np.float64]:
+        half_width = self.width_mm / 2.0
+        half_height = self.height_mm / 2.0
+        inner_x = half_width - self.wall_mm
+        inner_y = -half_height + self.wall_mm
+        return np.array(
+            [
+                (-half_width, -half_height),
+                (half_width, -half_height),
+                (half_width, half_height),
+                (inner_x, half_height),
+                (inner_x, inner_y),
+                (-inner_x, inner_y),
+                (-inner_x, half_height),
+                (-half_width, half_height),
+            ],
+            dtype=np.float64,
         )
 
 

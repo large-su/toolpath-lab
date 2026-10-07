@@ -185,6 +185,22 @@ class EveryShapeTests(unittest.TestCase):
         self.assertEqual(toolpath.pass_count, 10)
         self.assertAlmostEqual(toolpath.cut_length_mm, 10 * 94.0, places=6)
 
+    def test_a_concave_region_puts_two_passes_on_the_same_level(self) -> None:
+        # U 形：横穿两条臂的扫描线得到两段独立刀轨，低于槽底的只有一段。
+        toolpath = run_plan(
+            planner_id="raster",
+            tool=_tool(),
+            region=build_region("u_shape", {"width_mm": 100.0, "height_mm": 80.0,
+                                            "wall_mm": 25.0}),
+            parameters={"stepover_mm": 6.0, "direction_deg": 0.0},
+        ).toolpath
+        levels = [round(float(move.points[0][1]), 6) for move in _cut_moves(toolpath)]
+        repeated = {level for level in levels if levels.count(level) > 1}
+        self.assertTrue(repeated)
+        # 最下面那一刀在两条臂之间是连通的（扫描线只有一段）
+        self.assertEqual(levels.count(min(levels)), 1)
+        self.assertEqual(levels.count(max(levels)), 2)
+
 
 class SafetyTests(unittest.TestCase):
     def test_rapid_moves_use_the_default_safe_height(self) -> None:
