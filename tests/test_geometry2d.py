@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import unittest
 from math import pi
+from unittest import mock
 
 import numpy as np
 
 from toolpath_lab.core.region import build_region
+from toolpath_lab.planning import geometry2d
 from toolpath_lab.planning.geometry2d import (
+    _candidate_pairs,
+    _nearest_edge_distance,
+    boundary_edges,
     bounding_box,
     distance_to_boundary,
+    distance_to_edges,
     ensure_ccw,
     offset_loops,
     offset_polygon,
+    offset_primitives,
     point_in_polygon,
     resample_ring,
     scanline_intervals,
@@ -333,6 +340,96 @@ class ResampleTests(unittest.TestCase):
         self.assertAlmostEqual(
             float(np.linalg.norm(np.diff(closed, axis=0), axis=1).sum()), 320.0, places=6
         )
+
+
+class PrefilterTests(unittest.TestCase):
+    """几处"先便宜后贵"的剪枝：必须与全量计算一致，否则就是错的优化。"""
+
+    def _grid(self, polygon: np.ndarray, step: float = 3.0) -> np.ndarray:
+        x_min, x_max, y_min, y_max = bounding_box(polygon)
+        xs = np.arange(x_min - step, x_max + step, step)
+        ys = np.arange(y_min - step, y_max + step, step)
+        grid_x, grid_y = np.meshgrid(xs, ys)
+        return np.column_stack((grid_x.ravel(), grid_y.ravel()))
+
+    def test_the_line_prefilter_never_loses_the_nearest_edge(self) -> None:
+        """点到线段距离 ≥ 点到支撑直线距离，所以"最近边"一定在直线筛出来的候选里。
+
+        被筛掉的边只会让最小值变大，不会变小；凡是全量距离本来就在 target + slack 以内的点，
+        结果必须与全量逐位相同。
+        """
+
+        for shape_id, parameters in (
+            ("square", {}),
+            ("u_shape", {}),
+            ("circle", {"diameter_mm": 80.0}),
+        ):
+            polygon = ensure_ccw(build_region(shape_id, parameters).boundary())
+            edges = boundary_edges(polygon)
+            points = self._grid(polygon)
+            with self.subTest(shape=shape_id):
+                exact = distance_to_edges(points, edges)
+                # 全部边都当候选时，结果必须一模一样
+                self.assertTrue(
+                    np.array_equal(_nearest_edge_distance(points, edges, 0.0, np.inf), exact)
+                )
+                # 真容差下：全量距离在 target + slack 以内的点，也必须一模一样
+                target, slack = 3.0, 1e-3
+                prefixed = _nearest_edge_distance(points, edges, target, slack)
+                keep = exact <= target + slack
+                self.assertGreater(int(keep.sum()), 0)
+                self.assertTrue(np.array_equal(prefixed[keep], exact[keep]))
+
+    def test_the_bucket_prunes_pairs_but_keeps_every_true_crossing(self) -> None:
+        polygon = ensure_ccw(build_region("circle", {"diameter_mm": 80.0}).boundary())
+        for distance in (3.0, 33.0):
+            primitives = offset_primitives(polygon, distance)
+            starts = np.array([item[0] for item in primitives], dtype=np.float64)
+            ends = np.array([item[1] for item in primitives], dtype=np.float64)
+            count = starts.shape[0]
+            spans = ends - starts
+            i_flat, j_flat = _candidate_pairs(starts, ends)
+            candidates = set(zip(i_flat.tolist(), j_flat.tolist()))
+
+            # 全量两两求交，作为"真交点"的参照
+            true_pairs = set()
+            for first in range(count):
+                for second in range(first + 1, count):
+                    r = spans[first]
+                    s = spans[second]
+                    denominator = r[0] * s[1] - r[1] * s[0]
+                    if abs(denominator) <= 1e-12:
+                        continue
+                    delta = starts[second] - starts[first]
+                    t = (delta[0] * s[1] - delta[1] * s[0]) / denominator
+                    u = (delta[0] * r[1] - delta[1] * r[0]) / denominator
+                    if 1e-12 < t < 1 - 1e-12 and 1e-12 < u < 1 - 1e-12:
+                        true_pairs.add((first, second))
+
+            with self.subTest(distance=distance):
+                self.assertTrue(true_pairs, "参照集不该为空")
+                self.assertTrue(true_pairs <= candidates, "候选必须覆盖所有真交点")
+                all_pairs = count * (count - 1) // 2
+                # 小偏置量下平移线段铺得开，大偏置量下都缩到中心，两种情形都得筛掉大半
+                self.assertLess(len(candidates), all_pairs * 0.5)
+                self.assertGreaterEqual(len(candidates), len(true_pairs))
+
+    def test_filtering_crossings_does_not_change_the_result(self) -> None:
+        """只有落在偏置边界上的交点才是合法/不合法子段的分界，筛掉其余交点不该有影响。"""
+
+        polygon = ensure_ccw(build_region("circle", {"diameter_mm": 80.0}).boundary())
+
+        def keep_everything(*_args, **_kwargs):
+            return lambda points: np.ones(points.shape[0], dtype=bool)
+
+        for distance in (3.0, 15.0, 33.0):
+            with self.subTest(distance=distance):
+                with mock.patch.object(geometry2d, "_crossing_filter", keep_everything):
+                    unfiltered = offset_loops(polygon, distance, min_area_mm2=0.1)
+                filtered = offset_loops(polygon, distance, min_area_mm2=0.1)
+                self.assertEqual(len(filtered), len(unfiltered))
+                for kept, reference in zip(filtered, unfiltered):
+                    self.assertTrue(np.array_equal(kept, reference))
 
 
 if __name__ == "__main__":

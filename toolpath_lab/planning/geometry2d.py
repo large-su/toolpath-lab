@@ -20,13 +20,25 @@
    不是偏置区域的边界；延长出来的部分是无效的，在这里被滤掉。
 4. **接环**：把端点并成节点后按"转角最小"接成闭环——偏置曲线穿过这种节点时就是直着过去的。
 
+性能上做了三处"先便宜后贵"的剪枝，都是可证明不改变结果的（`tests/test_geometry2d.py` 的
+`PrefilterTests` 逐位钉住）：
+
+- 两两求交只比较**包围盒同格**的线段对（相交的线段包围盒必然重叠，所以不会漏）；
+- 判"到边界距离 ≈ 偏置量"时先用**支撑直线**筛掉一批边（点到线段的距离 ≥ 点到其直线的距离，
+  所以最近边一定在候选里）；
+- 切分之前先筛掉**不合法**的交点（合法性只在合法交点处变化，其余交点切出来的两段状态相同）。
+
+大偏置量是压力最大的情形：平移线段比偏置周长还长，互相穿得厉害（直径 80 的圆、偏置 33 时
+180 条线段有 1800 个交点、3780 个子段，其中只有 180 个合法）。这三处剪枝让圆形环切一次规划
+从 0.76 s 降到 0.22 s，且输出逐位不变。
+
 偏置与重采样本来写在环切策略里（examples/plugins/contour_planner.py 保留了一份单环的旧版），
 按当时的约定"需要时再抄进主程序"，现在抄进来了。
 """
 
 from __future__ import annotations
 
-from math import atan2, ceil, cos, pi, sin
+from math import atan2, ceil, cos, floor, pi, sin
 from typing import NamedTuple
 
 import numpy as np
@@ -37,6 +49,8 @@ _EPS = 1e-9
 _MIN_PIECE_MM = 1e-9
 #: 凹角圆弧离散时允许的最大圆心角（弧度）：弦长再小也不至于把圆弧切得太碎。
 _MAX_ARC_STEP_RAD = 0.35
+#: 少于这么多条边时不去筛交点：形状简单时交点本来就少，筛一遍的固定开销反而更贵。
+_CROSSING_FILTER_MIN_EDGES = 32
 #: 平移线段两端延长的倍数（×偏置量）。延长只是**数值余量**，不是正确性的开关：
 #: 斜接点落在平移线段之外的那个凸角，它两侧的边长 L 必然小于需要的延长 d·tan(转角/2)，
 #: 于是这一点附近的材料宽度最大只有 2L·sin(内角/2) < 2d——也就是比刀具还窄，早就被整个
@@ -268,32 +282,34 @@ def offset_primitives(
     return pieces
 
 
-def snap_to_nodes(
-    points: list[NDArray[np.float64]], snap: float
-):
+def snap_to_nodes(points: list[NDArray[np.float64]], snap: float):
     """返回一个函数：把点吸附到最近的给定节点（距离不超过 snap），否则原样返回。
 
     圆弧是离散成弦的，它的端点与"圆弧和相邻线段的交点"可能差几个 1e-4 mm；不吸附过去，
     这几条链就接不上（数值上差一点点，但接环靠的就是坐标一致）。
+
+    这里是逐点查的，所以桶里存元组、比较用纯浮点：曲线形状一次要吸附几千个点，
+    换成 numpy 的逐元素调用光开销就比计算本身大。
     """
 
     cell = max(snap, _EPS)
-    buckets: dict[tuple[int, int], list[NDArray[np.float64]]] = {}
+    buckets: dict[tuple[int, int], list[tuple[float, float]]] = {}
     for point in points:
-        key = (int(np.floor(point[0] / cell)), int(np.floor(point[1] / cell)))
-        buckets.setdefault(key, []).append(point)
+        x, y = float(point[0]), float(point[1])
+        buckets.setdefault((int(floor(x / cell)), int(floor(y / cell))), []).append((x, y))
 
     def snap_point(point: NDArray[np.float64]) -> NDArray[np.float64]:
-        key = (int(np.floor(point[0] / cell)), int(np.floor(point[1] / cell)))
-        best: NDArray[np.float64] | None = None
-        best_distance = snap
+        x, y = float(point[0]), float(point[1])
+        key_x, key_y = int(floor(x / cell)), int(floor(y / cell))
+        best: tuple[float, float] | None = None
+        best_squared = snap * snap
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
-                for candidate in buckets.get((key[0] + dx, key[1] + dy), ()):
-                    distance = float(np.linalg.norm(candidate - point))
-                    if distance <= best_distance:
-                        best, best_distance = candidate, distance
-        return point if best is None else best
+                for candidate in buckets.get((key_x + dx, key_y + dy), ()):
+                    squared = (candidate[0] - x) ** 2 + (candidate[1] - y) ** 2
+                    if squared <= best_squared:
+                        best, best_squared = candidate, squared
+        return point if best is None else np.array(best, dtype=np.float64)
 
     return snap_point
 
@@ -302,11 +318,20 @@ def split_at_intersections(
     pieces: list[tuple[NDArray[np.float64], NDArray[np.float64], bool]],
     *,
     snap: float = 0.0,
+    keep_crossing: Callable[[NDArray[np.float64]], NDArray[np.bool_]] | None = None,
 ) -> list[tuple[NDArray[np.float64], NDArray[np.float64], bool]]:
     """把所有线段在交点处切开；交点坐标两边共用，因此之后的节点是严格重合的。
 
     传了 snap 就把端点吸附到最近的交点上（距离不超过 snap）：圆弧离散点与交点之间
     那点零头只有靠这一步才能消掉，否则链会在那里断开。
+
+    `keep_crossing` 用来在切分之前先筛掉一批交点，见 `_crossing_filter`：合法与不合法
+    的分界只可能发生在合法的交点上，其余交点切出来的两段状态相同，切不切都不影响结果。
+    曲线形状在大偏置量下交点极多（直径 80 的圆、偏置 33 时有 1800 个），先筛再切能少一个
+    数量级的子段。
+
+    另外只比较**包围盒落在同一个格子**里的线段对：相交的线段包围盒必然重叠，
+    分桶只可能多给候选，不会漏。
     """
 
     count = len(pieces)
@@ -317,13 +342,9 @@ def split_at_intersections(
     chords = [piece[2] for piece in pieces]
     spans = ends - starts
 
-    # 每条线段上的切分点：(参数, 坐标)，坐标与配对的那条线段共用。
+    i_flat, j_flat = _candidate_pairs(starts, ends)
     cuts: list[list[tuple[float, NDArray[np.float64]]]] = [[] for _ in range(count)]
     nodes: list[NDArray[np.float64]] = []
-    first, second = np.meshgrid(np.arange(count), np.arange(count), indexing="ij")
-    pairs = first < second
-    i_flat = first[pairs]
-    j_flat = second[pairs]
     if i_flat.size:
         p = starts[i_flat]
         r = spans[i_flat]
@@ -336,6 +357,9 @@ def split_at_intersections(
         t = (delta[:, 0] * s[:, 1] - delta[:, 1] * s[:, 0]) / safe
         u = (delta[:, 0] * r[:, 1] - delta[:, 1] * r[:, 0]) / safe
         crossing = usable & (t > _EPS) & (t < 1.0 - _EPS) & (u > _EPS) & (u < 1.0 - _EPS)
+        if keep_crossing is not None and crossing.any():
+            points = 0.5 * ((p + t[:, None] * r) + (q + u[:, None] * s))
+            crossing &= keep_crossing(points)
         for i, j, ti, uj in zip(
             i_flat[crossing], j_flat[crossing], t[crossing], u[crossing]
         ):
@@ -355,14 +379,131 @@ def split_at_intersections(
         for parameter, point in ordered:
             if parameter <= _EPS or parameter >= 1.0 - _EPS:
                 continue
-            if float(np.linalg.norm(point - points[-1])) <= _MIN_PIECE_MM:
+            if _squared_distance(point, points[-1]) <= _MIN_PIECE_MM**2:
                 continue
             points.append(point)
         points.append(snap_point(ends[index]))
         for begin, finish in zip(points, points[1:]):
-            if float(np.linalg.norm(finish - begin)) > _MIN_PIECE_MM:
+            if _squared_distance(finish, begin) > _MIN_PIECE_MM**2:
                 subsegments.append((begin, finish, chords[index]))
     return subsegments
+
+
+def _squared_distance(
+    first: NDArray[np.float64], second: NDArray[np.float64]
+) -> float:
+    """两点距离的平方：逐段的长度比较用平方就够，省掉几千次 numpy 调用。"""
+
+    delta_x = float(first[0]) - float(second[0])
+    delta_y = float(first[1]) - float(second[1])
+    return delta_x * delta_x + delta_y * delta_y
+
+
+def _candidate_pairs(
+    starts: NDArray[np.float64], ends: NDArray[np.float64]
+) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
+    """按包围盒分桶，给出可能相交的线段对（i < j，按 (i, j) 排序）。
+
+    分桶只可能**多给**候选，不会漏掉真正的交点：两条线段若相交，它们的包围盒必然重叠，
+    因而至少落在同一个格子里。按 (i, j) 排序是为了让交点、进而让后面的吸附顺序与
+    「全量两两比较」完全一致。
+    """
+
+    count = starts.shape[0]
+    lower = np.minimum(starts, ends)
+    upper = np.maximum(starts, ends)
+    span = np.maximum(upper.max(axis=0) - lower.min(axis=0), _EPS)
+    cells = max(1, int(np.sqrt(count)))
+    cell_size = span / cells
+
+    buckets: dict[tuple[int, int], list[int]] = {}
+    for index in range(count):
+        first_cell = np.floor((lower[index] - lower.min(axis=0)) / cell_size).astype(int)
+        last_cell = np.floor((upper[index] - lower.min(axis=0)) / cell_size).astype(int)
+        for cx in range(first_cell[0], last_cell[0] + 1):
+            for cy in range(first_cell[1], last_cell[1] + 1):
+                buckets.setdefault((cx, cy), []).append(index)
+
+    found: list[NDArray[np.int64]] = []
+    for members in buckets.values():
+        if len(members) < 2:
+            continue
+        rows = np.array(members, dtype=np.int64)
+        left, right = np.triu_indices(rows.size, 1)
+        # 编码成 i * count + j 再去重：一格里可能挤着上百条线段（大偏置量下所有平移线段
+        # 都缩到中心），用 Python 的 set 逐个 add 会变成热点，numpy 去重则是一次排序。
+        found.append(np.minimum(rows[left], rows[right]) * count
+                     + np.maximum(rows[left], rows[right]))
+    if not found:
+        return np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp)
+    encoded = np.unique(np.concatenate(found))
+    return (encoded // count).astype(np.intp), (encoded % count).astype(np.intp)
+
+
+def _crossing_filter(
+    polygon: NDArray[np.float64],
+    edges: tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]],
+    distance: float,
+    slack: float,
+):
+    """返回一个判断"这个交点是否落在偏置边界上"的函数，用来在切分之前筛交点。
+
+    为什么可以先筛：子段的合法性在一段之内是均匀的，而状态发生变化的地方一定是交点；
+    如果交点两侧的子段都合法，那么交点本身也合法（距离是连续的）。所以**不合法**的交点
+    两侧状态相同，切不切都不影响结果；只有合法的交点是真正的分界点。
+
+    这里用较宽的那个容差，宁可多留一些交点也不会漏掉真正的分界点（多切几刀只是多做几次
+    判定，结果不变）。
+    """
+
+    def keep(points: NDArray[np.float64]) -> NDArray[np.bool_]:
+        gaps = np.abs(_nearest_edge_distance(points, edges, distance, slack) - distance)
+        near = gaps <= slack
+        if not near.any():
+            return near
+        kept = np.zeros(points.shape[0], dtype=bool)
+        survivors = np.flatnonzero(near)
+        kept[survivors] = point_in_polygon(points[survivors], polygon)
+        return kept
+
+    return keep
+
+
+def _nearest_edge_distance(
+    points: NDArray[np.float64],
+    edges: tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]],
+    target: float,
+    slack: float,
+    *,
+    chunk: int = 64,
+) -> NDArray[np.float64]:
+    """点到多边形各边的最近距离，但先用"支撑直线"筛掉一大批边。
+
+    点到线段的距离 ≥ 点到它所在直线的距离，所以凡是到线段的距离 ≈ target 的边，它到直线的
+    距离必然 ≤ target + slack。先算便宜的距离（直线）再算贵的（线段），结果与全量计算一致：
+    每一点的真正最近边一定在候选里，而候选里多出来的边只会让最小值更接近真值。
+
+    这里按**小块**处理：候选边取的是整块里出现过候选的列，块一大这个并集就退化成全部边，
+    精确那一遍就白省了。
+    """
+
+    start, edge, squared = edges
+    norm = np.sqrt(squared)[None, :]
+    distances = np.full(points.shape[0], np.inf)
+    for begin in range(0, points.shape[0], chunk):
+        finish = min(begin + chunk, points.shape[0])
+        block = points[begin:finish]
+        line_gap = np.abs(
+            (block[:, 0][:, None] - start[None, :, 0]) * edge[None, :, 1]
+            - (block[:, 1][:, None] - start[None, :, 1]) * edge[None, :, 0]
+        ) / norm
+        columns = np.flatnonzero((line_gap <= target + slack).any(axis=0))
+        if columns.size == 0:
+            continue
+        distances[begin:finish] = distance_to_edges(
+            block, (start[columns], edge[columns], squared[columns])
+        )
+    return distances
 
 
 def _valid_subsegments(
@@ -381,8 +522,9 @@ def _valid_subsegments(
     每个子段只查中点就够了：子段是按交点切开的，整段要么都在等距线上、要么都不在；
     圆弧的弦则是中点偏得最多（矢高），中点过了全段就都过。
 
-    曲线形状一次会切出几千个子段，所以这里按块批量判、边向量也只算一次：实测圆形的
-    环切从 3.5 s 降到 0.6 s 左右。
+    曲线形状一次会切出几千个子段，而其中绝大部分其实落在别的边更近的地方（大偏置量下
+    平移线段比偏置周长还长，互相穿过）。所以这里按块批量判、边向量只算一次，
+    并且先用支撑直线筛一遍边（见 `_nearest_edge_distance`）。
     """
 
     if not subsegments:
@@ -396,15 +538,23 @@ def _valid_subsegments(
         line_tolerance,
     )
     midpoints = 0.5 * (starts + ends)
+    slack = max(line_tolerance, chord_tolerance)
 
     keep = np.zeros(len(subsegments), dtype=bool)
-    chunk = 2048
+    chunk = 512
     for begin in range(0, len(subsegments), chunk):
         finish = min(begin + chunk, len(subsegments))
         block = midpoints[begin:finish]
-        inside = point_in_polygon(block, polygon)
-        gaps = np.abs(distance_to_edges(block, edges) - distance)
-        keep[begin:finish] = inside & (gaps <= tolerances[begin:finish])
+        gaps = np.abs(_nearest_edge_distance(block, edges, distance, slack) - distance)
+        near = gaps <= tolerances[begin:finish]
+        if not near.any():
+            continue
+        # 先算距离（便宜，能筛掉九成以上），再对留下来的点判内外：区域外面的点同样可能
+        # 正好离边界 d，所以这一步不能省，只是不用对每个点都算。
+        inside = np.zeros(finish - begin, dtype=bool)
+        survivors = np.flatnonzero(near)
+        inside[survivors] = point_in_polygon(block[survivors], polygon)
+        keep[begin:finish] = inside
 
     return [
         (start, end)
@@ -446,9 +596,21 @@ def _chain_loops(
     labels = _node_labels(endpoints)
     start_labels = labels[: len(pieces)]
     end_labels = labels[len(pieces):]
-    representatives = {
-        int(label): endpoints[labels == label].mean(axis=0) for label in np.unique(labels)
-    }
+
+    # 代表点（同一个节点的平均坐标）与"单位方向、长度"都一次算好：
+    # 接环是逐段的循环，"转角最小"要比较方向，放在循环里现算就成了绝对热点。
+    _, inverse = np.unique(labels, return_inverse=True)
+    groups = int(inverse.max()) + 1
+    counts = np.bincount(inverse, minlength=groups)
+    representatives = np.column_stack(
+        (
+            np.bincount(inverse, weights=endpoints[:, 0], minlength=groups) / counts,
+            np.bincount(inverse, weights=endpoints[:, 1], minlength=groups) / counts,
+        )
+    )
+    spans = ends - starts
+    lengths = np.linalg.norm(spans, axis=1)
+    directions = spans / np.maximum(lengths, _EPS)[:, None]
 
     outgoing: dict[int, list[int]] = {}
     for index, label in enumerate(start_labels):
@@ -460,30 +622,28 @@ def _chain_loops(
         if used[seed]:
             continue
         seed_label = int(start_labels[seed])
-        points: list[NDArray[np.float64]] = []
+        visited: list[int] = []
         current: int | None = seed
         while current is not None:
             used[current] = True
-            points.append(representatives[int(start_labels[current])])
+            visited.append(int(start_labels[current]))
             tail = int(end_labels[current])
-            if tail == seed_label and len(points) >= 3:
-                loops.append(np.array(points, dtype=np.float64))
+            if tail == seed_label and len(visited) >= 3:
+                loops.append(representatives[np.array(visited, dtype=np.intp)])
                 break
-            step = ends[current] - starts[current]
-            length = float(np.linalg.norm(step))
+            current_piece = current
             current = None
-            if length <= _MIN_PIECE_MM:
+            if lengths[current_piece] <= _MIN_PIECE_MM:
                 continue
-            direction = step / length
+            direction = directions[current_piece]
             best_score = -2.0
-            for candidate in outgoing.get(tail, []):
-                if used[candidate]:
+            for candidate in outgoing.get(tail, ()):
+                if used[candidate] or lengths[candidate] <= _MIN_PIECE_MM:
                     continue
-                following = ends[candidate] - starts[candidate]
-                following_length = float(np.linalg.norm(following))
-                if following_length <= _MIN_PIECE_MM:
-                    continue
-                score = float(direction @ (following / following_length))
+                following = directions[candidate]
+                score = float(
+                    direction[0] * following[0] + direction[1] * following[1]
+                )
                 if score > best_score:
                     best_score, current = score, candidate
     return loops
@@ -526,8 +686,18 @@ def offset_loops(
     line_tolerance = max(1e-9, _LINE_TOLERANCE_RATIO * distance)
 
     primitives = offset_primitives(poly, distance, chord_mm=chord_mm)
+    edges = boundary_edges(poly)
+    slack = max(line_tolerance, chord_tolerance)
     pieces = _valid_subsegments(
-        split_at_intersections(primitives, snap=chord_tolerance),
+        split_at_intersections(
+            primitives,
+            snap=chord_tolerance,
+            keep_crossing=(
+                _crossing_filter(poly, edges, distance, slack)
+                if poly.shape[0] >= _CROSSING_FILTER_MIN_EDGES
+                else None
+            ),
+        ),
         poly,
         distance,
         line_tolerance=line_tolerance,
