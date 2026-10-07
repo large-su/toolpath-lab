@@ -23,7 +23,8 @@ const COLORS = {
   holder: 0xb0bcc6,
 };
 
-//: 刀路画在工件上表面之上一点点，避免与上表面 z-fighting。
+//: 加工面上的刀路（切削 / 连接 / 已走轨迹）抬高一点点画，避免与工件上表面 z-fighting。
+//: 快移段不抬高：它按真实 Z 画，所以安全高度的抬刀在视图里看得见。
 const PATH_LIFT_MM = 0.05;
 
 //: 视图工具条上的按钮，按常用顺序排列。
@@ -58,9 +59,14 @@ function orientation(view) {
   };
 }
 
-// 刀路整体抬高一点点画，避免与工件上表面互相穿插（z-fighting）。
+// 加工面上的折线抬高一点点，避免与工件上表面互相穿插（z-fighting）；
+// 本来就高于 PATH_LIFT_MM 的点（快移的抬刀）保留真实高度。
+function liftPath(points) {
+  return points.map((point) => [point[0], point[1], Math.max(point[2], PATH_LIFT_MM)]);
+}
+
 function liftPaths(polylines) {
-  return polylines.map((points) => points.map((point) => [point[0], point[1], PATH_LIFT_MM]));
+  return polylines.map(liftPath);
 }
 
 function polylineGeometry(polylines, dashed = false) {
@@ -195,14 +201,15 @@ export class Viewport {
     for (const move of payload.toolpath.moves) {
       (groups[move.kind] || groups.cut).push(move.points);
     }
-    for (const kind of Object.keys(groups)) groups[kind] = liftPaths(groups[kind]);
-    this.pathGroup.add(this._line(groups.cut, COLORS.cut, 1));
-    this.pathGroup.add(this._line(groups.link, COLORS.link, 1));
+    this.pathGroup.add(this._line(liftPaths(groups.cut), COLORS.cut, 1));
+    this.pathGroup.add(this._line(liftPaths(groups.link), COLORS.link, 1));
+    // 快移段按真实 Z 画：抬刀与下刀是竖直线，横移在安全高度上，一眼能看出安全高度设成了多少。
     this.rapidLine = this._line(groups.rapid, COLORS.rapid, 0.75, true);
     this.pathGroup.add(this.rapidLine);
 
     if (payload.timeline && payload.timeline.positions) {
-      const geometry = polylineGeometry([liftPaths([payload.timeline.positions])[0]]);
+      // 已走轨迹与刀路一致：加工面上的部分抬高，抬刀段保留真实高度。
+      const geometry = polylineGeometry([liftPath(payload.timeline.positions)]);
       this.traceLine = new THREE.LineSegments(
         geometry,
         new THREE.LineBasicMaterial({ color: COLORS.trace, transparent: true, opacity: 0.95 })
