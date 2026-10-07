@@ -153,8 +153,9 @@ class StadiumRegion(RegionShape):
 2. **读取**：值从 `context.parameters` 取，构造器一律读 `PlanningContext` 上的属性——
    `context.safe_height_mm`、`context.rapid_feed_mm_per_min`。策略没有声明这两个键时，
    context 会退回 `SAFE_HEIGHT_MM` / `RAPID_FEED_MM_PER_MIN` 默认值，第三方插件因此不会被绊住。
-   **拐角减速不用你管**：它是规划服务在 `plan()` 之后统一做的动作后处理（planning/feeds.py），
-   只读 `corner_angle_deg` / `corner_feed_ratio` 两个共用参数，默认关闭；插件照样白拿。
+   **拐角减速与分层深度也不用你管**：它们都是规划服务在 `plan()` 之后统一做的动作后处理
+   （planning/feeds.py 与 planning/stepdown.py），只读共用的 `corner_angle_deg` /
+   `corner_feed_ratio` / `depth_mm` / `stepdown_mm` 四个参数，默认全关；插件照样白拿。
 
 3. **两个注意事项**：
    - 参数化的值如果会影响"几何是否可行"，就让规划失败抛 `PlanningError`（HTTP 422），

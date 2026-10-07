@@ -29,6 +29,7 @@ from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.feeds import DEFAULT_CORNER_ANGLE_DEG, DEFAULT_CORNER_FEED_RATIO
 from toolpath_lab.planning.geometry2d import ensure_ccw
+from toolpath_lab.planning.stepdown import DEFAULT_DEPTH_MM, DEFAULT_STEPDOWN_MM
 
 #: Default distance (mm) the tool lifts above the top face of the workpiece when moving rapidly.
 SAFE_HEIGHT_MM = 5.0
@@ -52,6 +53,12 @@ MOTION_PARAMETERS: ParameterSet = ParameterSet(
         spec("corner_feed_ratio", "拐角最低进给", K.FLOAT, DEFAULT_CORNER_FEED_RATIO,
              minimum=0.05, maximum=1.0, step=0.05, unit="×", group="刀路",
              help="180° 折返处降到编程进给的这个比例；起始角为 0 时不生效"),
+        spec("depth_mm", "总深度", K.FLOAT, DEFAULT_DEPTH_MM, minimum=0.0, maximum=200.0,
+             step=0.5, unit="mm", group="刀路",
+             help="工件要切到的深度；0 表示只在加工面走一层（默认）"),
+        spec("stepdown_mm", "吃刀深度", K.FLOAT, DEFAULT_STEPDOWN_MM, minimum=0.1,
+             maximum=50.0, step=0.5, unit="mm", group="刀路",
+             help="每层下刀多少；总深度不是它的整数倍时，最后一层取剩余量"),
     )
 )
 
@@ -93,6 +100,18 @@ class PlanningContext:
         """Feed factor at a full reversal; uses the default when the strategy declares no such key."""
 
         return float(self.parameters.get("corner_feed_ratio", DEFAULT_CORNER_FEED_RATIO))
+
+    @property
+    def depth_mm(self) -> float:
+        """Total depth to machine; 0 means a single layer on the machining plane."""
+
+        return float(self.parameters.get("depth_mm", DEFAULT_DEPTH_MM))
+
+    @property
+    def stepdown_mm(self) -> float:
+        """Depth of cut per layer; uses the default when the strategy declares no such key."""
+
+        return float(self.parameters.get("stepdown_mm", DEFAULT_STEPDOWN_MM))
 
     # -- geometry ----------------------------------------------------------
     @property

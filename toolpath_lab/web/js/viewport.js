@@ -62,8 +62,15 @@ function orientation(view) {
 
 // 加工面上的折线抬高一点点，避免与工件上表面互相穿插（z-fighting）；
 // 本来就高于 PATH_LIFT_MM 的点（快移的抬刀）保留真实高度。
-function liftPath(points) {
-  return points.map((point) => [point[0], point[1], Math.max(point[2], PATH_LIFT_MM)]);
+// Points below the machining plane (a step-down layer) keep their real depth as well: they sit
+// inside the workpiece, which setResult renders translucent so they stay visible.
+// Exported like uncutGeometry so the Z rule can be checked in Node without a browser.
+export function liftPath(points) {
+  return points.map((point) => [
+    point[0],
+    point[1],
+    point[2] < 0 ? point[2] : Math.max(point[2], PATH_LIFT_MM),
+  ]);
 }
 
 function liftPaths(polylines) {
@@ -211,8 +218,21 @@ export class Viewport {
     const [yMin, yMax] = region.bounds_mm[1];
     const span = Math.max(xMax - xMin, yMax - yMin);
 
-    const thickness = this._thickness(span);
-    this.workpieceGroup.add(this._workpiece(region, thickness));
+    // Deepest point of the toolpath: 0 for a single layer, negative once step-down is switched on.
+    let lowestZ = 0;
+    for (const move of payload.toolpath.moves) {
+      for (const point of move.points) {
+        if (point[2] < lowestZ) {
+          lowestZ = point[2];
+        }
+      }
+    }
+
+    const thickness = this._thickness(span, lowestZ);
+    // A layered toolpath cuts below the top face, so the workpiece is drawn translucent: otherwise
+    // the deeper layers would be hidden inside an opaque solid.
+    const layered = lowestZ < -1e-6;
+    this.workpieceGroup.add(this._workpiece(region, thickness, layered));
     this.contourGroup.add(this._contour(region.boundary));
     this._rebuildGrid(span, thickness);
 
@@ -398,11 +418,12 @@ export class Viewport {
   }
 
   // -------------------------------------------------------------- 几何构造
-  _thickness(span) {
-    return Math.min(Math.max(span * 0.09, 4), 24);
+  _thickness(span, lowestZ = 0) {
+    // The blank also has to be thick enough for the deepest layer to stay inside the solid.
+    return Math.max(Math.min(Math.max(span * 0.09, 4), 24), -lowestZ + 2);
   }
 
-  _workpiece(region, thickness) {
+  _workpiece(region, thickness, translucent = false) {
     // 工件由区域边界多边形挤出：换形状（矩形、椭圆、以后的凹多边形）都不需要动这里。
     // ExtrudeGeometry 沿 +Z 挤出，平移一个厚度后上表面正好落在 Z = 0，也就是加工面。
     const shape = new THREE.Shape(
@@ -417,6 +438,7 @@ export class Viewport {
       geometry,
       new THREE.MeshStandardMaterial({
         color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
+        transparent: translucent, opacity: translucent ? 0.3 : 1,
       })
     );
     mesh.receiveShadow = true;

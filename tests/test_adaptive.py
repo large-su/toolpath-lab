@@ -44,7 +44,7 @@ class RegistrationTests(unittest.TestCase):
         # Every contour parameter is present, plus the adaptive ones
         for inherited in ("stepover_mm", "sample_step_mm", "ring_direction", "feed_mm_per_min",
                           "safe_height_mm", "rapid_feed_mm_per_min", "corner_angle_deg",
-                          "corner_feed_ratio"):
+                          "corner_feed_ratio", "depth_mm", "stepdown_mm"):
             self.assertIn(inherited, keys)
         self.assertEqual(
             keys[-5:], ["coverage_target", "max_time_ratio", "max_rounds", "stepover_factor",

@@ -208,6 +208,36 @@ def check_http_api() -> tuple[bool, str]:
                 "拐角减速不应改变切削长度",
             )
 
+        # Step-down: the planar path repeats per layer, the clearance plane stays absolute.
+        status, body = _request(
+            base, "/api/plan", {"region": {"shape": "square"}, "planner": {"id": "raster"}}
+        )
+        steps += 1
+        single = json.loads(body) if status == 200 else {}
+        status, body = _request(
+            base,
+            "/api/plan",
+            {
+                "region": {"shape": "square"},
+                "planner": {"id": "raster", "parameters": {"depth_mm": 5.0, "stepdown_mm": 2.0}},
+            },
+        )
+        steps += 1
+        if status != 200 or not single:
+            problems.append(f"分层的规划失败：{status} {body[:60]}")
+        else:
+            layered = json.loads(body)
+            statistics = layered["toolpath"]["statistics"]
+            zs = {point[2] for move in layered["toolpath"]["moves"] for point in move["points"]}
+            expect(zs == {0.0, -2.0, -4.0, -5.0, 5.0}, f"分层的 Z 取值不对：{sorted(zs)}")
+            expect(
+                statistics["pass_count"] == single["toolpath"]["statistics"]["pass_count"] * 4,
+                "分层后刀轨数应为单层的四倍"
+                f"（{single['toolpath']['statistics']['pass_count']} -> {statistics['pass_count']}）",
+            )
+            expect(any("分层" in note for note in layered["toolpath"]["notes"]),
+                   "分层应在 notes 里说明")
+
         status, page = _request(base, "/index.html")
         steps += 1
         expect(status == 200 and "<html" in page.lower(), f"静态首页返回 {status}")

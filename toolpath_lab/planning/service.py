@@ -11,6 +11,7 @@ from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.base import Planner, PlanningContext
 from toolpath_lab.planning.feeds import apply_corner_slowdown
 from toolpath_lab.planning.registry import PLANNERS
+from toolpath_lab.planning.stepdown import apply_stepdown
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,5 +47,9 @@ def run_plan(
         toolpath,
         corner_angle_deg=context.corner_angle_deg,
         corner_feed_ratio=context.corner_feed_ratio,
+    )
+    # Then stack the single plane into layers, also shared and also off by default.
+    toolpath = apply_stepdown(
+        toolpath, depth_mm=context.depth_mm, stepdown_mm=context.stepdown_mm
     )
     return PlanningOutcome(toolpath=toolpath, warnings=tuple(context.warnings))

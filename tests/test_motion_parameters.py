@@ -63,12 +63,14 @@ class DeclarationTests(unittest.TestCase):
         # One shared declaration: changing a range or unit later touches MOTION_PARAMETERS only.
         self.assertEqual([item.key for item in MOTION_PARAMETERS],
                          ["safe_height_mm", "rapid_feed_mm_per_min",
-                          "corner_angle_deg", "corner_feed_ratio"])
+                          "corner_angle_deg", "corner_feed_ratio",
+                          "depth_mm", "stepdown_mm"])
         for planner_id in PLANNERS.ids():
             specs = {item.key: item for item in PLANNERS.get(planner_id).parameters}
             with self.subTest(planner=planner_id):
                 for key in ("safe_height_mm", "rapid_feed_mm_per_min",
-                            "corner_angle_deg", "corner_feed_ratio"):
+                            "corner_angle_deg", "corner_feed_ratio",
+                            "depth_mm", "stepdown_mm"):
                     self.assertEqual(specs[key].default, MOTION_PARAMETERS.spec(key).default)
                     self.assertEqual(specs[key].minimum, MOTION_PARAMETERS.spec(key).minimum)
                     self.assertEqual(specs[key].maximum, MOTION_PARAMETERS.spec(key).maximum)
