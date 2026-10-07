@@ -46,10 +46,12 @@ class RegistrationTests(unittest.TestCase):
                           "safe_height_mm", "rapid_feed_mm_per_min"):
             self.assertIn(inherited, keys)
         self.assertEqual(
-            keys[-4:], ["coverage_target", "max_rounds", "stepover_factor", "min_stepover_mm"]
+            keys[-5:], ["coverage_target", "max_time_ratio", "max_rounds", "stepover_factor",
+                        "min_stepover_mm"]
         )
         by_key = {item["key"]: item for item in entry["parameters"]}
         self.assertEqual(by_key["coverage_target"]["default"], 99.5)
+        self.assertEqual(by_key["max_time_ratio"]["default"], 2.0)
         self.assertEqual(by_key["max_rounds"]["default"], 3)
         self.assertEqual(by_key["stepover_factor"]["default"], 0.7)
         self.assertEqual(by_key["min_stepover_mm"]["default"], 1.0)
@@ -137,10 +139,62 @@ class TighteningTests(unittest.TestCase):
         self.assertIn("各轮实测", notes[1])
         self.assertTrue(any("环切：共" in note for note in notes[2:]))
 
+    def test_the_curve_reports_coverage_and_cost_per_round(self) -> None:
+        """性价比曲线：每轮都给出切宽、覆盖率、环数、切削长度与工时。"""
+
+        _, outcome = _run()
+        summary, curve = outcome.toolpath.notes[0], outcome.toolpath.notes[1]
+        self.assertIn("工时 111.6 → 149.9 s", summary)
+        self.assertIn("首轮的 1.34 倍", summary)
+        self.assertIn("6 mm → 99.31%（7 环，1064 mm，111.6 s）", curve)
+        self.assertIn("4.2 mm → 99.86%（9 环，1450 mm，149.9 s）", curve)
+
     def test_the_result_is_labelled_as_the_adaptive_planner(self) -> None:
         payload = _run()[1].toolpath.to_payload()
         self.assertEqual(payload["planner"], "adaptive_contour")
         self.assertEqual(payload["planner_label"], "自适应环切")
+
+
+class TimeBudgetTests(unittest.TestCase):
+    """工时上限：收窄切宽靠的是多走几圈，太贵的那一轮就不该采用。"""
+
+    def test_an_expensive_round_is_rejected(self) -> None:
+        # 方形 80：6 mm → 111.6 s，4.2 mm → 149.9 s（1.34 倍）。上限 1.2 倍时后者出局。
+        region, outcome = _run(coverage_target=100.0, max_time_ratio=1.2)
+        toolpath = outcome.toolpath
+        self.assertAlmostEqual(toolpath.statistics()["pass_count"], 7)  # 保留了首轮
+        self.assertIn("切宽 6 → 6 mm", toolpath.notes[0])
+        self.assertEqual(len(outcome.warnings), 1)
+        self.assertIn("工时上限", outcome.warnings[0])
+        self.assertIn("149.9 s", outcome.warnings[0])
+        self.assertIn("调大", outcome.warnings[0])
+        # 那一轮还是算过、也记在曲线上，只是没被采用
+        self.assertIn("4.2 mm → 99.86%", toolpath.notes[1])
+        self.assertAlmostEqual(
+            measure_coverage(toolpath, region, _tool()).ratio, 0.9931, delta=0.001
+        )
+
+    def test_a_generous_budget_lets_it_tighten(self) -> None:
+        region, outcome = _run(coverage_target=100.0, max_time_ratio=2.0)
+        toolpath = outcome.toolpath
+        # 上限 2 倍时 4.2 mm（1.34 倍）与 2.94 mm（1.84 倍）都在预算内，取覆盖率最好的那次
+        self.assertAlmostEqual(toolpath.statistics()["pass_count"], 13)
+        self.assertIn("切宽 6 → 2.94 mm", toolpath.notes[0])
+        self.assertIn("不再提升", outcome.warnings[0])
+        self.assertAlmostEqual(
+            measure_coverage(toolpath, region, _tool()).ratio, 0.9988, delta=0.0005
+        )
+
+    def test_a_round_that_meets_the_target_but_costs_too_much_is_also_rejected(self) -> None:
+        # 目标 99.5%：4.2 mm 那次正好达标，但工时 1.34 倍 > 上限 1.2 倍，于是保留 6 mm
+        _, outcome = _run(coverage_target=99.5, max_time_ratio=1.2)
+        self.assertIn("切宽 6 → 6 mm", outcome.toolpath.notes[0])
+        self.assertIn("未达标", outcome.toolpath.notes[0])
+        self.assertIn("工时上限", outcome.warnings[0])
+
+    def test_a_budget_below_the_first_round_is_rejected(self) -> None:
+        with self.assertRaises(ParameterError):
+            _run(max_time_ratio=0.5)
 
 
 class InvalidParameterTests(unittest.TestCase):

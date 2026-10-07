@@ -215,6 +215,25 @@ function regionSummary(region) {
   return parts.length ? parts.join(" · ") : (region.label || region.id);
 }
 
+// 刀路说明（notes）：后端的策略会把"环数/层数、环绕向、自适应各轮实测"这类过程信息写在这里。
+// 默认收起，展开可以看性价比曲线；用 textContent 填，绝不拼 HTML。
+function renderNotes(result) {
+  const notes = (result.toolpath && result.toolpath.notes) || [];
+  if (!notes.length) return null;
+  const details = document.createElement("details");
+  details.className = "notes";
+  const summary = document.createElement("summary");
+  summary.textContent = "刀路说明 · " + notes.length + " 条";
+  const list = document.createElement("ul");
+  for (const note of notes) {
+    const item = document.createElement("li");
+    item.textContent = note;
+    list.appendChild(item);
+  }
+  details.append(summary, list);
+  return details;
+}
+
 function renderStats(result) {
   const stats = result.toolpath.statistics;
   const region = result.region;
@@ -244,6 +263,8 @@ function renderStats(result) {
     + result.tool.diameter_mm.toFixed(1) + " · " + result.toolpath.planner_label;
   const container = document.createElement("div");
   container.append(heading, list);
+  const notes = renderNotes(result);
+  if (notes) container.appendChild(notes);
   dom.stats.replaceChildren(container);
 }
 

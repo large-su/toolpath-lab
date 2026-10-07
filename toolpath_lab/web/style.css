@@ -422,6 +422,38 @@ input[type="checkbox"] {
   text-align: right;
 }
 
+/* 刀路说明：默认收起。面板本身 pointer-events: none，所以这里要单独打开。 */
+.stats .notes {
+  margin-top: 8px;
+  pointer-events: auto;
+}
+
+.stats .notes summary {
+  color: var(--text-faint);
+  font: 600 10px var(--mono);
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+
+.stats .notes summary:hover {
+  color: var(--teal);
+}
+
+.stats .notes ul {
+  max-height: 34vh;
+  margin: 6px 0 0;
+  padding-left: 14px;
+  overflow: auto;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.stats .notes li {
+  margin-bottom: 5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .banner {
   position: absolute;
   left: 50%;
