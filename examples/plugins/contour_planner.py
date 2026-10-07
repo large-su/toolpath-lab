@@ -1,8 +1,12 @@
 """示例插件：环切（等距轮廓）策略。
 
 这是一个完整、可直接使用的策略实现：它自带所需的几何（多边形等距偏置），
-只依赖公开接口，可以当作编写其它策略的参考。它与内置的
-toolpath_lab/planning/contour.py 同源，区别只在 id / label / description。
+只依赖公开接口，可以当作编写其它策略的参考。
+
+**与内置版本的关系**：内置的 toolpath_lab/planning/contour.py 已经升级成"每层多环"（凹形状的
+细颈被偏置吃掉后形状会分裂，每块单独加工，兄弟环之间抬刀快移），偏置几何也搬到了
+planning/geometry2d.py；本文件保留一份**单环**的最小实现，用来演示一个策略需要写什么，
+以及"偏置几何可以从策略里长出来、需要时再搬进主程序"这条路径。
 
 **注意**：环切已经内置为 toolpath_lab/planning/contour.py（id `contour`），所以本文件的 id 特意
 写成 `contour_demo`，直接启用不会和内置策略撞车。两种用法：
@@ -19,8 +23,7 @@ toolpath_lab/planning/contour.py 同源，区别只在 id / label / description�
 注册表遇到重复 id 会抛 RegistryError，所以无论哪种用法，都不要保留两个相同的 id。
 
 **当前限制**：偏置量超过局部内切半径时，环会断开；本实现每个偏置层只保留一条环，
-因此凹形状的窄颈区域会提前结束。需要覆盖这类区域时，可改为每层输出多条环
-（Toolpath 的运动段模型本身支持）。
+因此凹形状的窄颈区域会提前结束（内置版本已经没有这个限制）。
 """
 
 from __future__ import annotations

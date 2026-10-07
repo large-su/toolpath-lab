@@ -11,6 +11,7 @@ from toolpath_lab.core.errors import ParameterError, RegistryError
 from toolpath_lab.core.region import (
     CURVE_SEGMENTS,
     REGION_SHAPES,
+    DumbbellRegion,
     EllipseRegion,
     RectangleRegion,
     UShapeRegion,
@@ -26,7 +27,7 @@ class RegionCatalogTests(unittest.TestCase):
     def test_registered_shapes(self) -> None:
         self.assertEqual(
             sorted(REGION_SHAPES.ids()),
-            ["circle", "ellipse", "rectangle", "square", "u_shape"],
+            ["circle", "dumbbell", "ellipse", "rectangle", "square", "u_shape"],
         )
 
     def test_catalog_publishes_labels_and_parameters(self) -> None:
@@ -52,6 +53,11 @@ class RegionCatalogTests(unittest.TestCase):
         self.assertEqual(
             [item["key"] for item in entries["u_shape"]["parameters"]],
             ["width_mm", "height_mm", "wall_mm"],
+        )
+        self.assertEqual(entries["dumbbell"]["label"], "哑铃形")
+        self.assertEqual(
+            [item["key"] for item in entries["dumbbell"]["parameters"]],
+            ["width_mm", "pad_mm", "neck_mm"],
         )
 
     def test_unknown_shape_raises(self) -> None:
@@ -225,6 +231,39 @@ class UShapeRegionTests(unittest.TestCase):
     def test_the_class_itself_keeps_the_invariant(self) -> None:
         with self.assertRaises(ParameterError):
             UShapeRegion(width_mm=100.0, height_mm=80.0, wall_mm=60.0)
+
+
+class DumbbellRegionTests(unittest.TestCase):
+    """哑铃形：细颈被偏置吃掉后，环切一层会分裂成两条环。"""
+
+    def test_boundary_is_a_twelve_vertex_concave_polygon(self) -> None:
+        region = build_region("dumbbell", {})
+        polygon = ensure_ccw(region.boundary())
+        self.assertEqual(polygon.shape, (12, 2))
+        # 160 × 60 的两个方头 + 40 × 20 的细颈
+        self.assertAlmostEqual(signed_area(polygon), 2 * 60 * 60 + 40 * 20, places=6)
+        self.assertEqual(polygon_bounds(polygon), [[-80.0, 80.0], [-30.0, 30.0]])
+
+    def test_a_scanline_across_the_neck_yields_one_interval(self) -> None:
+        polygon = ensure_ccw(build_region("dumbbell", {}).boundary())
+        self.assertEqual(len(scanline_intervals(polygon, 0.0)), 1)
+        self.assertAlmostEqual(scanline_intervals(polygon, 0.0)[0].start, -80.0, places=6)
+
+    def test_a_scanline_across_a_pad_yields_one_interval(self) -> None:
+        polygon = ensure_ccw(build_region("dumbbell", {}).boundary())
+        interval = scanline_intervals(polygon, 20.0)
+        self.assertEqual(len(interval), 2)  # 左右两个方头各一段
+        self.assertLess(interval[0].end, interval[1].start)
+
+    def test_a_neck_that_is_not_thinner_than_the_pad_is_rejected(self) -> None:
+        with self.assertRaises(ParameterError):
+            build_region("dumbbell", {"neck_mm": 60.0})
+        with self.assertRaises(ParameterError):
+            build_region("dumbbell", {"width_mm": 100.0})  # 两个 60 的方头放不下
+
+    def test_the_class_itself_keeps_the_invariant(self) -> None:
+        with self.assertRaises(ParameterError):
+            DumbbellRegion(width_mm=160.0, pad_mm=60.0, neck_mm=0.0)
 
 
 if __name__ == "__main__":

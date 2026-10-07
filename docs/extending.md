@@ -73,8 +73,9 @@ class SpiralPlanner(Planner):
 
 ## 2. 新增一个区域形状
 
-内置五种形状：方形、矩形、圆形、椭圆、U 形（凹多边形），都在 `toolpath_lab/core/region.py`。
-再加一种就是照着它们写一个类——下面以"跑道形"为例（`__post_init__` 要守住自己的不变式）：
+内置六种形状：方形、矩形、圆形、椭圆、U 形（凹）、哑铃形（细颈 + 两端方头），都在
+`toolpath_lab/core/region.py`。再加一种就是照着它们写一个类——下面以"跑道形"为例
+（`__post_init__` 要守住自己的不变式）：
 
 ```python
 from dataclasses import dataclass
@@ -122,7 +123,8 @@ class StadiumRegion(RegionShape):
 做到这些之后**刀路与三维显示都不需要改**：栅格刀路靠扫描线求交，工件直接按这条边界挤出
 （`web/js/viewport.js`）。**凹形状**是这条承诺的试金石：U 形横穿两条臂的扫描线会得到两段独立刀轨
 （`tests/test_planners.py` 的 `test_a_concave_region_puts_two_passes_on_the_same_level`），
-工件也会被挤出成真正的 U 形而不是方盒。
+哑铃形的细颈被环切偏置吃掉后一层会分裂成两条环（`tests/test_contour.py` 的 `MultiLoopTests`），
+工件也会被挤出成真正的形状而不是方盒。
 
 ## 3. 再加一个参数（示范：抬刀高度、快移速度、边界处理）
 

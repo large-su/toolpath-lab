@@ -1,27 +1,22 @@
 """环切（等距轮廓）刀路。
 
-从区域轮廓开始，每向内偏置一个切宽就得到一环，一直偏置到结果退化为止：
+从区域轮廓开始，每向内偏置一个切宽就得到一层环，偏置到结果退化为止：
 
-1. 第一环把轮廓向内偏置"刀具在加工面上的足迹半径"，保证刀不切出区域；
-2. 之后每环再向内偏置一个切宽；
-3. 每环按采样步长离散成闭合折线，相邻环的绕行方向交替（顺铣/逆铣交替）；
-4. 环与环之间不抬刀，直接用连接进给过渡；首尾补下刀与抬刀。
+1. 第一层把轮廓向内偏置"刀具在加工面上的足迹半径"，保证刀不切出区域；
+2. 之后每层再向内偏置一个切宽；
+3. 一层可能得到**多条环**：凹形状的细颈被偏置吃掉后，形状会分裂成互不相连的几块；
+4. 每环按采样步长离散成闭合折线，相邻环绕行方向交替（顺铣/逆铣交替）；
+5. 环之间的过渡分两种：套在里面的环用连接进给直接走进去；同一层分裂出来的兄弟环，或者
+   无法判断内外关系时，抬刀到安全面再快移过去——在切削深度上横穿细颈会啃到材料。
 
-偏置几何（凸角用斜接、凹角插圆弧接头、再用"到原始边界的距离"过滤自交顶点）目前只被环切
-用到，因此留在这个模块里；等有第二个策略需要它，再提到 core 或 planning/geometry2d.py。
+偏置几何在 planning/geometry2d.py（凸角斜接、凹角圆弧接头、按自交点切分、"转角最小"接环），
+那里也写了为什么不能像早期版本那样把断开的顶点按原顺序接起来。
 
-**已知限制**：偏置量超过局部内切半径时环会断开，本实现每层只保留一条环，因此凹形状的窄颈
-区域会提前结束。需要覆盖这类区域时，改成每层输出多条环即可——Toolpath 的运动段模型本来就
-支持（一次规划里可以有任意多段）。
-
-**边界处理**：第一环永远内缩一个刀具足迹半径，这里没有"贴轮廓/外扩"的选项——偏置几何只支持
-向内（向外偏置是另一套规则，见 offset_polygon 的说明）。抬刀高度与快移速度则和别的策略一样，
-来自共用的 MOTION_PARAMETERS。
+已知限制：环与环之间只有直线连接，没有引入 / 引出圆弧，也不做顺逆铣的强制指定。
 """
 
 from __future__ import annotations
 
-from math import atan2, ceil, cos, pi, sin
 from typing import ClassVar
 
 import numpy as np
@@ -31,143 +26,20 @@ from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.parameters import ParameterKind as K, ParameterSet, spec
 from toolpath_lab.core.path import Move, MoveKind, Toolpath
 from toolpath_lab.planning.base import MOTION_PARAMETERS, Planner, PlanningContext
-from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
+from toolpath_lab.planning.geometry2d import offset_loops, point_in_polygon, resample_ring
 from toolpath_lab.planning.registry import PLANNERS
 
-_EPS = 1e-9
-#: 偏置到这一步就认为没有可加工面积了（mm²）。
+#: 偏置后面积小于这个值的环直接丢掉（mm²）：细到没有加工意义的碎片不值得走一刀。
 _MIN_RING_AREA_MM2 = 0.5
 
 
-# --------------------------------------------------------------------------
-# 偏置几何
-# --------------------------------------------------------------------------
-def _inward_normals(polygon: NDArray[np.float64]) -> NDArray[np.float64]:
-    """每条边的单位左法向（逆时针多边形时为内法向）。"""
-
-    edge = np.roll(polygon, -1, axis=0) - polygon
-    length = np.linalg.norm(edge, axis=1, keepdims=True)
-    edge = edge / np.where(length > _EPS, length, 1.0)
-    return np.column_stack((-edge[:, 1], edge[:, 0]))
-
-
-def _distance_to_boundary(
-    points: NDArray[np.float64], polygon: NDArray[np.float64]
-) -> NDArray[np.float64]:
-    """每个点到多边形各边的最近距离。"""
-
-    pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)[:, None, :]
-    start = polygon[None, :, :]
-    end = np.roll(polygon, -1, axis=0)[None, :, :]
-    edge = end - start
-    squared = np.maximum(np.sum(edge * edge, axis=2), _EPS)
-    t = np.clip(np.sum((pts - start) * edge, axis=2) / squared, 0.0, 1.0)
-    closest = start + t[..., None] * edge
-    return np.linalg.norm(pts - closest, axis=2).min(axis=1)
-
-
-def offset_polygon(
-    polygon: NDArray[np.float64],
-    distance: float,
-    *,
-    chord_mm: float = 0.5,
-    max_miter: float = 4.0,
-) -> NDArray[np.float64] | None:
-    """逆时针多边形向内偏置 distance >= 0，退化为空时返回 None。
-
-    凸角用斜接（miter）交点，凹角插入圆弧接头——多边形内缩在凹角处本来就是圆弧；
-    最后用"到原始边界的距离 >= 偏置量"过滤掉自交产生的顶点。
-
-    只做向内偏置：向外偏置的凸角必须补圆弧、凹角反而要斜接，"到边界距离"这条过滤规则
-    也不再成立，是另一套几何。这里用不到，因此直接拒绝负值，避免悄悄返回一条跑到区域
-    外面的环。
-    """
-
-    if distance < 0.0:
-        raise ValueError("offset_polygon 只支持向内偏置（distance >= 0）")
-    poly = ensure_ccw(polygon)
-    if distance <= _EPS:
-        return poly
-
-    normals = _inward_normals(poly)
-    previous_normal = np.roll(normals, 1, axis=0)
-    previous_edge = poly - np.roll(poly, 1, axis=0)
-    next_edge = np.roll(poly, -1, axis=0) - poly
-
-    result: list[tuple[float, float]] = []
-    for index in range(poly.shape[0]):
-        point = poly[index]
-        n_prev, n_next = previous_normal[index], normals[index]
-        turn = float(
-            previous_edge[index, 0] * next_edge[index, 1]
-            - previous_edge[index, 1] * next_edge[index, 0]
-        )
-        if abs(turn) <= _EPS:
-            moved = point + distance * n_next
-            result.append((float(moved[0]), float(moved[1])))
-            continue
-
-        dot = float(np.clip(n_prev @ n_next, -1.0, 1.0))
-        if turn > 0.0 and dot > -0.999:
-            moved = point + distance * (n_prev + n_next) / (1.0 + dot)
-            if float(np.linalg.norm(moved - point)) <= max_miter * distance:
-                result.append((float(moved[0]), float(moved[1])))
-                continue
-
-        start_angle = atan2(float(n_prev[1]), float(n_prev[0]))
-        end_angle = atan2(float(n_next[1]), float(n_next[0]))
-        delta = (end_angle - start_angle + pi) % (2.0 * pi) - pi
-        segments = max(1, int(ceil(abs(delta) * distance / max(chord_mm, 1e-6))))
-        for step in range(segments + 1):
-            angle = start_angle + delta * step / segments
-            result.append(
-                (
-                    float(point[0] + distance * cos(angle)),
-                    float(point[1] + distance * sin(angle)),
-                )
-            )
-
-    candidate = np.array(result, dtype=np.float64)
-    tolerance = max(1e-6, 1e-6 * distance)
-    filtered = candidate[_distance_to_boundary(candidate, poly) >= distance - tolerance]
-    if filtered.shape[0] < 3:
-        return None
-    gaps = np.linalg.norm(np.diff(np.vstack([filtered, filtered[:1]]), axis=0), axis=1)
-    filtered = filtered[np.concatenate(([True], gaps[:-1] > _EPS))]
-    if filtered.shape[0] < 3 or signed_area(filtered) <= 0.0:
-        return None
-    return filtered
-
-
-def resample_ring(polygon: NDArray[np.float64], step_mm: float) -> NDArray[np.float64]:
-    """按等弧长重采样一个闭合环（不重复首点）。"""
-
-    ring = np.vstack([polygon, polygon[:1]])
-    steps = np.linalg.norm(np.diff(ring, axis=0), axis=1)
-    cumulative = np.concatenate(([0.0], np.cumsum(steps)))
-    total = float(cumulative[-1])
-    if total <= _EPS:
-        return np.asarray(polygon, dtype=np.float64)
-    count = max(3, int(ceil(total / max(step_mm, 1e-6))))
-    targets = np.linspace(0.0, total, count, endpoint=False)
-    return np.column_stack(
-        (
-            np.interp(targets, cumulative, ring[:, 0]),
-            np.interp(targets, cumulative, ring[:, 1]),
-        )
-    )
-
-
-# --------------------------------------------------------------------------
-# 策略本体
-# --------------------------------------------------------------------------
 @PLANNERS.register
 class ContourPlanner(Planner):
     """沿区域轮廓逐圈向内偏置的环切刀路。"""
 
     id: ClassVar[str] = "contour"
     label: ClassVar[str] = "环切"
-    description: ClassVar[str] = "从轮廓逐圈向内偏置（等距轮廓），适合圆形等规则区域"
+    description: ClassVar[str] = "从轮廓逐圈向内偏置（等距轮廓），凹形状分裂出的环会分别加工"
     parameters: ClassVar[ParameterSet] = ParameterSet(
         (
             spec("stepover_mm", "切宽 ae", K.FLOAT, 6.0, minimum=0.5, maximum=50.0,
@@ -190,52 +62,69 @@ class ContourPlanner(Planner):
         boundary = context.boundary
         distance = context.tool.footprint_radius_mm
 
-        rings: list[NDArray[np.float64]] = []
+        layers: list[list[NDArray[np.float64]]] = []
         while True:
-            ring = offset_polygon(boundary, distance)
-            if ring is None or abs(signed_area(ring)) < _MIN_RING_AREA_MM2:
+            loops = offset_loops(boundary, distance, min_area_mm2=_MIN_RING_AREA_MM2)
+            if not loops:
                 break
-            rings.append(ring)
+            layers.append(loops)
             distance += stepover
-        if not rings:
+        if not layers:
             raise PlanningError(
                 f"环切没有生成任何刀轨：刀具足迹半径 {context.tool.footprint_radius_mm:g} mm "
                 "已经超过区域的内切半径，请减小刀具直径或扩大区域"
             )
 
         moves: list[Move] = []
-        previous: np.ndarray | None = None
-        for index, ring in enumerate(rings):
-            sampled = resample_ring(ring, sample_step)
-            closed = np.vstack([sampled, sampled[:1]])
-            if index % 2 == 1:
-                # 奇数环反向，顺铣/逆铣因此交替，和往复栅格同一个道理。
-                closed = closed[::-1]
-            positions = context.to_positions(closed)
-            if previous is None:
-                moves.append(context.approach_move_down(positions[0]))
-            else:
-                moves.append(context.link_move(previous, positions[0]))
-            moves.append(
-                Move(
-                    MoveKind.CUT,
-                    positions,
-                    context.feed_mm_per_min,
-                    pass_index=index,
-                    label=f"第 {index + 1} 环",
+        previous: NDArray[np.float64] | None = None
+        previous_loop: NDArray[np.float64] | None = None
+        index = 0
+        for loops in layers:
+            for loop in loops:
+                sampled = resample_ring(loop, sample_step)
+                closed = np.vstack([sampled, sampled[:1]])
+                if index % 2 == 1:
+                    # 奇数环反向，顺铣/逆铣因此交替，和往复栅格同一个道理。
+                    closed = closed[::-1]
+                positions = context.to_positions(closed)
+                if previous is None:
+                    moves.append(context.approach_move_down(positions[0]))
+                elif previous_loop is not None and self._is_nested(loop, previous_loop):
+                    moves.append(context.link_move(previous, positions[0]))
+                else:
+                    moves.append(context.rapid_between(previous, positions[0]))
+                moves.append(
+                    Move(
+                        MoveKind.CUT,
+                        positions,
+                        context.feed_mm_per_min,
+                        pass_index=index,
+                        label=f"第 {index + 1} 环",
+                    )
                 )
-            )
-            previous = positions[-1]
+                previous = positions[-1]
+                previous_loop = loop
+                index += 1
         moves.append(context.retract_move_up(previous))
+
+        ring_count = sum(len(loops) for loops in layers)
         return Toolpath(
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
             notes=(
-                f"环切：共 {len(rings)} 环，切宽 {stepover:g} mm，采样步长 {sample_step:g} mm",
-                "相邻环绕行方向交替（顺铣/逆铣交替），环间不抬刀直接过渡",
+                f"环切：共 {ring_count} 环（{len(layers)} 层），切宽 {stepover:g} mm，"
+                f"采样步长 {sample_step:g} mm",
+                "相邻环绕行方向交替（顺铣/逆铣交替）；同层分裂出的环之间抬刀快移，"
+                "套在里面的环之间用连接进给",
                 f"边界固定内缩一个刀具足迹半径（R{context.tool.footprint_radius_mm:g} mm），"
                 f"安全高度 {context.safe_height_mm:g} mm、"
                 f"快移 {context.rapid_feed_mm_per_min:g} mm/min",
             ),
         )
+
+    @staticmethod
+    def _is_nested(inner: NDArray[np.float64], outer: NDArray[np.float64]) -> bool:
+        """inner 是否落在 outer 内部（用来决定环间是连接进给还是抬刀快移）。"""
+
+        return bool(point_in_polygon(inner[:1], outer)[0])

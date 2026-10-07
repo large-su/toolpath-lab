@@ -1,4 +1,7 @@
-"""环切策略与它自带的等距偏置几何。"""
+"""环切策略：层与环的布局、方向交替、环间过渡、几何不可行。
+
+偏置几何本身的数值断言在 tests/test_geometry2d.py。
+"""
 
 from __future__ import annotations
 
@@ -17,10 +20,7 @@ from toolpath_lab.planning import (
     planner_catalog,
     run_plan,
 )
-from toolpath_lab.planning.contour import offset_polygon, resample_ring
-from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
-
-_SQUARE_80 = ensure_ccw(build_region("square", {"side_mm": 80.0}).boundary())
+from toolpath_lab.planning.geometry2d import point_in_polygon, signed_area
 
 
 def _tool(diameter: float = 6.0) -> Tool:
@@ -50,6 +50,10 @@ def _rings(toolpath: Toolpath):
     return [move.points[:-1, :2] for move in _cut_moves(toolpath)]
 
 
+def _transitions(toolpath: Toolpath):
+    return [move.kind for move in toolpath.moves if move.kind is not MoveKind.CUT]
+
+
 class RegistrationTests(unittest.TestCase):
     def test_contour_is_registered_after_raster(self) -> None:
         self.assertEqual(PLANNERS.ids(), ["raster", "contour"])
@@ -64,63 +68,12 @@ class RegistrationTests(unittest.TestCase):
         )
 
 
-class OffsetGeometryTests(unittest.TestCase):
-    def test_square_inset_stays_an_exact_square(self) -> None:
-        ring = offset_polygon(_SQUARE_80, 10.0)
-        self.assertIsNotNone(ring)
-        self.assertEqual(ring.shape, (4, 2))
-        self.assertAlmostEqual(signed_area(ring), 3600.0, places=6)
-        self.assertAlmostEqual(float(np.abs(ring).max()), 30.0, places=6)
-
-    def test_circle_inset_keeps_the_offset_distance(self) -> None:
-        circle = ensure_ccw(build_region("circle", {"diameter_mm": 80.0}).boundary())
-        ring = offset_polygon(circle, 10.0)
-        self.assertIsNotNone(ring)
-        radii = np.linalg.norm(ring, axis=1)
-        # 向外 40 - 向内 10 = 30（多边形逼近与斜接带来约 1.5e-3 的偏差）。
-        self.assertAlmostEqual(float(radii.min()), 30.0, delta=0.01)
-        self.assertAlmostEqual(float(radii.max()), 30.0, delta=0.01)
-
-    def test_offset_beyond_the_inradius_degenerates(self) -> None:
-        self.assertIsNone(offset_polygon(_SQUARE_80, 41.0))
-
-    def test_zero_offset_returns_the_normalised_polygon(self) -> None:
-        ring = offset_polygon(_SQUARE_80, 0.0)
-        self.assertAlmostEqual(signed_area(ring), 6400.0, places=6)
-
-    def test_negative_offset_is_rejected(self) -> None:
-        # 向外偏置需要另一套规则（凸角补圆弧、凹角斜接），这里明确不做，
-        # 否则会悄悄返回一条跑到区域外面的环。
-        with self.assertRaises(ValueError):
-            offset_polygon(_SQUARE_80, -10.0)
-
-
-class ResampleTests(unittest.TestCase):
-    def test_ring_is_resampled_at_even_arc_length(self) -> None:
-        sampled = resample_ring(_SQUARE_80, 5.0)
-        self.assertEqual(sampled.shape[0], 64)  # 周长 320 / 5
-        closed = np.vstack([sampled, sampled[:1]])
-        gaps = np.linalg.norm(np.diff(closed, axis=0), axis=1)
-        self.assertTrue(bool(np.allclose(gaps, 5.0, atol=1e-9)))
-
-    def test_resampled_ring_does_not_repeat_the_first_point(self) -> None:
-        sampled = resample_ring(_SQUARE_80, 5.0)
-        self.assertFalse(bool(np.allclose(sampled[0], sampled[-1])))
-
-    def test_resampling_keeps_the_length(self) -> None:
-        sampled = resample_ring(_SQUARE_80, 1.0)
-        closed = np.vstack([sampled, sampled[:1]])
-        self.assertAlmostEqual(
-            float(np.linalg.norm(np.diff(closed, axis=0), axis=1).sum()), 320.0, places=6
-        )
-
-
 class RingLayoutTests(unittest.TestCase):
     def test_ring_count_follows_the_stepover(self) -> None:
         # 80 mm 方形，足迹半径 3，切宽 6 → 偏置 3/9/…/39 共 7 环（45 已超过内切半径 40）。
         self.assertEqual(_plan().pass_count, 7)
 
-    def test_smaller_stepover_leaves_fewer_rings(self) -> None:
+    def test_smaller_stepover_leaves_more_rings(self) -> None:
         self.assertGreater(
             _plan({"stepover_mm": 3.0}).pass_count, _plan({"stepover_mm": 12.0}).pass_count
         )
@@ -153,13 +106,13 @@ class ContourStrategyTests(unittest.TestCase):
         self.assertTrue(all(area > 0.0 for area in areas[::2]))
         self.assertTrue(all(area < 0.0 for area in areas[1::2]))
 
-    def test_rings_are_joined_without_retracting(self) -> None:
-        kinds = [move.kind for move in _plan().moves]
-        self.assertEqual(kinds.count(MoveKind.LINK), 6)
+    def test_nested_rings_are_joined_without_retracting(self) -> None:
+        transitions = _transitions(_plan())
+        self.assertEqual(transitions.count(MoveKind.LINK), 6)
         # 只有首尾各一次快速移动：下刀与抬刀。
-        self.assertEqual(kinds.count(MoveKind.RAPID), 2)
+        self.assertEqual(transitions.count(MoveKind.RAPID), 2)
 
-    def test_rapid_moves_use_the_fixed_safe_height_and_feed(self) -> None:
+    def test_rapid_moves_use_the_safe_height_and_rapid_feed(self) -> None:
         rapid = [move for move in _plan().moves if move.kind is MoveKind.RAPID]
         self.assertAlmostEqual(
             max(float(move.points[:, 2].max()) for move in rapid), SAFE_HEIGHT_MM, places=6
@@ -187,6 +140,66 @@ class ContourStrategyTests(unittest.TestCase):
         self.assertEqual(payload["planner_label"], "环切")
         self.assertEqual(payload["moves"][1]["label"], "第 1 环")
         self.assertEqual(payload["moves"][1]["pass_index"], 0)
+
+
+class MultiLoopTests(unittest.TestCase):
+    """凹形状：细颈被偏置吃掉后一层会分裂成多条环，每块都要单独加工。"""
+
+    def _dumbbell(self, parameters=None) -> Toolpath:
+        options = {"stepover_mm": 6.0, "sample_step_mm": 1.0, "feed_mm_per_min": 600.0}
+        options.update(parameters or {})
+        return run_plan(
+            planner_id="contour",
+            tool=_tool(),
+            region=build_region("dumbbell", {}),
+            parameters=options,
+        ).toolpath
+
+    def test_the_split_layers_are_cut_as_separate_rings(self) -> None:
+        toolpath = self._dumbbell()
+        # 偏置 3/9/15/21/27：前两层细颈还在（各 1 条环），后三层各分裂成 2 条。
+        self.assertEqual(toolpath.pass_count, 8)
+        self.assertIn("8 环", toolpath.notes[0])
+        self.assertIn("5 层", toolpath.notes[0])
+
+    def test_every_split_ring_wraps_exactly_one_pad(self) -> None:
+        centres = {"left": np.array([[-50.0, 0.0]]), "right": np.array([[50.0, 0.0]])}
+        wrapped = []
+        for ring in _rings(self._dumbbell()):
+            wrapped.append(
+                tuple(
+                    name for name, point in centres.items()
+                    if bool(point_in_polygon(point, ring)[0])
+                )
+            )
+        # 细颈还在的那两环同时绕过两个方头；分裂出来的环各自只绕一个。
+        self.assertEqual(wrapped.count(("left", "right")), 2)
+        self.assertEqual(wrapped.count(("left",)), 3)
+        self.assertEqual(wrapped.count(("right",)), 3)
+
+    def test_sibling_rings_are_separated_by_a_retract(self) -> None:
+        transitions = _transitions(self._dumbbell())
+        # 套在里面的环之间用连接进给，同层分裂出的兄弟环之间必须抬刀快移
+        self.assertGreater(transitions.count(MoveKind.RAPID), 2)
+        self.assertGreater(transitions.count(MoveKind.LINK), 2)
+        rapid = [move for move in self._dumbbell().moves if move.kind is MoveKind.RAPID]
+        self.assertTrue(
+            all(
+                abs(float(move.points[:, 2].max()) - SAFE_HEIGHT_MM) < 1e-6
+                for move in rapid
+            )
+        )
+
+    def test_a_u_shape_still_gets_a_single_ring_per_layer(self) -> None:
+        toolpath = run_plan(
+            planner_id="contour",
+            tool=_tool(),
+            region=build_region("u_shape", {}),
+            parameters={"stepover_mm": 6.0},
+        ).toolpath
+        # 壁厚 25：偏置 3、9 各一条环（6 条臂/底还剩 19、13 厚），15 起整体消失。
+        self.assertEqual(toolpath.pass_count, 2)
+        self.assertEqual(_transitions(toolpath).count(MoveKind.LINK), 1)
 
 
 if __name__ == "__main__":

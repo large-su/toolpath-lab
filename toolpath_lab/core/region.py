@@ -7,7 +7,8 @@
 - 矩形（rectangle）：宽 × 高；
 - 圆形（circle）：一个直径；
 - 椭圆（ellipse）：长半轴 / 短半轴；
-- U 形（u_shape）：外宽 / 外高 / 壁厚，一个凹多边形。
+- U 形（u_shape）：外宽 / 外高 / 壁厚，一个凹多边形；
+- 哑铃形（dumbbell）：两端方头 + 细颈，细颈被偏置吃掉后同一层会分裂成两条环。
 
 所有形状统一归约为一条**逆时针、不重复首点**的边界多边形。栅格刀路只会用到
 "一条直线与多边形求交"，三维工件也直接按这条边界挤出，因此新增形状（跑道形、带缺口的多边形……）
@@ -259,6 +260,67 @@ class UShapeRegion(RegionShape):
                 (-inner_x, inner_y),
                 (-inner_x, half_height),
                 (-half_width, half_height),
+            ],
+            dtype=np.float64,
+        )
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class DumbbellRegion(RegionShape):
+    """以原点为中心的哑铃形：两端方块用一根细颈连起来。"""
+
+    width_mm: float = 160.0
+    pad_mm: float = 60.0
+    neck_mm: float = 20.0
+
+    id: ClassVar[str] = "dumbbell"
+    label: ClassVar[str] = "哑铃形"
+    description: ClassVar[str] = "两端方块 + 细颈：偏置到细颈被吃掉时，一层会分裂成两条环"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("width_mm", "总长 W", K.FLOAT, 160.0, minimum=20.0, maximum=1000.0,
+                 step=10.0, unit="mm", group="区域", help="沿 X 轴的总长"),
+            spec("pad_mm", "方头边长 p", K.FLOAT, 60.0, minimum=5.0, maximum=500.0,
+                 step=5.0, unit="mm", group="区域", help="两端方块的边长（也是总高）"),
+            spec("neck_mm", "细颈宽 n", K.FLOAT, 20.0, minimum=1.0, maximum=500.0,
+                 step=1.0, unit="mm", group="区域",
+                 help="中间细颈的宽度；必须小于方头边长，偏置超过它的一半时细颈消失"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.width_mm <= 0 or self.pad_mm <= 0 or self.neck_mm <= 0:
+            raise ParameterError("哑铃形的总长、方头边长与细颈宽都必须为正")
+        if self.neck_mm >= self.pad_mm:
+            raise ParameterError(
+                f"细颈宽 {self.neck_mm:g} mm 必须小于方头边长 {self.pad_mm:g} mm"
+            )
+        if 2.0 * self.pad_mm >= self.width_mm:
+            raise ParameterError(
+                f"两端方头一共 {2.0 * self.pad_mm:g} mm，必须小于总长 {self.width_mm:g} mm，"
+                "否则中间没有细颈"
+            )
+
+    def boundary(self) -> NDArray[np.float64]:
+        half_width = self.width_mm / 2.0
+        half_pad = self.pad_mm / 2.0
+        half_neck = self.neck_mm / 2.0
+        inner = half_width - self.pad_mm
+        return np.array(
+            [
+                (-half_width, -half_pad),
+                (-inner, -half_pad),
+                (-inner, -half_neck),
+                (inner, -half_neck),
+                (inner, -half_pad),
+                (half_width, -half_pad),
+                (half_width, half_pad),
+                (inner, half_pad),
+                (inner, half_neck),
+                (-inner, half_neck),
+                (-inner, half_pad),
+                (-half_width, half_pad),
             ],
             dtype=np.float64,
         )
