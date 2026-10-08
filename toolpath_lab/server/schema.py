@@ -15,6 +15,7 @@ from toolpath_lab.core.region import RegionShape, build_polygon_region, build_re
 from toolpath_lab.core.surface import SurfaceShape, build_surface
 from toolpath_lab.core.tool import Tool, tool_parameters
 from toolpath_lab.planning.registry import PLANNERS
+from toolpath_lab.planning.roughing import roughing_parameters
 from toolpath_lab.server.catalog import DEFAULT_PLANNER_ID, DEFAULT_REGION_ID, DEFAULT_SURFACE_ID
 
 
@@ -32,6 +33,7 @@ class PlanRequest:
     surface_id: str = DEFAULT_SURFACE_ID
     surface_parameters: dict[str, Any] = field(default_factory=dict)
     planner_parameters: dict[str, Any] = field(default_factory=dict)
+    roughing_parameters: dict[str, Any] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
 
     @classmethod
@@ -86,6 +88,7 @@ class PlanRequest:
             surface_id=surface_id,
             surface_parameters=surface.parameters.coerce(surface_parameters),
             planner_parameters=planner_class.parameters.coerce(planner_parameters),
+            roughing_parameters=roughing_parameters().coerce(coerce_group(payload, "roughing")),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -96,6 +99,7 @@ class PlanRequest:
             "region": {"shape": self.region_id, "parameters": dict(self.region_parameters)},
             "surface": {"type": self.surface_id, "parameters": dict(self.surface_parameters)},
             "planner": {"id": self.planner_id, "parameters": dict(self.planner_parameters)},
+            "roughing": dict(self.roughing_parameters),
         }
 
     def header_lines(self) -> list[str]:
@@ -113,6 +117,7 @@ class PlanRequest:
             f"region: {self.region_id} - {_format(self.region_parameters)}",
             f"surface: {self.surface_id} - {_format(self.surface_parameters)}",
             f"strategy: {self.planner_id} ({planner_label}) - {_format(self.planner_parameters)}",
+            f"roughing: {_format(self.roughing_parameters)}",
         ]
 
 

@@ -46,11 +46,14 @@ def toolpath_to_gcode(
     lines.append("G17 (XY plane)")
     if toolpath.is_oriented:
         lines.append("(five-axis: A=azimuth deg, B=tilt-from-Z deg)")
+    if any(move.angular_speed_deg_s is not None for move in toolpath.moves):
+        lines.append("(orientation time limits are simulation-only; machine postprocessing required)")
     lines.append("")
 
     number = f"{{:.{decimals}f}}"
     last_feed: float | None = None
     last_kind: MoveKind | None = None
+    previous_azimuth: float | None = None
 
     for move in toolpath.moves:
         if move.kind is not MoveKind.RAPID:
@@ -62,6 +65,12 @@ def toolpath_to_gcode(
             coordinates = f"X{number.format(x)} Y{number.format(y)} Z{number.format(z)}"
             if toolpath.is_oriented:
                 azimuth, tilt = tool_axis_to_ab(move.tool_axes[point_index])
+                if previous_azimuth is not None:
+                    if abs(tilt) < 1e-8:
+                        azimuth = previous_azimuth
+                    else:
+                        azimuth = previous_azimuth + (azimuth - previous_azimuth + 180.0) % 360.0 - 180.0
+                previous_azimuth = azimuth
                 coordinates += f" A{number.format(azimuth)} B{number.format(tilt)}"
             if move.kind is MoveKind.RAPID:
                 if last_kind is not MoveKind.RAPID:

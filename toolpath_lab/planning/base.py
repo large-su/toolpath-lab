@@ -22,7 +22,7 @@ from toolpath_lab.core.parameters import ParameterSet
 from toolpath_lab.core.path import Move, MoveKind, Toolpath, retract_move
 from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import Tool
-from toolpath_lab.core.surface import FlatSurface, FreeformSurface, SurfaceShape
+from toolpath_lab.core.surface import FlatSurface, SurfaceShape
 from toolpath_lab.planning.geometry2d import ensure_ccw
 
 #: 快速移动时相对工件上表面抬起的距离（mm）。
@@ -85,12 +85,12 @@ class PlanningContext:
         return positions
 
     def sample_cut_points(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
-        """按自由曲面的最短波长加密一条平面扫描线。"""
+        """按曲面的建议采样间距加密一条平面扫描线。"""
 
         planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
-        if not isinstance(self.surface, FreeformSurface) or len(planar) < 2:
+        if isinstance(self.surface, FlatSurface) or len(planar) < 2:
             return planar
-        spacing = min(self.surface.wavelength_x_mm, self.surface.wavelength_y_mm) / 24.0
+        spacing = max(float(self.surface.sampling_spacing_mm), 0.25)
         samples = [planar[0]]
         for start, end in zip(planar[:-1], planar[1:]):
             count = max(1, int(np.ceil(np.linalg.norm(end - start) / spacing)))
@@ -121,14 +121,13 @@ class PlanningContext:
         axes = None if tool_axes is None else np.asarray(tool_axes, dtype=np.float64).reshape(-1, 3)
         if axes is not None and axes.shape[0] != planar.shape[0]:
             raise PlanningError("刀轴姿态数量必须与切削点数量一致")
-        if isinstance(self.surface, FreeformSurface) and not sampled:
+        if not isinstance(self.surface, FlatSurface) and not sampled:
             # 平面策略原本每刀只有两个端点；曲面加工需沿线加密采样。
             sampled_planar = self.sample_cut_points(planar)
             sampled_axes = None if axes is None else [axes[0]]
             for segment, (start, end) in enumerate(zip(planar[:-1], planar[1:])):
                 count = max(1, int(np.ceil(np.linalg.norm(end - start) /
-                                           (min(self.surface.wavelength_x_mm,
-                                                self.surface.wavelength_y_mm) / 24.0))))
+                                           max(float(self.surface.sampling_spacing_mm), 0.25))))
                 if sampled_axes is not None:
                     sampled_axes.extend(
                         axes[segment] + (axes[segment + 1] - axes[segment]) * (index / count)

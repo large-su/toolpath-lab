@@ -9,6 +9,7 @@ import numpy as np
 from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.path import MoveKind, Toolpath
 from toolpath_lab.core.region import build_region
+from toolpath_lab.core.surface import build_surface
 from toolpath_lab.core.tool import Tool, ToolKind
 from toolpath_lab.planning import (
     PLANNERS,
@@ -39,15 +40,68 @@ def _cut_moves(toolpath: Toolpath):
     return [move for move in toolpath.moves if move.kind is MoveKind.CUT]
 
 
+def _adaptive_plan(surface=None, parameters=None):
+    options = {
+        "mode": "zigzag",
+        "target_scallop_mm": 0.2,
+        "min_stepover_mm": 0.8,
+        "max_stepover_mm": 6.0,
+        "direction_deg": 0.0,
+        "feed_mm_per_min": 600.0,
+    }
+    options.update(parameters or {})
+    return run_plan(
+        planner_id="adaptive_scallop",
+        tool=Tool(ToolKind.BALL, diameter_mm=6.0, length_mm=30.0),
+        region=build_region("square", {"side_mm": 80.0}),
+        surface=surface or build_surface("flat", {}),
+        parameters=options,
+    )
+
+
 class RegistryTests(unittest.TestCase):
     def test_raster_and_crosshatch_strategies_are_registered(self) -> None:
-        self.assertEqual(PLANNERS.ids(), ["raster", "crosshatch", "five_axis"])
+        self.assertEqual(
+            PLANNERS.ids(), ["raster", "crosshatch", "five_axis", "adaptive_scallop", "five_axis_adaptive"]
+        )
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:
         entry = planner_catalog()[0]
         keys = [item["key"] for item in entry["parameters"]]
         self.assertEqual(keys, ["mode", "stepover_mm", "direction_deg", "feed_mm_per_min"])
         self.assertEqual(entry["label"], "栅格刀路")
+
+
+class AdaptiveScallopTests(unittest.TestCase):
+    def test_flat_surface_uses_nominal_scallop_step(self) -> None:
+        passes = _cut_moves(_adaptive_plan().toolpath)
+        levels = np.array(sorted({round(float(move.points[0][1]), 6) for move in passes}))
+        gaps = np.diff(levels)
+        self.assertGreater(len(levels), 1)
+        self.assertTrue(np.all(gaps <= 2.1541 + 1e-4))
+        self.assertTrue(np.allclose(gaps[:-1], gaps[0], atol=1e-4))
+
+    def test_freeform_surface_adapts_to_curvature(self) -> None:
+        flat = _adaptive_plan().toolpath
+        curved = _adaptive_plan(
+            build_surface("freeform", {"amplitude_mm": 10.0, "wavelength_y_mm": 40.0})
+        ).toolpath
+        curved_levels = sorted({round(float(move.points[0][1]), 6) for move in _cut_moves(curved)})
+        curved_gaps = np.diff(curved_levels)
+        self.assertGreater(curved.pass_count, flat.pass_count)
+        self.assertLess(float(curved_gaps.min()), float(curved_gaps.max()) * 0.9)
+        self.assertTrue(any("目标残留高度" in note for note in curved.notes))
+
+    def test_invalid_scallop_and_step_ranges_are_rejected(self) -> None:
+        with self.assertRaises(PlanningError):
+            run_plan(
+                planner_id="adaptive_scallop",
+                tool=Tool(ToolKind.BALL, diameter_mm=2.0, length_mm=30.0),
+                region=build_region("square", {"side_mm": 80.0}),
+                parameters={"target_scallop_mm": 2.0},
+            )
+        with self.assertRaises(PlanningError):
+            _adaptive_plan(parameters={"min_stepover_mm": 5.0, "max_stepover_mm": 2.0})
 
 
 class PassLayoutTests(unittest.TestCase):

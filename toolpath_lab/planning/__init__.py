@@ -17,6 +17,8 @@ from toolpath_lab.planning.service import PlanningOutcome, get_planner, run_plan
 from toolpath_lab.planning import raster as _raster  # noqa: F401
 from toolpath_lab.planning import crosshatch as _crosshatch  # noqa: F401
 from toolpath_lab.planning import five_axis as _five_axis  # noqa: F401
+from toolpath_lab.planning import adaptive_scallop as _adaptive_scallop  # noqa: F401
+from toolpath_lab.planning import five_axis_adaptive as _five_axis_adaptive  # noqa: F401
 
 __all__ = [
     "PLANNERS",

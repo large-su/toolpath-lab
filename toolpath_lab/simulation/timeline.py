@@ -2,9 +2,10 @@
 
 刀路是几何，播放需要的是时间。每段运动自带进给速度，所以时间轴就是"各段弧长 / 该段进给"
 的累加：切削段用切削进给，快移段用快移速度，界面上的"预计工时"因此不是总长除以一个进给。
+开启五轴姿态平滑时，每条边还要满足刀轴转向时间；按这两种时间的较大值采样。
 
-采样会压缩到 max_samples 个点以控制载荷大小，但每段运动的边界一定保留，
-所以播放永远不会跨段插值。
+采样以 max_samples 为目标预算控制载荷大小，但每段运动的边界、快移拐点
+和指定必须保留的包络刀点一定保留；必要刀点较多时会超出预算。
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from toolpath_lab.core.mathutil import cumulative_lengths
+from toolpath_lab.core.mathutil import cumulative_lengths, slerp_axis
 from toolpath_lab.core.path import DEFAULT_TOOL_AXIS, Move, MoveKind, Toolpath
 
 #: 载荷里使用的运动类型编码（kind_runs 里是整数，省掉重复字符串）。
@@ -78,11 +79,7 @@ class Timeline:
         if self.tool_axes is None:
             tool_axis = DEFAULT_TOOL_AXIS.copy()
         else:
-            tool_axis = self.tool_axes[index] + ratio * (
-                self.tool_axes[nxt] - self.tool_axes[index]
-            )
-            length = float(np.linalg.norm(tool_axis))
-            tool_axis = tool_axis / max(length, 1e-9)
+            tool_axis = slerp_axis(self.tool_axes[index], self.tool_axes[nxt], ratio)
         return TimelineState(
             time_s=query,
             position=position,
@@ -92,7 +89,7 @@ class Timeline:
             tool_axis=tool_axis,
         )
 
-    def to_payload(self, *, time_decimals: int = 4, position_decimals: int = 3) -> dict[str, Any]:
+    def to_payload(self, *, time_decimals: int = 9, position_decimals: int = 3) -> dict[str, Any]:
         """紧凑的 JSON 形式。"""
 
         payload = {
@@ -109,10 +106,22 @@ class Timeline:
         }
         if self.tool_axes is not None:
             payload["tool_axes"] = [
-                [round(float(value), position_decimals) for value in row]
+                [round(float(value), 9) for value in row]
                 for row in self.tool_axes
             ]
         return payload
+
+
+def _sample_distances(move: Move, samples: int) -> NDArray[np.float64]:
+    cumulative = cumulative_lengths(move.points)
+    total = float(cumulative[-1])
+    if total <= 1e-9:
+        return np.array([0.0, 0.0])
+    targets = np.linspace(0.0, total, max(samples, 2))
+    if move.kind is MoveKind.RAPID or move.preserve_vertices:
+        # 抬刀的拐点不能被压缩成穿过材料的斜线；粗加工曲面保护包络也不能丢失。
+        targets = np.unique(np.concatenate((targets, cumulative)))
+    return targets
 
 
 def _resample_move(move: Move, samples: int) -> NDArray[np.float64]:
@@ -121,9 +130,9 @@ def _resample_move(move: Move, samples: int) -> NDArray[np.float64]:
     points = move.points
     cumulative = cumulative_lengths(points)
     total = float(cumulative[-1])
-    if samples <= 2 or total <= 1e-9:
+    if total <= 1e-9:
         return points[[0, -1]]
-    targets = np.linspace(0.0, total, samples)
+    targets = _sample_distances(move, samples)
     return np.column_stack(
         [np.interp(targets, cumulative, points[:, axis]) for axis in range(3)]
     )
@@ -135,15 +144,34 @@ def _resample_axes(move: Move, samples: int) -> NDArray[np.float64]:
     axes = move.tool_axes
     cumulative = cumulative_lengths(move.points)
     total = float(cumulative[-1])
-    if samples <= 2 or total <= 1e-9:
+    if total <= 1e-9:
         result = axes[[0, -1]]
     else:
-        targets = np.linspace(0.0, total, samples)
-        result = np.column_stack(
-            [np.interp(targets, cumulative, axes[:, axis]) for axis in range(3)]
-        )
+        targets = _sample_distances(move, samples)
+        indices = np.clip(np.searchsorted(cumulative, targets, side="right") - 1, 0, len(axes) - 2)
+        result = np.asarray([
+            slerp_axis(axes[i], axes[i + 1], (target - cumulative[i]) /
+                       max(cumulative[i + 1] - cumulative[i], 1e-12))
+            for target, i in zip(targets, indices)
+        ])
     lengths = np.linalg.norm(result, axis=1)
     return result / np.maximum(lengths[:, None], 1e-9)
+
+
+def _resample_timed_move(move: Move, samples: int):
+    """受限姿态段按真实分段时间采样，必须保留原刀点和原地转向。"""
+
+    cumulative = np.concatenate(([0.0], np.cumsum(move.segment_durations_s)))
+    total = float(cumulative[-1])
+    if total <= 1e-12:
+        return move.points[[0, -1]], move.tool_axes[[0, -1]], np.array([0.0, 0.0])
+    targets = np.unique(np.concatenate((np.linspace(0.0, total, max(samples, 2)), cumulative)))
+    indices = np.clip(np.searchsorted(cumulative, targets, side="right") - 1, 0, len(move.points) - 2)
+    ratios = (targets - cumulative[indices]) / np.maximum(cumulative[indices + 1] - cumulative[indices], 1e-12)
+    points = move.points[indices] + ratios[:, None] * (move.points[indices + 1] - move.points[indices])
+    axes = np.asarray([slerp_axis(move.tool_axes[i], move.tool_axes[i + 1], t)
+                       for i, t in zip(indices, ratios)])
+    return points, axes, targets
 
 
 def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
@@ -168,10 +196,15 @@ def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
     clock = 0.0
 
     for index, move in enumerate(toolpath.moves):
-        sampled = _resample_move(move, int(shares[index]))
-        sampled_axes = _resample_axes(move, int(shares[index])) if include_axes else None
-        steps = np.linalg.norm(np.diff(sampled, axis=0), axis=1)
-        local = np.concatenate(([0.0], np.cumsum(steps))) / move.feed_mm_per_min * 60.0
+        if move.angular_speed_deg_s is not None:
+            sampled, sampled_axes, local = _resample_timed_move(move, int(shares[index]))
+            if not include_axes:
+                sampled_axes = None
+        else:
+            sampled = _resample_move(move, int(shares[index]))
+            sampled_axes = _resample_axes(move, int(shares[index])) if include_axes else None
+            steps = np.linalg.norm(np.diff(sampled, axis=0), axis=1)
+            local = np.concatenate(([0.0], np.cumsum(steps))) / move.feed_mm_per_min * 60.0
         local_times = clock + local
         clock = float(local_times[-1])
         if positions and index > 0:

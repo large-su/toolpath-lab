@@ -91,6 +91,7 @@ class StockState:
         xs = np.linspace(spec.bounds_mm[0][0], spec.bounds_mm[0][1], nx)
         ys = np.linspace(spec.bounds_mm[1][0], spec.bounds_mm[1][1], ny)
         self.xs, self.ys = xs, ys
+        self.xx, self.yy = np.meshgrid(xs, ys)
         self.heights = np.full((ny, nx), spec.initial_top_z_mm, dtype=np.float64)
         self.active = _inside_grid(xs, ys, spec.boundary)
         self.heights[~self.active] = spec.bottom_z_mm
@@ -111,9 +112,38 @@ class StockState:
         radius = self.spec.tool_radius_mm if radius_mm is None else float(radius_mm)
         if radius <= 0:
             return
-        xx, yy = np.meshgrid(self.xs, self.ys)
-        mask = self.active & ((xx - x) ** 2 + (yy - y) ** 2 <= radius * radius)
+        mask = self.active & ((self.xx - x) ** 2 + (self.yy - y) ** 2 <= radius * radius)
         self.heights[mask] = np.minimum(self.heights[mask], max(z, self.spec.bottom_z_mm))
+
+    def remove_tool_segment(
+        self,
+        start_xyz: NDArray[np.float64] | list[float] | tuple[float, float, float],
+        end_xyz: NDArray[np.float64] | list[float] | tuple[float, float, float],
+        *,
+        radius_mm: float | None = None,
+    ) -> None:
+        """按圆形刀具扫掠一条直线段，降低线段圆柱扫掠范围内的毛坯。"""
+
+        start = np.asarray(start_xyz, dtype=np.float64).reshape(3)
+        end = np.asarray(end_xyz, dtype=np.float64).reshape(3)
+        radius = self.spec.tool_radius_mm if radius_mm is None else float(radius_mm)
+        if radius <= 0:
+            return
+        delta = end - start
+        length_squared = float(np.dot(delta[:2], delta[:2]))
+        if length_squared <= 1e-12:
+            self.remove_tool_point(end, radius_mm=radius)
+            return
+        t = ((self.xx - start[0]) * delta[0] + (self.yy - start[1]) * delta[1])
+        t = np.clip(t / length_squared, 0.0, 1.0)
+        closest_x = start[0] + t * delta[0]
+        closest_y = start[1] + t * delta[1]
+        distance_squared = (self.xx - closest_x) ** 2 + (self.yy - closest_y) ** 2
+        target_z = start[2] + t * delta[2]
+        mask = self.active & (distance_squared <= radius * radius)
+        target_z = np.maximum(target_z, self.spec.bottom_z_mm)
+        mask &= target_z < self.heights
+        self.heights[mask] = target_z[mask]
 
     def remaining_volume_mm3(self) -> float:
         cell_area = self.spec.resolution_mm * self.spec.resolution_mm

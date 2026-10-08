@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from math import isfinite
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 from numpy.typing import NDArray
@@ -51,6 +51,8 @@ class Move:
     pass_index: int = -1
     label: str = ""
     tool_axes: NDArray[np.float64] | None = None
+    preserve_vertices: bool = False
+    angular_speed_deg_s: float | None = None
 
     def __post_init__(self) -> None:
         points = np.array(self.points, dtype=np.float64, copy=True).reshape(-1, 3)
@@ -62,6 +64,10 @@ class Move:
             raise ParameterError("运动段的进给速度必须是有限正数")
         points.setflags(write=False)
         object.__setattr__(self, "points", points)
+        if self.angular_speed_deg_s is not None and (
+            not isfinite(self.angular_speed_deg_s) or self.angular_speed_deg_s <= 0.0
+        ):
+            raise ParameterError("刀轴角速度上限必须是有限正数")
         if self.tool_axes is None:
             axes = np.repeat(DEFAULT_TOOL_AXIS[None, :], points.shape[0], axis=0)
         else:
@@ -81,7 +87,7 @@ class Move:
     def is_oriented(self) -> bool:
         """是否包含非垂直于 XY 平面的五轴刀轴姿态。"""
 
-        return bool(np.any(np.abs(self.tool_axes[:, :2]) > 1e-7))
+        return bool(np.any(np.abs(self.tool_axes - DEFAULT_TOOL_AXIS) > 1e-7))
 
     @property
     def length_mm(self) -> float:
@@ -95,9 +101,21 @@ class Move:
 
     @property
     def duration_s(self) -> float:
-        """按自己的进给速度走完这段所需的时间。"""
+        """平移进给与可选刀轴角速度共同决定的仿真时间。"""
 
-        return self.length_mm / self.feed_mm_per_min * 60.0
+        return float(self.segment_durations_s.sum())
+
+    @property
+    def segment_durations_s(self) -> NDArray[np.float64]:
+        """每条边同时满足平移进给和刀轴角速度，包含原地转向的非零时间。"""
+
+        linear = np.linalg.norm(np.diff(self.points, axis=0), axis=1) / self.feed_mm_per_min * 60.0
+        if self.angular_speed_deg_s is None:
+            return linear
+        dots = np.sum(self.tool_axes[:-1] * self.tool_axes[1:], axis=1)
+        cross = np.linalg.norm(np.cross(self.tool_axes[:-1], self.tool_axes[1:]), axis=1)
+        angular = np.degrees(np.arctan2(cross, dots)) / self.angular_speed_deg_s
+        return np.maximum(linear, angular)
 
     def to_payload(self) -> dict[str, Any]:
         payload = {
@@ -113,6 +131,9 @@ class Move:
             payload["tool_axes"] = [
                 [round(float(value), 6) for value in row] for row in self.tool_axes
             ]
+        if self.angular_speed_deg_s is not None:
+            payload["angular_speed_deg_s"] = self.angular_speed_deg_s
+            payload["duration_s"] = self.duration_s
         return payload
 
 
@@ -124,6 +145,7 @@ class Toolpath:
     planner: str = ""
     planner_label: str = ""
     notes: tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.moves:
@@ -177,7 +199,7 @@ class Toolpath:
         }
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "planner": self.planner,
             "planner_label": self.planner_label,
             "notes": list(self.notes),
@@ -185,6 +207,9 @@ class Toolpath:
             "statistics": self.statistics(),
             "axis_mode": "five_axis" if self.is_oriented else "three_axis",
         }
+        if self.metadata:
+            payload["metadata"] = dict(self.metadata)
+        return payload
 
 
 def retract_move(

@@ -8,7 +8,15 @@ import numpy as np
 
 from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.region import build_region
-from toolpath_lab.core.surface import FlatSurface, FreeformSurface, build_surface
+from toolpath_lab.core.surface import (
+    CompositeSurface,
+    DomeSurface,
+    FlatSurface,
+    FreeformSurface,
+    RadialRippleSurface,
+    SaddleSurface,
+    build_surface,
+)
 
 
 class SurfaceTests(unittest.TestCase):
@@ -35,6 +43,28 @@ class SurfaceTests(unittest.TestCase):
     def test_invalid_wavelength_is_rejected(self) -> None:
         with self.assertRaises(ParameterError):
             build_surface("freeform", {"wavelength_x_mm": 0})
+
+    def test_freeform_rotation_preserves_height_bounds(self) -> None:
+        surface = FreeformSurface(amplitude_mm=6.0, rotation_deg=45.0)
+        self.assertEqual(surface.height_bounds(), (-6.0, 6.0))
+        values = surface.height_at(np.array([[0, 0], [20, 10]], dtype=float))
+        self.assertTrue(np.all(np.isfinite(values)))
+
+    def test_richer_surfaces_have_bounded_heights(self) -> None:
+        surfaces = (
+            SaddleSurface(),
+            DomeSurface(),
+            RadialRippleSurface(),
+            CompositeSurface(),
+        )
+        points = np.array([[-40, -30], [0, 0], [40, 30]], dtype=float)
+        for surface in surfaces:
+            with self.subTest(surface=surface.id):
+                values = surface.height_at(points)
+                lower, upper = surface.height_bounds()
+                self.assertTrue(np.all(values >= lower - 1e-9))
+                self.assertTrue(np.all(values <= upper + 1e-9))
+                self.assertGreater(surface.sampling_spacing_mm, 0.0)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,14 @@ class StockTests(unittest.TestCase):
         self.assertLess(state.remaining_volume_mm3(), before)
         self.assertAlmostEqual(float(state.heights[10, 10]), 0.0, places=6)
 
+    def test_tool_segment_cuts_between_sampled_points(self) -> None:
+        state = self._state()
+        before = state.remaining_volume_mm3()
+        state.remove_tool_segment([-8.0, 0.0, 0.0], [8.0, 0.0, 0.0])
+        self.assertLess(state.remaining_volume_mm3(), before)
+        self.assertAlmostEqual(float(state.heights[10, 5]), 0.0, places=6)
+        self.assertAlmostEqual(float(state.heights[10, 15]), 0.0, places=6)
+
     def test_reset_restores_initial_stock(self) -> None:
         state = self._state()
         initial = state.heights.copy()

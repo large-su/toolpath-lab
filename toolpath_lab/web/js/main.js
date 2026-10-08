@@ -32,6 +32,10 @@ let queued = false;
 let debounceTimer = 0;
 let scrubbing = false;
 let lastResult = null;
+let latestStockStats = null;
+let latestCollision = null;
+let collisionEpisodeActive = false;
+let lastCollisionTime = -1;
 
 // ------------------------------------------------------------------ 工具
 function seconds(value) {
@@ -57,6 +61,14 @@ function hideBanner() {
 // ------------------------------------------------------------------ 启动
 async function boot() {
   viewport = new Viewport(dom.viewport);
+  viewport.onStockUpdate = (stats) => {
+    latestStockStats = stats;
+    renderStockStats(stats);
+  };
+  viewport.onCollisionUpdate = (hit) => {
+    latestCollision = hit;
+    renderCollisionStats(hit);
+  };
   playback = new Playback();
   playback.onStateChange = (state) => renderPlaybar(state);
   buildViewToolbar();
@@ -81,7 +93,11 @@ async function boot() {
     root: dom.panel,
     catalog: catalog,
     onChange: scheduleRegenerate,
-    onDisplayChange: (options) => viewport.setDisplayOptions(options),
+    onDisplayChange: (options) => {
+      collisionEpisodeActive = false;
+      viewport.setDisplayOptions(options);
+      if (lastResult) renderStats(lastResult);
+    },
     onModelFile: importModel,
     onModelChange: (model) => viewport.setImportedModel(model),
   });
@@ -184,6 +200,8 @@ async function regenerate() {
     viewport.setResult(result);
     viewport.setTool(result.tool);
     playback.load(result.timeline);
+    collisionEpisodeActive = false;
+    lastCollisionTime = -1;
     renderStats(result);
     if (result.warnings && result.warnings.length) showBanner(result.warnings.join("；"));
     else hideBanner();
@@ -232,6 +250,29 @@ function renderStats(result) {
     ["切削长度", stats.cut_length_mm.toFixed(1) + " mm"],
     ["预计工时", seconds(stats.estimated_time_s)],
   ];
+  const adaptive = result.toolpath.metadata && result.toolpath.metadata.adaptive;
+  const roughing = result.toolpath.metadata?.roughing;
+  const smoothing = result.toolpath.metadata?.orientation_smoothing;
+  if (result.toolpath.metadata?.five_axis_adaptive) rows.push(["残留模型", "球头刀·估算"]);
+  if (smoothing) rows.push(
+    ["刀轴平滑", Number(smoothing.raw_peak_gradient_deg_mm).toFixed(1) + " → "
+      + Number(smoothing.smoothed_peak_gradient_deg_mm).toFixed(1) + " °/mm"],
+    ["最大姿态偏差", Number(smoothing.actual_max_deviation_deg).toFixed(1) + "°"],
+    ["仿真角速度", Number(smoothing.peak_angular_speed_deg_s).toFixed(1) + " / "
+      + Number(smoothing.max_angular_speed_deg_s).toFixed(1) + " °/s"]
+  );
+  if (roughing) rows.splice(2, 0,
+    ["粗加工层数", String(roughing.layer_count)],
+    ["实际层切深", Number(roughing.depth_mm).toFixed(2) + " mm"],
+    ["精加工余量", Number(roughing.allowance_mm).toFixed(2) + " mm"]
+  );
+  if (adaptive) {
+    rows.splice(2, 0,
+      ["目标残留", Number(adaptive.target_scallop_mm).toFixed(2) + " mm"],
+      ["实际步距", Number(adaptive.min_stepover_mm).toFixed(2)
+        + "～" + Number(adaptive.max_stepover_mm).toFixed(2) + " mm"]
+    );
+  }
   const list = document.createElement("dl");
   for (const [label, value] of rows) {
     for (const node of statRow(label, value)) list.appendChild(node);
@@ -241,7 +282,72 @@ function renderStats(result) {
     + result.tool.diameter_mm.toFixed(1) + " · " + result.toolpath.planner_label;
   const container = document.createElement("div");
   container.append(heading, list);
+  if (roughing) {
+    const stage = document.createElement("div");
+    stage.className = "roughing-runtime";
+    container.appendChild(stage);
+    const jump = document.createElement("button");
+    jump.type = "button";
+    jump.className = "button roughing-jump";
+    jump.textContent = "跳至精加工";
+    jump.title = "暂停并重建此前粗加工后的毛坯状态，查看精加工阶段";
+    jump.disabled = !roughing.layer_count;
+    jump.addEventListener("click", () => {
+      const timeline = playback.timeline;
+      const run = timeline?.move_runs.find((item) => item[1] >= roughing.finish_start_move_index);
+      if (!run) return;
+      playback.pause();
+      playback.seekProgress(timeline.times[run[0]] / Math.max(playback.duration, 1e-9));
+    });
+    container.appendChild(jump);
+  }
+  if (adaptive) {
+    const legend = document.createElement("div");
+    legend.className = "adaptive-legend";
+    const title = document.createElement("span");
+    title.textContent = "步距着色";
+    const bar = document.createElement("i");
+    bar.className = "adaptive-legend-bar";
+    const labels = document.createElement("span");
+    labels.textContent = "密集  →  稀疏";
+    legend.append(title, bar, labels);
+    container.appendChild(legend);
+  }
+  if (panel && panel.displayOptions().showStock) {
+    const stock = document.createElement("div");
+    stock.className = "stock-runtime";
+    stock.textContent = "材料仿真：等待播放";
+    container.appendChild(stock);
+    if (panel.displayOptions().checkToolCollision) {
+      const collision = document.createElement("div");
+      collision.className = "collision-runtime";
+      container.appendChild(collision);
+    }
+  }
   dom.stats.replaceChildren(container);
+  if (panel && panel.displayOptions().showStock) renderStockStats(latestStockStats);
+  renderCollisionStats(latestCollision);
+  if (playback) renderMachiningStage(playback.state());
+}
+
+function renderStockStats(stats) {
+  const element = dom.stats.querySelector(".stock-runtime");
+  if (!element) return;
+  if (!stats) {
+    element.textContent = "材料仿真：未启用";
+    return;
+  }
+  element.textContent = "已切除 " + Number(stats.removed_percent).toFixed(1)
+    + "% · 剩余 " + Number(stats.remaining_volume_mm3).toFixed(0) + " mm³";
+}
+
+function renderCollisionStats(hit) {
+  const element = dom.stats.querySelector(".collision-runtime");
+  if (!element) return;
+  element.classList.toggle("collision-alert", Boolean(hit));
+  element.textContent = hit
+    ? `⚠ ${hit.part}干涉 · ${hit.time_s.toFixed(2)} s\n位置 ${hit.position.map((v) => v.toFixed(1)).join(", ")} mm\n竖直重叠约 ${hit.overlap_mm.toFixed(2)} mm`
+    : "刀身检测：当前未发现干涉（高度场近似）";
 }
 
 function renderPlaybar(state) {
@@ -252,6 +358,19 @@ function renderPlaybar(state) {
   dom.pose.textContent = "姿态 A" + azimuth.toFixed(1) + "° B" + tilt.toFixed(1) + "°";
   dom.time.textContent = state.time.toFixed(2) + " / " + state.duration.toFixed(2) + " s";
   dom.play.textContent = state.playing ? "❚❚" : "▶";
+  renderMachiningStage(state);
+}
+
+function renderMachiningStage(state) {
+  const element = dom.stats.querySelector(".roughing-runtime");
+  const roughing = lastResult?.toolpath.metadata?.roughing;
+  if (!element || !roughing) return;
+  const index = state.moveIndex || 0;
+  const layer = roughing.layers.find((item) => index >= item.start_move_index && index <= item.end_move_index);
+  element.textContent = index < roughing.finish_start_move_index
+    ? (layer ? `阶段：粗加工第 ${layer.index}/${roughing.layer_count} 层 · 层高 ${layer.z_mm.toFixed(2)} mm`
+      : "阶段：粗加工结束，安全转入精加工")
+    : "阶段：精加工（原选定策略）";
 }
 
 // ------------------------------------------------------------------ 循环
@@ -260,10 +379,27 @@ let previousTime = 0;
 function animate(now) {
   const dt = previousTime ? Math.min((now - previousTime) / 1000, 0.1) : 0;
   previousTime = now;
-  const state = playback.update(dt);
+  const wasPlaying = playback.playing;
+  let state = playback.update(dt);
   if (state && playback.timeline) {
-    viewport.setPlayhead(state.position, state.index, state.toolAxis);
-    if (playback.playing || scrubbing) renderPlaybar(state);
+    if (state.time < lastCollisionTime) collisionEpisodeActive = false;
+    const collisions = viewport.setPlayhead(state.position, state.index, state.toolAxis, state.time);
+    if (collisions.updated) {
+      if (wasPlaying && collisions.first && viewport.display.pauseOnCollision && !collisionEpisodeActive) {
+        playback.pause();
+        playback.seekProgress(collisions.first.time_s / Math.max(playback.duration, 1e-9));
+        state = playback.state();
+        viewport.setPlayhead(state.position, state.index, state.toolAxis, state.time);
+        collisionEpisodeActive = true;
+        showBanner("检测到刀身与剩余毛坯干涉，已暂停。可调整刀具/曲面参数重新生成；再次播放可继续观察。", "info");
+      } else if (collisions.first || collisions.current) {
+        collisionEpisodeActive = true;
+      } else {
+        collisionEpisodeActive = false;
+      }
+    }
+    lastCollisionTime = state.time;
+    if (wasPlaying || scrubbing) renderPlaybar(state);
   }
   viewport.render();
   requestAnimationFrame(animate);

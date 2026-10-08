@@ -3,6 +3,8 @@
 // 后端已经把几何换算成了时间（弧长 / 进给），所以播放只是插值：没有物理，也不会重新规划。
 // 相邻采样点就是刀路上相邻的点，因此"采样下标"可以直接当作"已经走到哪一段"。
 
+import { slerpAxis } from "./orientation.js";
+
 function decodeRuns(runs, count, Ctor) {
   const values = new Ctor(count);
   if (!runs || runs.length === 0) return values;
@@ -34,6 +36,7 @@ export class Playback {
     if (timeline) {
       this.kindNames = Object.assign({ 0: "cut", 1: "link", 2: "rapid" }, timeline.kind_codes || {});
       this.kinds = decodeRuns(timeline.kind_runs, this.sampleCount, Uint8Array);
+      this.moveIndices = decodeRuns(timeline.move_runs, this.sampleCount, Int32Array);
     } else {
       this.kinds = null;
     }
@@ -72,13 +75,7 @@ export class Playback {
     if (axisSamples && axisSamples.length) {
       const axisA = axisSamples[index];
       const axisB = axisSamples[next];
-      toolAxis = ratio === 0
-        ? axisA
-        : [axisA[0] + (axisB[0] - axisA[0]) * ratio,
-          axisA[1] + (axisB[1] - axisA[1]) * ratio,
-          axisA[2] + (axisB[2] - axisA[2]) * ratio];
-      const length = Math.hypot(toolAxis[0], toolAxis[1], toolAxis[2]) || 1;
-      toolAxis = toolAxis.map((value) => value / length);
+      toolAxis = slerpAxis(axisA, axisB, ratio);
     }
     return {
       time: clamped,
@@ -87,6 +84,7 @@ export class Playback {
       index,
       position,
       toolAxis,
+      moveIndex: this.moveIndices[ratio > 0 ? next : index],
       playing: this.playing,
     };
   }

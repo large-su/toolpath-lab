@@ -14,6 +14,7 @@ from toolpath_lab.core.surface import SURFACE_TYPES, surface_catalog
 from toolpath_lab.core.tool import tool_parameters
 from toolpath_lab.planning import RAPID_FEED_MM_PER_MIN, SAFE_HEIGHT_MM
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
+from toolpath_lab.planning.roughing import roughing_parameters
 
 DEFAULT_REGION_ID = "square"
 DEFAULT_SURFACE_ID = "flat"
@@ -63,6 +64,10 @@ def catalog_payload() -> dict[str, Any]:
             "list": planner_catalog(),
             "default_id": DEFAULT_PLANNER_ID,
             "defaults": default_planner_parameters(),
+        },
+        "roughing": {
+            "parameters": roughing_parameters().to_dicts(),
+            "defaults": roughing_parameters().defaults(),
         },
         # 这些量在主程序里是固定的，界面上只做展示；想变成参数就在 planning/base.py 里改。
         "fixed": {

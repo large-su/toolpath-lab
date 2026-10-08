@@ -7,10 +7,14 @@ const DISPLAY_OPTIONS = [
   { key: "showRapid", label: "快移", color: "var(--cyan)" },
   { key: "showTrace", label: "已走轨迹", color: "var(--teal)" },
   { key: "showTool", label: "刀具" },
+  { key: "showRoughing", label: "粗加工刀路", color: "#bb8eff" },
+  { key: "showAdaptiveSpacing", label: "自适应步距着色" },
 ];
 
 const SIMULATION_OPTIONS = [
-  { key: "showStock", label: "材料切除仿真" },
+  { key: "showStock", label: "材料切除仿真", help: "勾选后才创建毛坯高度场，随播放或拖动时间轴切除材料" },
+  { key: "checkToolCollision", label: "刀身碰撞检测", help: "检查非切削刀身与剩余毛坯的干涉，包含五轴姿态变化和快移；不检查夹具或机床" },
+  { key: "pauseOnCollision", label: "碰撞时暂停", help: "播放时在首次检测到干涉的位置暂停；再次播放可继续观察这一段干涉" },
 ];
 
 const FIXED_NOTES = [
@@ -67,9 +71,11 @@ export class ParameterPanel {
         id: this.catalog.planners.default_id,
         values: clone(this.catalog.planners.defaults),
       },
+      roughing: clone(this.catalog.roughing?.defaults || { enabled: false, depth_mm: 2, allowance_mm: 0.5 }),
       display: {
         showWorkpiece: true, showPath: true, showRapid: true, showTrace: true,
-        showTool: true, showStock: false,
+        showTool: true, showAdaptiveSpacing: true, showStock: false, showRoughing: true,
+        checkToolCollision: true, pauseOnCollision: true,
       },
     };
     this.rows = [];
@@ -88,6 +94,7 @@ export class ParameterPanel {
       region,
       surface: { type: this.state.surface.id, parameters: clone(this.state.surface.values) },
       planner: { id: this.state.planner.id, parameters: clone(this.state.planner.values) },
+      roughing: clone(this.state.roughing),
     };
   }
 
@@ -112,6 +119,7 @@ export class ParameterPanel {
       this._regionSection(),
       this._surfaceSection(),
       this._plannerSection(),
+      this._roughingSection(),
       this._displaySection(),
       this._simulationSection(),
       this._noteSection()
@@ -325,19 +333,39 @@ export class ParameterPanel {
     return section;
   }
 
+  _roughingSection() {
+    const section = this._capabilitySection("粗加工", this.catalog.roughing?.parameters || [],
+      this.state.roughing, "roughing");
+    const hint = document.createElement("div");
+    hint.className = "note";
+    hint.textContent = "开启后先分层清料，再执行上方选择的精加工策略。紫色为粗加工刀路，橙色为精加工；建议开启材料仿真和刀身检测。";
+    section.appendChild(hint);
+    return section;
+  }
+
   _simulationSection() {
     const section = this._section("仿真");
+    const inputs = [];
+    const refresh = () => {
+      for (const { input, row, key } of inputs) {
+        input.disabled = key !== "showStock" && (!this.state.display.showStock
+          || (key === "pauseOnCollision" && !this.state.display.checkToolCollision));
+        row.classList.toggle("disabled", input.disabled);
+      }
+    };
     for (const option of SIMULATION_OPTIONS) {
       const row = document.createElement("label");
       row.className = "checkbox-row";
-      row.title = "勾选后才创建毛坯高度场，并随播放或拖动时间轴切除材料";
+      row.title = option.help;
       const input = document.createElement("input");
       input.type = "checkbox";
       input.checked = this.state.display[option.key];
       input.addEventListener("change", () => {
         this.state.display[option.key] = input.checked;
+        refresh();
         this.onDisplayChange(this.displayOptions());
       });
+      inputs.push({ input, row, key: option.key });
       row.append(input);
       const text = document.createElement("span");
       text.textContent = option.label;
@@ -346,7 +374,8 @@ export class ParameterPanel {
     }
     const hint = document.createElement("div");
     hint.className = "note";
-    hint.textContent = "高度场教学仿真：播放刀路时逐步降低毛坯顶部高度；导入模型会在仿真时自动隐藏，避免与毛坯重叠。";
+    refresh();
+    hint.textContent = "高度场教学仿真：导入参考模型在仿真时隐藏。开启刀身检测后，干涉刀身变红并标出位置；正常切削刃接触不算刀身碰撞。";
     section.append(hint);
     return section;
   }
@@ -386,6 +415,12 @@ export class ParameterPanel {
     row.dataset.key = spec.key;
     const label = document.createElement("label");
     label.textContent = spec.label;
+    const input = ["INPUT", "SELECT"].includes(control.node.tagName)
+      ? control.node : control.node.querySelector("input, select");
+    if (input) {
+      input.id = `${capability || "selector"}-${spec.key}`;
+      label.htmlFor = input.id;
+    }
     if (spec.help) label.title = spec.help;
     const cell = document.createElement("div");
     cell.className = "control";

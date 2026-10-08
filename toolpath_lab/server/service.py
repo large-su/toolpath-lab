@@ -14,7 +14,7 @@ from toolpath_lab.planning import run_plan
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.simulation import Timeline, build_timeline, stock_spec_for
 
-#: 播放采样的上限，决定响应的体积。
+#: 播放采样目标预算；抬刀拐点和粗加工保护包络的必要刀点可超出预算。
 DEFAULT_MAX_SAMPLES = 4000
 
 
@@ -65,6 +65,7 @@ def execute_plan(
         region=request.region,
         surface=request.surface,
         parameters=request.planner_parameters,
+        roughing=request.roughing_parameters,
     )
     timeline = (
         build_timeline(outcome.toolpath, max_samples=max_samples) if with_timeline else None

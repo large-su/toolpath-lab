@@ -11,6 +11,7 @@ from toolpath_lab.core.surface import FlatSurface, SurfaceShape
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.base import Planner, PlanningContext
 from toolpath_lab.planning.registry import PLANNERS
+from toolpath_lab.planning.roughing import prepend_roughing, roughing_parameters
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,7 @@ def run_plan(
     region: RegionShape,
     surface: SurfaceShape | None = None,
     parameters: Mapping[str, Any] | None = None,
+    roughing: Mapping[str, Any] | None = None,
 ) -> PlanningOutcome:
     """为一份刀具/区域/参数组合生成刀路。"""
 
@@ -46,4 +48,5 @@ def run_plan(
         surface=surface or FlatSurface(),
     )
     toolpath = planner.plan(context)
+    toolpath = prepend_roughing(context, toolpath, roughing_parameters().coerce(roughing))
     return PlanningOutcome(toolpath=toolpath, warnings=tuple(context.warnings))

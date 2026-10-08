@@ -123,6 +123,17 @@ class Tool:
             return self.radius_mm - self.corner_radius_mm
         return self.radius_mm
 
+    @property
+    def cutting_length_mm(self) -> float:
+        """教学刀具模型的轴向切削段，与前端绘制/检测一致。"""
+
+        return min(self.length_mm, self.diameter_mm if self.kind is ToolKind.BALL
+                   else min(self.length_mm * 0.65, self.radius_mm * 6))
+
+    @property
+    def shank_radius_mm(self) -> float:
+        return self.radius_mm * 1.25
+
     def describe(self) -> dict[str, Any]:
         """界面与接口使用的摘要。"""
 
@@ -134,6 +145,8 @@ class Tool:
             "length_mm": self.length_mm,
             "nose_radius_mm": self.corner_radius_mm if self.kind is ToolKind.BULL else 0.0,
             "footprint_radius_mm": self.footprint_radius_mm,
+            "cutting_length_mm": self.cutting_length_mm,
+            "shank_radius_mm": self.shank_radius_mm,
         }
 
     def orientation_clearance_mm(self, tool_axis: Any, surface_normal: Any) -> float:

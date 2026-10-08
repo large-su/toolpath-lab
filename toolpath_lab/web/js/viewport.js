@@ -10,6 +10,7 @@ import * as THREE from "three";
 import { OrbitControls } from "../vendor/OrbitControls.js";
 import { RoomEnvironment } from "../vendor/RoomEnvironment.js";
 import { StockSimulation } from "./stock.js";
+import { detectShankCollision, toolEnvelope } from "./collision.js";
 
 const COLORS = {
   background: 0x071014,
@@ -17,6 +18,7 @@ const COLORS = {
   workpiece: 0x5b6b7e,
   contour: 0x54d6c4,
   cut: 0xffa726,
+  roughing: 0xbb8eff,
   link: 0xf2c94c,
   rapid: 0x4fc3f7,
   trace: 0x54d6c4,
@@ -84,13 +86,21 @@ function polylineGeometry(polylines, dashed = false) {
   return geometry;
 }
 
+function adaptiveSpacingColor(value, minimum, maximum) {
+  const span = Math.max(maximum - minimum, 1e-9);
+  const normalized = THREE.MathUtils.clamp((value - minimum) / span, 0, 1);
+  // 步距越小表示刀路越密，用暖色突出；步距越大用蓝绿色表示。
+  return new THREE.Color().setHSL(0.02 + normalized * 0.52, 0.86, 0.56);
+}
+
 export class Viewport {
   constructor(container) {
     this.container = container;
     this.appearance = { shadows: true, white: false, grid: true };
     this.display = {
       showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true,
-      showStock: false,
+      showAdaptiveSpacing: true, showStock: false, showRoughing: true,
+      checkToolCollision: true, pauseOnCollision: true,
     };
     this.bounds = null;
     this.activeView = "fit";
@@ -145,14 +155,23 @@ export class Viewport {
     this.importedGroup = new THREE.Group();
     this.contourGroup = new THREE.Group();
     this.pathGroup = new THREE.Group();
+    this.adaptiveSpacingGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
     this.poseGroup = new THREE.Group();
     this.stockGroup = new THREE.Group();
     this.toolGroup = new THREE.Group();
+    this.collisionMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(1.2, 20, 12),
+      new THREE.MeshBasicMaterial({ color: 0xff4035, transparent: true, opacity: 0.8, depthTest: false })
+    );
+    this.collisionMarker.visible = false;
+    this.collisionMarker.renderOrder = 10;
+    this.scene.add(this.collisionMarker);
     this.scene.add(
       this.gridGroup, this.workpieceGroup,
       this.importedGroup,
       this.contourGroup, this.pathGroup, this.traceGroup, this.poseGroup,
+      this.adaptiveSpacingGroup,
       this.stockGroup, this.toolGroup
     );
 
@@ -165,6 +184,13 @@ export class Viewport {
     this.stockSimulation = null;
     this.stockPayload = null;
     this.importedModel = null;
+    this.onStockUpdate = null;
+    this.onCollisionUpdate = null;
+    this.lastPlayheadTime = null;
+    this.collisionState = null;
+    this.shankMesh = null;
+    this.cutLine = null;
+    this.adaptiveSpacingRange = null;
 
     this.resize();
     if (typeof ResizeObserver !== "undefined") {
@@ -221,6 +247,7 @@ export class Viewport {
     this._clear(this.workpieceGroup);
     this._clear(this.contourGroup);
     this._clear(this.pathGroup);
+    this._clear(this.adaptiveSpacingGroup);
     this._clear(this.traceGroup);
     this._clear(this.poseGroup);
     this._clear(this.stockGroup);
@@ -228,6 +255,8 @@ export class Viewport {
     this.stockWallMesh = null;
     this.stockSimulation = null;
     this.stockPayload = payload;
+    this.lastPlayheadTime = null;
+    this._setCollisionState(null);
 
     const region = payload.region;
     const [xMin, xMax] = region.bounds_mm[0];
@@ -242,14 +271,23 @@ export class Viewport {
     this._rebuildGrid(span, thickness, lowerZ);
 
     const groups = { cut: [], link: [], rapid: [] };
-    for (const move of payload.toolpath.moves) {
-      (groups[move.kind] || groups.cut).push(move.points);
+    const roughPaths = [];
+    const finishStart = payload.toolpath.metadata?.roughing?.finish_start_move_index || 0;
+    const cutMoves = [];
+    for (const [index, move] of payload.toolpath.moves.entries()) {
+      if (index < finishStart && move.kind === "cut") roughPaths.push(move.points);
+      else (groups[move.kind] || groups.cut).push(move.points);
+      if (move.kind === "cut" && index >= finishStart) cutMoves.push(move);
     }
     for (const kind of Object.keys(groups)) groups[kind] = liftPaths(groups[kind]);
-    this.pathGroup.add(this._line(groups.cut, COLORS.cut, 1));
+    this.cutLine = this._line(groups.cut, COLORS.cut, 1);
+    this.pathGroup.add(this.cutLine);
+    this.roughLine = this._line(liftPaths(roughPaths), COLORS.roughing, 0.8);
+    this.pathGroup.add(this.roughLine);
     this.pathGroup.add(this._line(groups.link, COLORS.link, 1));
     this.rapidLine = this._line(groups.rapid, COLORS.rapid, 0.75, true);
     this.pathGroup.add(this.rapidLine);
+    this._buildAdaptiveSpacingOverlay(payload, cutMoves);
 
     if (payload.timeline && payload.timeline.positions) {
       const geometry = polylineGeometry([liftPaths([payload.timeline.positions])[0]]);
@@ -325,23 +363,26 @@ export class Viewport {
   setTool(tool) {
     this.tool = tool;
     this._clear(this.toolGroup);
-    const radius = Math.max(tool.radius_mm, 0.2);
-    const length = tool.length_mm;
+    const envelope = toolEnvelope(tool);
+    const radius = envelope.radius;
+    const length = envelope.length;
     const kind = tool.kind || "flat";
     const nose = Math.min(Math.max(Number(tool.nose_radius_mm || tool.corner_radius_mm || 0), 0), radius * 0.98);
-    const flute = Math.min(length * 0.65, radius * 6);
-    const holder = Math.max(length - flute, length * 0.2);
+    const flute = envelope.cuttingLength;
+    const holder = Math.max(length - flute, 0);
     const cuttingMaterial = new THREE.MeshStandardMaterial({
       color: COLORS.tool, metalness: 0.5, roughness: 0.34,
     });
     let cutting;
-    let cuttingHeight = flute;
-
     if (kind === "ball") {
-      // 球头刀用球体尖端表达刀尖接触，圆柱段从球顶继续向上延伸。
-      cuttingHeight = Math.min(length * 0.42, radius * 2);
-      cutting = new THREE.Mesh(new THREE.SphereGeometry(radius, 64, 32), cuttingMaterial);
-      cutting.position.z = radius;
+      const profile = [];
+      for (let i = 0; i <= 32; i += 1) {
+        const z = flute * i / 32;
+        profile.push(new THREE.Vector2(Math.sqrt(Math.max(0, radius ** 2 - (z - radius) ** 2)), z));
+      }
+      profile.push(new THREE.Vector2(0, flute));
+      cutting = new THREE.Mesh(new THREE.LatheGeometry(profile, 64), cuttingMaterial);
+      cutting.rotation.x = Math.PI / 2;
     } else if (kind === "bull" && nose > 0.001 && nose < radius) {
       // 圆鼻刀的底部由平底段和四分之一圆弧组成，使用旋转体显示。
       const flatRadius = radius - nose;
@@ -359,7 +400,7 @@ export class Viewport {
       cutting = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, flute, 64), cuttingMaterial);
     }
     const shank = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
+      new THREE.CylinderGeometry(envelope.shankRadius, envelope.shankRadius, Math.max(holder, 0.001), 48),
       new THREE.MeshStandardMaterial({
         color: COLORS.holder, metalness: 0.92, roughness: 0.24,
       })
@@ -378,29 +419,53 @@ export class Viewport {
       }
     }
     shank.rotation.x = Math.PI / 2;
-    shank.position.z = (kind === "ball" ? radius * 2 : flute) + holder / 2;
+    shank.position.z = flute + holder / 2;
+    shank.visible = holder > 1e-6;
+    this.shankMesh = shank;
     this.toolMesh = this.toolGroup;
     this.toolGroup.visible = this.display.showTool;
   }
 
-  setPlayhead(position, traversedSegments, toolAxis = [0, 0, 1]) {
+  setPlayhead(position, traversedSegments, toolAxis = [0, 0, 1], time = null) {
     this.toolGroup.position.set(position[0], position[1], position[2]);
     const axis = new THREE.Vector3(toolAxis[0], toolAxis[1], toolAxis[2]).normalize();
     this.toolGroup.quaternion.setFromUnitVectors(Z_UP, axis);
-    if (this.stockSimulation && traversedSegments !== this.stockSimulation.cursor) {
-      this.stockSimulation.setIndex(traversedSegments);
+    let collisions = { first: null, current: this.collisionState, updated: false };
+    const queryTime = time ?? this.stockPayload?.timeline?.times[traversedSegments] ?? 0;
+    if (this.stockSimulation && queryTime !== this.lastPlayheadTime) {
+      const inspector = this.display.checkToolCollision
+        ? (point, direction) => detectShankCollision(this.stockSimulation, point, direction, this.tool) : null;
+      collisions = this.stockSimulation.updateAt(queryTime, inspector);
+      collisions.updated = true;
+      this.lastPlayheadTime = queryTime;
+      this._setCollisionState(collisions.current);
       this._updateStockMesh();
     }
     if (this.traceLine && traversedSegments !== this._lastTraversed) {
       this._lastTraversed = traversedSegments;
       this.traceLine.geometry.setDrawRange(0, Math.max(0, traversedSegments) * 2);
     }
+    return collisions;
+  }
+
+  _setCollisionState(hit) {
+    this.collisionState = hit;
+    this.collisionMarker.visible = Boolean(hit) && this.display.checkToolCollision && this.display.showStock;
+    if (hit) this.collisionMarker.position.set(...hit.position);
+    if (this.shankMesh) {
+      this.shankMesh.material.color.setHex(hit ? 0xff4035 : COLORS.holder);
+      this.shankMesh.material.emissive.setHex(hit ? 0x8b0b00 : 0x000000);
+    }
+    if (typeof this.onCollisionUpdate === "function") this.onCollisionUpdate(hit);
   }
 
   setDisplayOptions(options) {
+    const wasChecking = this.display.checkToolCollision;
     this.display = Object.assign({}, this.display, options || {});
     if (this.display.showStock) this._enableStock();
     else this._disableStock();
+    if (wasChecking !== this.display.checkToolCollision) this.lastPlayheadTime = null;
+    if (!this.display.checkToolCollision || !this.display.showStock) this._setCollisionState(null);
     this.workpieceGroup.visible = this.display.showWorkpiece && !this.display.showStock
       && !this.importedModel;
     // 导入模型是规划区域的参考几何，不是材料切除仿真的毛坯。
@@ -411,9 +476,16 @@ export class Viewport {
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.poseGroup.visible = this.display.showPath;
+    this.adaptiveSpacingGroup.visible = this.display.showPath
+      && this.display.showAdaptiveSpacing && Boolean(this.adaptiveSpacingRange);
+    if (this.cutLine) {
+      this.cutLine.visible = this.display.showPath
+        && !(this.display.showAdaptiveSpacing && this.adaptiveSpacingRange);
+    }
     this.toolGroup.visible = this.display.showTool;
     this.stockGroup.visible = this.display.showWorkpiece && this.display.showStock;
     if (this.rapidLine) this.rapidLine.visible = this.display.showRapid;
+    if (this.roughLine) this.roughLine.visible = this.display.showRoughing;
     this.contourGroup.visible = this.display.showWorkpiece;
   }
 
@@ -427,13 +499,16 @@ export class Viewport {
     geometry.setAttribute(
       "position", new THREE.Float32BufferAttribute(this.stockSimulation.positions(), 3)
     );
+    geometry.setAttribute(
+      "color", new THREE.Float32BufferAttribute(this.stockSimulation.colors(), 3)
+    );
     geometry.setIndex(this.stockSimulation.indices());
     geometry.computeVertexNormals();
     this.stockMesh = new THREE.Mesh(
       geometry,
       new THREE.MeshStandardMaterial({
-        color: COLORS.stock, metalness: 0.35, roughness: 0.58,
-        transparent: true, opacity: 0.9,
+        color: 0xffffff, vertexColors: true, metalness: 0.05, roughness: 0.86,
+        transparent: true, opacity: 0.86,
       })
     );
     const wallGeometry = new THREE.BufferGeometry();
@@ -455,7 +530,7 @@ export class Viewport {
     this.stockWallMesh.receiveShadow = true;
     this.stockGroup.add(this.stockMesh);
     this.stockGroup.add(this.stockWallMesh);
-    this.stockSimulation.setIndex(0);
+    this.lastPlayheadTime = null;
     this._updateStockMesh();
   }
 
@@ -465,6 +540,9 @@ export class Viewport {
     this.stockWallMesh = null;
     this.stockSimulation = null;
     this.stockGroup.visible = false;
+    this.lastPlayheadTime = null;
+    this._setCollisionState(null);
+    if (typeof this.onStockUpdate === "function") this.onStockUpdate(null);
   }
 
   _updateStockMesh() {
@@ -473,11 +551,19 @@ export class Viewport {
     attribute.array.set(this.stockSimulation.positions());
     attribute.needsUpdate = true;
     this.stockMesh.geometry.computeVertexNormals();
+    const colorAttribute = this.stockMesh.geometry.getAttribute("color");
+    if (colorAttribute) {
+      colorAttribute.array.set(this.stockSimulation.colors());
+      colorAttribute.needsUpdate = true;
+    }
     if (this.stockWallMesh) {
       const wallAttribute = this.stockWallMesh.geometry.getAttribute("position");
       wallAttribute.array.set(this.stockSimulation.boundaryPositions());
       wallAttribute.needsUpdate = true;
       this.stockWallMesh.geometry.computeVertexNormals();
+    }
+    if (typeof this.onStockUpdate === "function") {
+      this.onStockUpdate(this.stockSimulation.stats());
     }
   }
 
@@ -552,7 +638,7 @@ export class Viewport {
       color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
     });
     const meshPayload = surface && surface.mesh;
-    if (surface && surface.id === "freeform" && meshPayload && meshPayload.vertices && meshPayload.indices) {
+    if (meshPayload && meshPayload.vertices && meshPayload.indices) {
       const geometry = new THREE.BufferGeometry();
       const vertices = new Float32Array(meshPayload.vertices.flat());
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
@@ -605,6 +691,28 @@ export class Viewport {
     const line = new THREE.LineSegments(geometry, material);
     if (dashed) line.computeLineDistances();
     return line;
+  }
+
+  _buildAdaptiveSpacingOverlay(payload, cutMoves) {
+    this.adaptiveSpacingRange = null;
+    const adaptive = payload.toolpath && payload.toolpath.metadata
+      ? payload.toolpath.metadata.adaptive : null;
+    if (!adaptive || !Array.isArray(adaptive.stepover_profile_mm) || !cutMoves.length) return;
+    const profile = adaptive.stepover_profile_mm
+      .map(Number)
+      .filter((value) => Number.isFinite(value) && value > 0);
+    if (!profile.length) return;
+    const values = cutMoves.map((_, index) => profile[Math.min(index, profile.length - 1)]);
+    const minimum = Math.min(...values);
+    const maximum = Math.max(...values);
+    this.adaptiveSpacingRange = { minimum, maximum };
+    for (let index = 0; index < cutMoves.length; index += 1) {
+      const move = cutMoves[index];
+      const color = adaptiveSpacingColor(values[index], minimum, maximum);
+      this.adaptiveSpacingGroup.add(
+        this._line(liftPaths([move.points]), color, 1.0)
+      );
+    }
   }
 
   _rebuildGrid(span, thickness, lowerZ = 0) {
