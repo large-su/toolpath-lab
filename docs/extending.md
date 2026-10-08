@@ -123,8 +123,17 @@ class StadiumRegion(RegionShape):
 - 参数用 `spec(...)` 声明，界面控件自动生成，`build_region(id, params)` 自动校验范围；
   参数之间的耦合关系（例如"壁厚必须小于外宽的一半"）写在 `__post_init__` 里抛 `ParameterError`。
 
-做到这些之后**刀路与三维显示都不需要改**：栅格刀路靠扫描线求交，工件直接按这条边界挤出
-（`web/js/viewport.js`）。**凹形状**是这条承诺的试金石：U 形横穿两条臂的扫描线会得到两段独立刀轨
+**另外两个可选钩子**（不覆写就是"实心、平顶"，现有九个形状里只有两个用了它们）：
+
+- `islands()` → 一串逆时针多边形，表示区域里**要留下的料**（孔）。覆写了它，刀路就会绕开它们
+  （`planning/islands.py`）、覆盖率与切除仿真也会把它们从"区域"里减掉（`region_inside_mask`），
+  三维工件自动挖孔。参考 `RingRegion`，契约是每个岛也满足上面的多边形规则，且必须落在外轮廓内；
+- `top_height_mm(x, y)` / `is_flat_top` → 毛坯的**上表面**（默认恒 0 = 平顶）。覆写后切除仿真从曲面
+  起算体积、三维按 `top_map()` 画顶面；注意**刀路仍是恒定 Z 的 2.5D 等高分层**（不做随形），
+  所以要在 `is_flat_top` 为假时把这件事写进 notes。参考 `DomeRegion`。
+
+做到这些之后（**实心、平顶**的区域）**刀路与三维显示都不需要改**：栅格刀路靠扫描线求交，工件直接按
+这条边界挤出（`web/js/viewport.js`）。**凹形状**是这条承诺的试金石：U 形横穿两条臂的扫描线会得到两段独立刀轨
 （`tests/test_planners.py` 的 `test_a_concave_region_puts_two_passes_on_the_same_level`），
 哑铃形的细颈被环切偏置吃掉后一层会分裂成两条环（`tests/test_contour.py` 的 `MultiLoopTests`），
 工件也会被挤出成真正的形状而不是方盒。

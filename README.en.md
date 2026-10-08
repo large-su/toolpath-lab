@@ -282,7 +282,7 @@ than the region) return `422`, with the reason in the `error` field.
 
 ```
 toolpath_lab/core/        domain: parameter specs, tool, region, move/toolpath model
-toolpath_lab/planning/    strategies, planar geometry, offset geometry, coverage, feeds, step-down
+toolpath_lab/planning/    strategies, planar geometry, offset geometry, island avoidance, coverage, feeds, step-down, removal
 toolpath_lab/simulation/  feed-rate based time parameterisation
 toolpath_lab/export/      G-code and CSV writers plus the shared export summary
 toolpath_lab/importers/   input formats: a minimal DXF 2D outline reader

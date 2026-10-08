@@ -260,7 +260,7 @@ curl -X POST http://127.0.0.1:8770/api/export/csv \
 ```
 toolpath_lab/
   core/        领域层：参数声明、刀具、区域、刀路与运动段模型
-  planning/    策略层：Planner 基类与注册表、平面多边形几何、栅格刀路、环切刀路、覆盖率分析
+  planning/    策略层：Planner 基类与注册表、平面多边形几何、岛屿避让、栅格/环切/螺旋/自适应刀路、覆盖率与切除分析
   simulation/  时间层：按进给速度把刀路参数化为时间轴
   export/      G-code 与 CSV 导出、自述头部
   importers/   输入格式：最小的 DXF 2D 轮廓读取器
