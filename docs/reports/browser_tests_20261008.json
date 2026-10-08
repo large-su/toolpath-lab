@@ -1,0 +1,32 @@
+[
+  {
+    "output": "PASS: eight presets, manual override, unchanged feed, contour/spiral selection, winding, playback, NC export and curved spiral with roughing.\n{\"contour_rings\":13,\"spiral_points\":4150,\"nc_characters\":108917}",
+    "test": "browser_strategies_tools",
+    "exit_code": 0
+  },
+  {
+    "output": "PASS: coverage toggle, texture mask, boundary clipping, independent stock/playback, sparse/dense comparison, imported region and five-axis adaptive roughing.\n{\"sparse_percent\":57.875,\"dense_percent\":99.6875,\"combined_percent\":100}",
+    "test": "browser_coverage",
+    "exit_code": 0
+  },
+  {
+    "output": "PASS: opaque closed stock, circular spiral, square raster, playback/seek/rewind, toggle release and depth-aware overlay. {\"initial\":{\"vertices\":2455,\"triangles\":4584,\"edges\":324,\"min\":1,\"max\":1,\"top\":1,\"bottom\":-4,\"transparent\":false,\"seamMatches\":true,\"stats\":{\"initial_volume_mm3\":24980,\"remaining_volume_mm3\":24980,\"removed_volume_mm3\":0,\"removed_percent\":0}},\"cut\":{\"vertices\":2455,\"triangles\":4584,\"edges\":324,\"min\":0,\"max\":1,\"top\":1,\"bottom\":-4,\"transparent\":false,\"seamMatches\":true,\"stats\":{\"initial_volume_mm3\":24980,\"remaining_volume_mm3\":22240,\"removed_volume_mm3\":2740,\"removed_percent\":10.968775020016013}}}",
+    "test": "browser_stock_mesh",
+    "exit_code": 0
+  },
+  {
+    "output": "PASS: parameter, plan, export, import and backend notices; close placement, keyboard, timer replacement, collision dismissal and safety settings.",
+    "test": "browser_notices",
+    "exit_code": 0
+  },
+  {
+    "output": "Auto-pause and marker: {\"time\":0.121333333,\"collision\":{\"part\":\"刀身\",\"position\":[-37.02747719531861,-37.0426610653142,8.743878210975026],\"overlap_mm\":0.512243578049949,\"time_s\":0.121333333},\"marker\":true,\"shankColor\":16728117,\"text\":\"⚠ 刀身干涉 · 0.12 s\\n位置 -37.0, -37.0, 8.7 mm\\n竖直重叠约 0.51 mm×\"}\nPASS: UI toggles, red shaft, collision marker, exact-time pause, resume, detection-off and stock-off.",
+    "test": "browser_collision",
+    "exit_code": 0
+  },
+  {
+    "output": "Combined UI: {\"cuts\":23,\"adaptive\":{\"target_scallop_mm\":0.2,\"nominal_stepover_mm\":2.154065922853802,\"min_stepover_mm\":0.028465769156102994,\"max_stepover_mm\":2.1044292594516705,\"stepover_profile_mm\":[1.9167818623900743,1.9941298413817137,2.092372206063615,2.0970235479162973,1.9933679678445344,1.9134104837947739,1.8524619807246268,1.8071388150892203,1.7750712779629083,1.7546602438295529,1.7449064143120847,1.7453027058439743,1.7557773261559753,1.7766790838069495,1.8088012357327097,1.8534439937980647,1.912517159828477,1.9886787502492105,2.0854789032668855,2.1044292594516705,1.9991011714005786,0.028465769156102994,0.028465769156102994],\"pass_count\":23},\"smoothing\":{\"enabled\":true,\"span_mm\":6,\"max_deviation_deg\":5,\"actual_max_deviation_deg\":0.6969749759126713,\"max_angular_speed_deg_s\":30,\"peak_angular_speed_deg_s\":30.000000000000004,\"limited_segment_count\":22,\"raw_peak_gradient_deg_mm\":1.8198542321499123,\"smoothed_peak_gradient_deg_mm\":1.8045211908529548},\"stats\":\"球头刀 D6.0 · 分层粗加工 + 五轴自适应等残留高度\\n区域\\n40 × 40 mm\\n刀轨\\n123\\n目标残留\\n0.20 mm\\n实际步距\\n0.03～2.10 mm\\n粗加工层数\\n5\\n实际层切深\\n2.00 mm\\n精加工余量\\n0.50 mm\\n刀点\\n5183\\n切削长度\\n5755.4 mm\\n预计工时\\n10 min 13 s\\n残留模型\\n球头刀·估算\\n刀轴平滑\\n1.8 → 1.8 °/mm\\n最大姿态偏差\\n0.7°\\n仿真角速度\\n30.0 / 30.0 °/s\\n覆盖率（XY）\\n100.0%\\n未覆盖面积\\n0.0 mm²\\n分析网格\\n0.50 × 0.50 mm\\n\\n整条精加工·投影估算，非切除比例\\n\\n曲面/圆角/倾斜刀具：不代表实际到面\\n\\n阶段：精加工（原选定策略）\\n跳至精加工\\n步距着色\\n密集 → 稀疏\\n已切除 33.3% · 剩余 15301 mm³\\n刀身检测：当前未发现干涉（高度场近似）\",\"collision\":null,\"removed\":33.27785629110255}\nPASS: combined parameters, oriented adaptive paths, coloring, smoothing toggle and roughing playback.",
+    "test": "browser_five_axis_adaptive",
+    "exit_code": 0
+  }
+]

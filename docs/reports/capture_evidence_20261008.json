@@ -1,0 +1,365 @@
+{
+  "date": "2026-10-08",
+  "code_commit": "3f6823862255defcb2ed197d854dd988cc24c709",
+  "records": [
+    {
+      "name": "contour",
+      "payload": {
+        "tool": {
+          "kind": "flat",
+          "diameter_mm": 6,
+          "length_mm": 30,
+          "nose_radius_mm": 2
+        },
+        "region": {
+          "shape": "circle",
+          "parameters": {
+            "diameter_mm": 80
+          }
+        },
+        "surface": {
+          "type": "flat",
+          "parameters": {
+            "base_z_mm": 0
+          }
+        },
+        "planner": {
+          "id": "contour",
+          "parameters": {
+            "stepover_mm": 3,
+            "sample_step_mm": 1,
+            "winding": "ccw",
+            "feed_mm_per_min": 600
+          }
+        },
+        "roughing": {
+          "enabled": false,
+          "depth_mm": 2,
+          "allowance_mm": 0.5
+        }
+      },
+      "time_s": 0
+    },
+    {
+      "name": "spiral",
+      "payload": {
+        "tool": {
+          "kind": "flat",
+          "diameter_mm": 6,
+          "length_mm": 30,
+          "nose_radius_mm": 2
+        },
+        "region": {
+          "shape": "circle",
+          "parameters": {
+            "diameter_mm": 80
+          }
+        },
+        "surface": {
+          "type": "flat",
+          "parameters": {
+            "base_z_mm": 0
+          }
+        },
+        "planner": {
+          "id": "spiral",
+          "parameters": {
+            "stepover_mm": 3,
+            "sample_step_mm": 1,
+            "winding": "ccw",
+            "feed_mm_per_min": 600
+          }
+        },
+        "roughing": {
+          "enabled": false,
+          "depth_mm": 2,
+          "allowance_mm": 0.5
+        }
+      },
+      "time_s": 0
+    },
+    {
+      "name": "coverage_sparse",
+      "payload": {
+        "tool": {
+          "kind": "flat",
+          "diameter_mm": 6,
+          "length_mm": 30,
+          "nose_radius_mm": 2
+        },
+        "region": {
+          "shape": "square",
+          "parameters": {
+            "side_mm": 80
+          }
+        },
+        "surface": {
+          "type": "flat",
+          "parameters": {
+            "base_z_mm": 0
+          }
+        },
+        "planner": {
+          "id": "raster",
+          "parameters": {
+            "mode": "zigzag",
+            "stepover_mm": 12,
+            "direction_deg": 0,
+            "feed_mm_per_min": 600
+          }
+        },
+        "roughing": {
+          "enabled": false,
+          "depth_mm": 2,
+          "allowance_mm": 0.5
+        }
+      },
+      "time_s": 0
+    },
+    {
+      "name": "coverage_dense",
+      "payload": {
+        "tool": {
+          "kind": "flat",
+          "diameter_mm": 6,
+          "length_mm": 30,
+          "nose_radius_mm": 2
+        },
+        "region": {
+          "shape": "square",
+          "parameters": {
+            "side_mm": 80
+          }
+        },
+        "surface": {
+          "type": "flat",
+          "parameters": {
+            "base_z_mm": 0
+          }
+        },
+        "planner": {
+          "id": "raster",
+          "parameters": {
+            "mode": "zigzag",
+            "stepover_mm": 3,
+            "direction_deg": 0,
+            "feed_mm_per_min": 600
+          }
+        },
+        "roughing": {
+          "enabled": false,
+          "depth_mm": 2,
+          "allowance_mm": 0.5
+        }
+      },
+      "time_s": 0
+    },
+    {
+      "name": "stock_initial",
+      "payload": {
+        "tool": {
+          "kind": "flat",
+          "diameter_mm": 6,
+          "length_mm": 30,
+          "nose_radius_mm": 2
+        },
+        "region": {
+          "shape": "circle",
+          "parameters": {
+            "diameter_mm": 80
+          }
+        },
+        "surface": {
+          "type": "flat",
+          "parameters": {
+            "base_z_mm": 0
+          }
+        },
+        "planner": {
+          "id": "spiral",
+          "parameters": {
+            "stepover_mm": 6,
+            "sample_step_mm": 1,
+            "winding": "ccw",
+            "feed_mm_per_min": 600
+          }
+        },
+        "roughing": {
+          "enabled": false,
+          "depth_mm": 2,
+          "allowance_mm": 0.5
+        }
+      },
+      "time_s": 0
+    },
+    {
+      "name": "stock_cut",
+      "payload": {
+        "tool": {
+          "kind": "flat",
+          "diameter_mm": 6,
+          "length_mm": 30,
+          "nose_radius_mm": 2
+        },
+        "region": {
+          "shape": "circle",
+          "parameters": {
+            "diameter_mm": 80
+          }
+        },
+        "surface": {
+          "type": "flat",
+          "parameters": {
+            "base_z_mm": 0
+          }
+        },
+        "planner": {
+          "id": "spiral",
+          "parameters": {
+            "stepover_mm": 6,
+            "sample_step_mm": 1,
+            "winding": "ccw",
+            "feed_mm_per_min": 600
+          }
+        },
+        "roughing": {
+          "enabled": false,
+          "depth_mm": 2,
+          "allowance_mm": 0.5
+        }
+      },
+      "time_s": 57.522601200000004
+    },
+    {
+      "name": "warning_close",
+      "payload": {
+        "tool": {
+          "kind": "flat",
+          "diameter_mm": 6,
+          "length_mm": 30,
+          "nose_radius_mm": 2
+        },
+        "region": {
+          "shape": "square",
+          "parameters": {
+            "side_mm": 80
+          }
+        },
+        "surface": {
+          "type": "flat",
+          "parameters": {
+            "base_z_mm": 0
+          }
+        },
+        "planner": {
+          "id": "raster",
+          "parameters": {
+            "mode": "zigzag",
+            "stepover_mm": 6.5,
+            "direction_deg": 0,
+            "feed_mm_per_min": 600
+          }
+        },
+        "roughing": {
+          "enabled": false,
+          "depth_mm": 2,
+          "allowance_mm": 0.5
+        }
+      },
+      "time_s": 0
+    },
+    {
+      "name": "tool_library",
+      "payload": {
+        "tool": {
+          "kind": "bull",
+          "diameter_mm": 10,
+          "length_mm": 40,
+          "nose_radius_mm": 2
+        },
+        "region": {
+          "shape": "square",
+          "parameters": {
+            "side_mm": 80
+          }
+        },
+        "surface": {
+          "type": "flat",
+          "parameters": {
+            "base_z_mm": 0
+          }
+        },
+        "planner": {
+          "id": "raster",
+          "parameters": {
+            "mode": "zigzag",
+            "stepover_mm": 6.5,
+            "direction_deg": 0,
+            "feed_mm_per_min": 600
+          }
+        },
+        "roughing": {
+          "enabled": false,
+          "depth_mm": 2,
+          "allowance_mm": 0.5
+        }
+      },
+      "time_s": 0
+    },
+    {
+      "name": "stock_video_poster",
+      "payload": {
+        "tool": {
+          "kind": "ball",
+          "diameter_mm": 6,
+          "length_mm": 30,
+          "nose_radius_mm": 2
+        },
+        "region": {
+          "shape": "square",
+          "parameters": {
+            "side_mm": 80
+          }
+        },
+        "surface": {
+          "type": "freeform",
+          "parameters": {
+            "base_z_mm": 0,
+            "amplitude_mm": 4,
+            "wavelength_x_mm": 80,
+            "wavelength_y_mm": 60,
+            "phase_deg": 0,
+            "rotation_deg": 0
+          }
+        },
+        "planner": {
+          "id": "raster",
+          "parameters": {
+            "mode": "zigzag",
+            "stepover_mm": 6,
+            "direction_deg": 0,
+            "feed_mm_per_min": 600
+          }
+        },
+        "roughing": {
+          "enabled": true,
+          "depth_mm": 2,
+          "allowance_mm": 0.5
+        }
+      },
+      "time_s": 1813.659981596
+    }
+  ],
+  "comparison": {
+    "sparse_percent": 57.875,
+    "dense_percent": 99.6875
+  },
+  "clip": {
+    "mime": "video/mp4;codecs=avc1.42001E",
+    "bytes": 859093,
+    "wall_duration_s": 12,
+    "simulation_start_s": 0,
+    "simulation_end_s": 1813.659981596
+  },
+  "errors": []
+}

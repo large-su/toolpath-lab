@@ -193,10 +193,17 @@ docs/          架构与扩展文档
 
 ```bash
 python -m unittest discover -s tests
-node --test tests/test_collision.mjs
+node --test tests/test_collision.mjs tests/test_orientation.mjs tests/test_stock_mesh.mjs
 ```
 
 覆盖几何裁剪、刀路模式与安全高度、时间参数化、G-code 导出、HTTP 接口与静态资源，以及刀身圆柱干涉、五轴姿态变化、连续削料与回退重建。
+
+## 课程汇报文档
+
+无机器人版的综合功能开发报告与含实录视频的 PPT 已同步更新至 2026-10-08，
+见 [汇报资料与验证说明](docs/reports/README.md)。
+本次补充环切、连续螺旋、8 个刀具预设、XY 覆盖分析、仿真毛坯显示修复及可关闭警告；
+保留原有五轴自适应组合、姿态平滑和先粗后精流程。
 
 ## 设计说明
 
