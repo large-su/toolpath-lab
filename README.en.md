@@ -7,9 +7,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-ToolpathLab is a toolpath planning base: given a cutting tool and a regular machining region, it
-generates raster toolpaths, shows the workpiece, the toolpath and the cutter in a 3D window, and
-plays the whole process back at the programmed feed rate.
+ToolpathLab is a toolpath planning base: given a cutting tool, a regular machining region and a
+machining surface, it generates raster or surface-finishing toolpaths, shows the workpiece, the
+toolpath and the cutter in a 3D window, and plays the whole process back at the programmed feed rate.
 
 The backend is plain Python (numpy is the only dependency), the front-end is native ES modules with
 a vendored three.js, and the desktop window is provided by Electron. Tools and regions are described
@@ -19,16 +19,26 @@ by parameters, and the parameter panel is generated from the backend's parameter
 
 ## Features
 
-- **Tool**: flat end mill with diameter and length. Its footprint radius on the machining plane
-  defines how far the toolpath is offset from the region contour.
-- **Region**: square (side) and circle (diameter), centred at the origin, machined on the XY plane.
-- **Toolpaths**: two raster modes
-  - **zigzag** - every other pass runs in the opposite direction and consecutive passes are linked;
-  - **one-way** - all passes run in the same direction, retracting to the safe plane between passes.
-- **Parameters**: stepover, pass direction and feed rate. Safe height, rapid feed and boundary
-  handling are constants (see "Configuration constants").
-- **3D view**: workpiece, region contour, toolpath (cut / link / rapid colour coded), cutter solid,
-  traversed path and live shadows.
+- **Tool**: three tip shapes - **flat**, **ball nose** and **bull nose** (bull nose takes a corner
+  radius Rc). The footprint radius defines how far the toolpath is offset from the region contour,
+  and the tip arc radius also drives how small a scallop height surface finishing can reach.
+- **Region**: square (side) and circle (diameter), centred at the origin.
+- **Machining surface**: a height field `z = height(x, y)` - **flat**, **incline**, **cylinder** and
+  **dome**. Passes are sampled onto the surface with the "surface sampling step" and the safe height
+  is lifted relative to it; a surface that does not cover the region is reported explicitly.
+- **Toolpaths**:
+  - **raster** - parallel scan lines in two modes: **zigzag** (every other pass runs in the opposite
+    direction, consecutive passes are linked) and **one-way** (all passes run the same way, retracting
+    to the safe plane in between);
+  - **surface finishing** - replaces the stepover with a target **scallop height h** and derives the
+    stepover from the tip arc radius rho, `ae = 2*sqrt(2*rho*h - h^2)`; a flat end mill cannot invert
+    that expression, so it falls back to the maximum stepover and warns.
+- **Parameters**: stepover (or scallop height and maximum stepover), pass direction, surface sampling
+  step and feed rate. Safe height, rapid feed and boundary handling are constants (see
+  "Configuration constants").
+- **3D view**: workpiece solid (flat or a curved stock with a skirt), region contour, toolpath
+  (cut / link / rapid colour coded), the cutter revolved from its tip profile, traversed path and
+  live shadows.
 - **Playback**: time is parameterised by each move's own feed rate; play / pause, scrubbing, cutting
   length and estimated machining time.
 - **Export**: NC program (G-code, G21 / G90 / G17 with G0 / G1 and F).
@@ -52,8 +62,8 @@ The left side is the parameter panel; the right side holds the 3D view, statisti
 
 ![Top view](docs/images/screenshot-top.png)
 
-The parameter panel is generated from `/api/catalog`: adding a region shape or a toolpath strategy
-makes its controls appear in the interface without touching the front-end.
+The parameter panel is generated from `/api/catalog`: adding a region shape, a machining surface or a
+toolpath strategy makes its controls appear in the interface without touching the front-end.
 
 ## Requirements
 
@@ -86,6 +96,8 @@ Command line options: `--host`, `--port`, `--no-browser`.
 
 ### As a library
 
+The package has to be importable first - `pip install -e .`, or put the repository root on `PYTHONPATH`:
+
 ```bash
 python examples/headless_plan.py
 ```
@@ -111,8 +123,8 @@ print(outcome.toolpath.statistics())
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/health` | Health check and version |
-| `GET /api/catalog` | Capabilities: region shapes, strategies, parameter declarations, defaults |
-| `POST /api/plan` | Plan a toolpath; returns moves, statistics and the playback timeline |
+| `GET /api/catalog` | Capabilities: region shapes, surfaces, strategies, parameter declarations, defaults |
+| `POST /api/plan` | Plan a toolpath; returns moves, statistics, the playback timeline and a surface mesh |
 | `POST /api/export/gcode` | Export the NC program |
 
 ```bash
@@ -131,8 +143,8 @@ than the region) return `422`, with the reason in the `error` field.
 ## Layout
 
 ```
-toolpath_lab/core/        domain: parameter specs, tool, region, move/toolpath model
-toolpath_lab/planning/    strategies: Planner base + registry, planar geometry, raster toolpaths
+toolpath_lab/core/        domain: parameter specs, tool, region, surface height field, move model
+toolpath_lab/planning/    strategies: Planner base + registry, planar geometry, raster + finishing
 toolpath_lab/simulation/  feed-rate based time parameterisation
 toolpath_lab/export/      G-code writer
 toolpath_lab/server/      standard library HTTP API, request validation, static files
@@ -151,7 +163,7 @@ the window - so the planning code runs headless. See [docs/architecture.md](docs
 | Safe height | 5 mm | `toolpath_lab/planning/base.py` |
 | Rapid feed | 5000 mm/min | `toolpath_lab/planning/base.py` |
 | Boundary handling | inset the contour by the tool footprint radius | `toolpath_lab/planning/raster.py` |
-| Pass sampling | two end points (the machining plane is flat) | `toolpath_lab/planning/raster.py` |
+| Pass sampling | two end points on a flat surface; sampled along the pass on a curved one | `toolpath_lab/planning/raster.py` |
 
 To expose them as adjustable parameters, see [docs/extending.md](docs/extending.md).
 
@@ -162,6 +174,8 @@ To expose them as adjustable parameters, see [docs/extending.md](docs/extending.
   (constant offset) strategy: copy it into `toolpath_lab/planning/` and import it once.
 - **A new region shape**: implement `boundary()` returning a counter-clockwise polygon; clipping and
   the 3D view adapt automatically.
+- **A new machining surface**: subclass `Surface` and implement `height(x, y)` plus its domain check;
+  the backend and the front-end both pick it up automatically.
 - **A new export format**: add a pure function under `export/` and a branch in the HTTP router.
 
 Full details: [docs/extending.md](docs/extending.md); conventions: [CONTRIBUTING.md](CONTRIBUTING.md).
