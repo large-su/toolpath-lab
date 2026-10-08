@@ -242,6 +242,21 @@ def check_http_api() -> tuple[bool, str]:
         status, page = _request(base, "/index.html")
         steps += 1
         expect(status == 200 and "<html" in page.lower(), f"静态首页返回 {status}")
+
+        # DXF import: the drawing comes in, its outlines go back, nothing is stored.
+        dxf = "\n".join([
+            "0", "SECTION", "2", "ENTITIES", "0", "LWPOLYLINE", "70", "1",
+            "10", "0", "20", "0", "10", "40", "20", "0", "10", "40", "20", "40", "10", "0", "20", "40",
+            "0", "ENDSEC", "0", "EOF", "",
+        ])
+        status, body = _request(base, "/api/import/dxf", {"text": dxf})
+        steps += 1
+        if status != 200:
+            problems.append(f"DXF 导入失败：{status} {body[:60]}")
+        else:
+            outlines = json.loads(body)["outlines"]
+            expect(len(outlines) == 1 and outlines[0]["point_count"] == 4,
+                   f"DXF 导入的轮廓不对：{outlines}")
     finally:
         server.shutdown()
         server.server_close()

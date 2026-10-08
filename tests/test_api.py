@@ -290,6 +290,31 @@ class ExportTests(ApiTestCase):
         ]
         self.assertEqual(len(rows) - 1, point_count)
 
+    def test_dxf_import_returns_the_outline(self) -> None:
+        """The import endpoint parses a drawing and hands the outlines back (nothing is stored)."""
+
+        dxf = "\n".join([
+            "0", "SECTION", "2", "ENTITIES", "0", "LWPOLYLINE", "8", "cut", "70", "1",
+            "10", "0", "20", "0", "10", "40", "20", "0",
+            "10", "40", "20", "40", "10", "0", "20", "40",
+            "0", "CIRCLE", "10", "20", "20", "20", "40", "5",
+            "0", "ENDSEC", "0", "EOF", "",
+        ])
+        status, body, _ = self.post("/api/import/dxf", {"text": dxf})
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(len(payload["outlines"]), 1)
+        outline = payload["outlines"][0]
+        self.assertTrue(outline["closed"])
+        self.assertEqual(outline["point_count"], 4)
+        self.assertEqual(outline["layer"], "cut")
+        self.assertEqual(payload["skipped"], ["CIRCLE"])
+        self.assertTrue(payload["warnings"])
+
+    def test_dxf_import_of_a_useless_file_is_a_bad_request(self) -> None:
+        status, _, _ = self.post("/api/import/dxf", {"text": "not a drawing at all"})
+        self.assertEqual(status, 400)
+
     def test_other_formats_are_gone(self) -> None:
         for kind in ("json", "step", "dxf"):
             with self.subTest(kind=kind):

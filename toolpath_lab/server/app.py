@@ -19,6 +19,7 @@ from urllib.parse import unquote, urlsplit
 from toolpath_lab import __version__
 from toolpath_lab.core.errors import ParameterError, PlanningError, RegistryError
 from toolpath_lab.export import toolpath_to_csv, toolpath_to_gcode
+from toolpath_lab.importers import parse_dxf
 from toolpath_lab.server.catalog import catalog_payload
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.server.service import execute_plan
@@ -115,6 +116,8 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             return self._export_gcode(self._read_json())
         if path == "/api/export/csv" and method == "POST":
             return self._export_csv(self._read_json())
+        if path == "/api/import/dxf" and method == "POST":
+            return self._import_dxf()
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
 
     def _export_gcode(self, payload: Mapping[str, Any] | None) -> Response:
@@ -140,6 +143,45 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             ),
             content_type="text/csv; charset=utf-8",
             filename=self._export_filename(result.request, "csv"),
+        )
+
+    def _import_dxf(self) -> Response:
+        """Read a DXF drawing from the request body and answer with its outlines.
+
+        The body is either the raw DXF text (what a file upload sends) or JSON with a "text" field
+        (what a script sends). Nothing is stored: the caller gets the outlines back and passes the one
+        it wants to /api/plan, which keeps the service stateless. A drawing with no usable outline is
+        a 400 carrying the parser's own explanation.
+        """
+
+        raw = self._read_text()
+        if raw is None:
+            raise ParameterError("请求体是空的，请把 DXF 文件内容放在请求体里")
+        if raw.lstrip().startswith("{"):
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, Mapping) and "text" in payload:
+                raw = str(payload["text"])
+        result = parse_dxf(raw)
+        if not result.outlines:
+            raise ParameterError("；".join(result.warnings) or "没有读到可用的闭合轮廓")
+        return json_response(
+            {
+                "ok": True,
+                "outlines": [
+                    {
+                        "points": [[round(x, 4), round(y, 4)] for x, y in outline.points],
+                        "closed": outline.closed,
+                        "layer": outline.layer,
+                        "point_count": len(outline.points),
+                    }
+                    for outline in result.outlines
+                ],
+                "skipped": list(result.skipped),
+                "warnings": list(result.warnings),
+            }
         )
 
     @staticmethod
@@ -189,6 +231,19 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, Mapping):
             raise ParameterError("请求体必须是 JSON 对象")
         return payload
+
+    def _read_text(self) -> str | None:
+        """The request body as UTF-8 text (used by the DXF import, which is not JSON)."""
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return None
+        if length > MAX_BODY_BYTES:
+            raise ParameterError(f"请求体 {length} 字节，超过 {MAX_BODY_BYTES} 字节上限")
+        try:
+            return self.rfile.read(length).decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ParameterError(f"请求体不是合法的 UTF-8 文本：{error}") from error
 
     def _send(self, response: Response) -> None:
         self.send_response(response.status)

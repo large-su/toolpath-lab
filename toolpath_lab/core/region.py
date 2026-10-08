@@ -368,6 +368,60 @@ class TriangleRegion(RegionShape):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ImportedOutlineRegion(RegionShape):
+    """A region built from an imported drawing outline.
+
+    Deliberately **not** registered in REGION_SHAPES: its geometry cannot come from the parameter
+    system (a ParameterSpec has no list kind), so it is built by `region_from_points` from the points
+    a caller got out of the DXF importer. Staying out of the catalogue means the UI can never offer a
+    shape it has no points for.
+    """
+
+    points: tuple[tuple[float, float], ...] = ()
+    id: ClassVar[str] = "imported"
+    label: ClassVar[str] = "导入轮廓"
+    description: ClassVar[str] = "从图纸导入的闭合轮廓（点串随请求给出）"
+
+    def boundary(self) -> NDArray[np.float64]:
+        polygon = np.asarray(self.points, dtype=np.float64).reshape(-1, 2)
+        if polygon.shape[0] < 3:
+            raise ParameterError("导入的轮廓至少需要 3 个点")
+        # The contract is counter-clockwise; a drawing may be either. Signed area decides, and it is
+        # computed here rather than imported from planning/geometry2d, which core must not depend on.
+        if _signed_polygon_area(polygon) < 0.0:
+            polygon = polygon[::-1]
+        return np.ascontiguousarray(polygon)
+
+
+def _signed_polygon_area(polygon: NDArray[np.float64]) -> float:
+    x, y = polygon[:, 0], polygon[:, 1]
+    return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+def region_from_points(points) -> RegionShape:
+    """Build an imported outline region from raw [x, y] points.
+
+    This is the one place in the project where a region's geometry does not come through the
+    parameter system: the DXF importer hands over a point list, and a ParameterSpec cannot describe
+    one. Everything else (tool, strategy, all their parameters) still goes through the declarations,
+    and the region still has to satisfy the same boundary contract.
+    """
+
+    cleaned: list[tuple[float, float]] = []
+    for point in points:
+        values = list(point)
+        if len(values) < 2:
+            raise ParameterError("导入轮廓的点必须是 [x, y]")
+        cleaned.append((float(values[0]), float(values[1])))
+    if len(cleaned) < 3:
+        raise ParameterError("导入的轮廓至少需要 3 个点")
+    first, last = cleaned[0], cleaned[-1]
+    if ((first[0] - last[0]) ** 2 + (first[1] - last[1]) ** 2) ** 0.5 <= 1e-6:
+        cleaned.pop()
+    return ImportedOutlineRegion(points=tuple(cleaned))
+
+
 def build_region(shape_id: str, raw_parameters: Mapping[str, Any] | None = None) -> RegionShape:
     """Build a registered region shape from API parameters."""
 

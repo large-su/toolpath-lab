@@ -160,6 +160,7 @@ print(outcome.toolpath.statistics())
 | `POST /api/plan` | Plan a toolpath; returns moves, statistics, coverage and the playback timeline |
 | `POST /api/export/gcode` | Export the NC program |
 | `POST /api/export/csv` | Export the CSV point table |
+| `POST /api/import/dxf` | Read the 2D outlines of a DXF drawing (raw DXF text or `{"text": "..."}`) |
 
 ```bash
 curl http://127.0.0.1:8770/api/catalog
@@ -181,6 +182,7 @@ toolpath_lab/core/        domain: parameter specs, tool, region, move/toolpath m
 toolpath_lab/planning/    strategies, planar geometry, offset geometry, coverage, feeds, step-down
 toolpath_lab/simulation/  feed-rate based time parameterisation
 toolpath_lab/export/      G-code and CSV writers plus the shared export summary
+toolpath_lab/importers/   input formats: a minimal DXF 2D outline reader
 toolpath_lab/server/      standard library HTTP API, request validation, static files
 toolpath_lab/web/         front-end: native ES modules + vendored three.js, no build step
 electron/                 desktop shell that spawns the backend and hosts the window
@@ -189,8 +191,8 @@ tests/                    unit tests, including the convention checks
 ```
 
 Dependencies point in one direction: `core` depends on nothing, `planning` / `simulation` /
-`export` depend only on `core`, `server` assembles them, `web` talks HTTP and `electron` only owns
-the window - so the planning code runs headless. See [docs/architecture.md](docs/architecture.md).
+`export` / `importers` depend only on `core`, `server` assembles them, `web` talks HTTP and
+`electron` only owns the window - so the planning code runs headless. See [docs/architecture.md](docs/architecture.md).
 
 ## Parameters and constants
 
