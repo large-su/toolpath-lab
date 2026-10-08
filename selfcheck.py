@@ -147,6 +147,7 @@ def check_http_api() -> tuple[bool, str]:
             expect(0.0 < plan["coverage"]["ratio"] <= 1.0,
                    f"策略 {planner} 的覆盖率不合理：{plan['coverage']['ratio']}")
             expect(bool(plan["toolpath"]["notes"]), f"策略 {planner} 没有给出 notes")
+            expect(plan.get("removal") is not None, f"策略 {planner} 没有给出材料切除结果")
 
             status, csv_body = _request(base, "/api/export/csv", payload)
             steps += 1

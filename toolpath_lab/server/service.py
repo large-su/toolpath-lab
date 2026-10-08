@@ -1,8 +1,8 @@
 """Assemble the result of one plan.
 
 Everything the UI needs comes together here: the echoed parameters, the tool summary, the region
-outline, the toolpath with its statistics, the playback timeline, and the coverage analysis (whether
-this toolpath actually machines the region out).
+outline, the toolpath with its statistics, the playback timeline, the coverage analysis (did the tool
+pass over the whole region) and the material removal map (how deep did it get).
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from typing import Any
 from toolpath_lab import __version__
 from toolpath_lab.core.path import Toolpath
 from toolpath_lab.planning import Coverage, coverage_warnings, measure_coverage, run_plan
+from toolpath_lab.planning.removal import Removal, measure_removal, removal_warnings
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.simulation import Timeline, build_timeline
 
@@ -28,13 +29,15 @@ class PlanResult:
     toolpath: Toolpath
     timeline: Timeline | None
     coverage: Coverage | None
+    removal: Removal | None
     warnings: tuple[str, ...]
 
     def result_lines(self) -> list[str]:
         """Facts only the service knows, for the header of an exported file.
 
-        Coverage is computed for exports too (the timeline is not: it is expensive and irrelevant to
-        a file), so a downloaded program can state how much material it leaves behind.
+        Coverage and the removal map are computed for exports too (the timeline is not: it is
+        expensive and irrelevant to a file), so a downloaded program can state how much material it
+        leaves behind and how much of the floor it actually reached.
         """
 
         lines: list[str] = []
@@ -42,6 +45,14 @@ class PlanResult:
             lines.append(
                 f"coverage {self.coverage.ratio * 100:.2f} % "
                 f"(uncut {self.coverage.uncut_area_mm2:.1f} mm2 in {self.coverage.patch_count} patches)"
+            )
+        if self.removal is not None and self.removal.removed_volume_mm3 > 0.0:
+            lines.append(
+                f"floor {self.removal.floor_mm:.2f} mm reached on "
+                f"{self.removal.floor_ratio * 100:.1f} % of the region; removed "
+                f"{self.removal.removed_volume_mm3:.0f} mm3, remaining "
+                f"{self.removal.remaining_volume_mm3:.0f} mm3, never touched "
+                f"{self.removal.uncut_area_mm2:.0f} mm2"
             )
         lines.extend(self.warnings)
         return lines
@@ -64,6 +75,7 @@ class PlanResult:
             "toolpath": self.toolpath.to_payload(),
             "timeline": None if self.timeline is None else self.timeline.to_payload(),
             "coverage": None if self.coverage is None else self.coverage.describe(),
+            "removal": None if self.removal is None else self.removal.describe(),
             "warnings": list(self.warnings),
         }
 
@@ -73,9 +85,10 @@ def execute_plan(
     *,
     with_timeline: bool = True,
     with_coverage: bool = True,
+    with_removal: bool = True,
     max_samples: int = DEFAULT_MAX_SAMPLES,
 ) -> PlanResult:
-    """Run one plan (the export endpoints turn the timeline and coverage off and take the path only)."""
+    """Run one plan (the export endpoints turn the timeline off and take the path plus its facts)."""
 
     outcome = run_plan(
         planner_id=request.planner_id,
@@ -91,13 +104,21 @@ def execute_plan(
         if with_coverage
         else None
     )
+    removal = (
+        measure_removal(outcome.toolpath, request.region, request.tool)
+        if with_removal
+        else None
+    )
     warnings = tuple(request.warnings) + tuple(outcome.warnings)
     if coverage is not None:
         warnings += tuple(coverage_warnings(coverage))
+    if removal is not None:
+        warnings += tuple(removal_warnings(removal))
     return PlanResult(
         request=request,
         toolpath=outcome.toolpath,
         timeline=timeline,
         coverage=coverage,
+        removal=removal,
         warnings=warnings,
     )

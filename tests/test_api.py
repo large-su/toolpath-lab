@@ -211,12 +211,24 @@ class PlanTests(ApiTestCase):
         self.assertEqual(status, 400)
         self.assertTrue(payload["error"])
 
+    def test_the_plan_response_carries_the_material_removal(self) -> None:
+        """The height map is part of the response: how deep the toolpath actually got."""
+
+        _, payload, _ = self.plan({"planner": {"parameters": {"depth_mm": 2.0}}})
+        removal = payload["removal"]
+        self.assertIsNotNone(removal)
+        self.assertAlmostEqual(removal["floor_mm"], -2.0, places=4)
+        self.assertGreater(removal["removed_volume_mm3"], 0.0)
+        self.assertGreaterEqual(removal["floor_ratio"], 0.9)
+        self.assertLess(removal["remaining_volume_mm3"], removal["region_area_mm2"] * 2.0 * 0.1)
+
     def test_the_plan_response_carries_the_coverage_analysis(self) -> None:
         _, payload, _ = self.plan({})
         coverage = payload["coverage"]
         self.assertIsNotNone(coverage)
         self.assertAlmostEqual(coverage["ratio"], 1.0, delta=0.05)
         self.assertIn("uncut_area_mm2", coverage)
+        self.assertIsNotNone(payload["removal"])
         self.assertIn("patches", coverage)
         # Rectangles for the 3D overlay: a default request leaves little uncut, but something at the
         # boundary does remain.

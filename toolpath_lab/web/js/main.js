@@ -255,6 +255,15 @@ function renderStats(result) {
       ]);
     }
   }
+  if (result.removal && result.removal.removed_volume_mm3 > 0) {
+    // The height map answers a question the planar coverage cannot: how deep did it get.
+    const removal = result.removal;
+    rows.push(["到面率", (removal.floor_ratio * 100).toFixed(1) + " %"]);
+    rows.push(["切除体积", removal.removed_volume_mm3.toFixed(0) + " mm³"]);
+    if (removal.remaining_volume_mm3 > 0) {
+      rows.push(["剩余余量", removal.remaining_volume_mm3.toFixed(0) + " mm³"]);
+    }
+  }
   const list = document.createElement("dl");
   for (const [label, value] of rows) {
     for (const node of statRow(label, value)) list.appendChild(node);

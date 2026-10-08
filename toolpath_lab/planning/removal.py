@@ -36,6 +36,23 @@ from toolpath_lab.planning.coverage import DEFAULT_CELL_MM, MAX_CELLS
 
 _EPS = 1e-9
 
+#: Below this floor ratio the plan is reported as not having reached the floor everywhere.
+WARN_FLOOR_RATIO = 0.9
+
+
+def removal_warnings(removal: "Removal") -> list[str]:
+    """Warnings for a plan whose floor is not finished (they go into the response banner)."""
+
+    if removal.removed_volume_mm3 <= 0.0:
+        return []  # a single layer on the top face has nothing to measure against
+    if removal.floor_ratio >= WARN_FLOOR_RATIO:
+        return []
+    return [
+        f"到面率只有 {removal.floor_ratio * 100:.1f} %：目标地面（Z = {removal.floor_mm:g} mm）"
+        f"之上还留着 {removal.remaining_volume_mm3:.0f} mm³，"
+        f"其中 {removal.uncut_area_mm2:.0f} mm² 完全没有切到"
+    ]
+
 
 @dataclass(frozen=True, slots=True)
 class Removal:
