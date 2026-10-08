@@ -81,6 +81,30 @@ function liftPaths(polylines) {
 // Uncut area overlay: two triangles per rectangle, sitting just above the machining plane
 // (below the toolpath lift of 0.05, so it never covers the toolpath).
 // Exported so this pure function can be checked in Node with the bundled three.js, no browser needed.
+// Profile of a cutting head as [radius, height] pairs, for a lathe revolve: flat bottom out to
+// R - Rc, then the corner radius arc up to the full radius R at height Rc, then the straight flank.
+// One formula covers all three kinds -- flat mills (Rc = 0), ball nose (Rc = R) and bull nose --
+// exactly like Tool.wall_clearance_mm does in the backend. Exported so it can be checked in Node.
+export function toolProfile(radiusMm, cornerRadiusMm, headHeightMm, segments = 16) {
+  const radius = Math.max(radiusMm, 1e-6);
+  const corner = Math.min(Math.max(cornerRadiusMm, 0), radius);
+  const head = Math.max(headHeightMm, corner + 1e-6);
+  const flat = radius - corner;
+  const points = [[0, 0]];
+  if (flat > 1e-6) {
+    points.push([flat, 0]);
+  }
+  if (corner > 1e-6) {
+    for (let step = 1; step <= segments; step += 1) {
+      const angle = (Math.PI / 2) * (step / segments);
+      points.push([flat + corner * Math.sin(angle), corner * (1 - Math.cos(angle))]);
+    }
+  }
+  points.push([radius, head]);
+  points.push([0, head]);
+  return points;
+}
+
 // Cutting moves do not all run at the same feed once corner slowdown (or any strategy that varies
 // the feed) is on: the fastest cutting feed in the toolpath is the programmed one, anything below it
 // is a slowed stretch. Split them so the slow bits can be drawn in their own colour; exported for the
@@ -334,12 +358,16 @@ export class Viewport {
     const flute = Math.min(length * 0.65, radius * 6);
     const holder = Math.max(length - flute, length * 0.2);
 
-    // Both segments use closed cylinders (with end caps), so the cutter is a solid and not a shell;
-    // the yellow cutting part matches the UGNX cutter colour scheme.
+    // The cutting head is the profile of the real tool, revolved: a ball nose is drawn round and a
+    // bull nose really has its corner radius, so the cutter in the view is the tool the plan was
+    // computed for. DoubleSide keeps it solid whichever way the revolve winds.
+    const head = toolProfile(radius, tool.corner_radius_mm || 0, flute, 16).map(
+      ([r, h]) => new THREE.Vector2(r, h)
+    );
     const cutting = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, flute, 64),
+      new THREE.LatheGeometry(head, 64),
       new THREE.MeshStandardMaterial({
-        color: COLORS.tool, metalness: 0.5, roughness: 0.34,
+        color: COLORS.tool, metalness: 0.5, roughness: 0.34, side: THREE.DoubleSide,
       })
     );
     const shank = new THREE.Mesh(
@@ -353,8 +381,7 @@ export class Viewport {
       mesh.receiveShadow = true;
       this.toolGroup.add(mesh);
     }
-    cutting.rotation.x = Math.PI / 2;
-    cutting.position.z = flute / 2;
+    cutting.rotation.x = Math.PI / 2; // LatheGeometry revolves around +Y, the app is Z-up
     shank.rotation.x = Math.PI / 2;
     shank.position.z = flute + holder / 2;
     this.toolMesh = this.toolGroup;
