@@ -112,7 +112,8 @@ class CatalogTests(ApiTestCase):
         )
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]),
-            ["circle", "dome", "dumbbell", "ellipse", "rectangle", "square", "triangle", "u_shape"],
+            ["circle", "dome", "dumbbell", "ellipse", "rectangle", "ring", "square", "triangle",
+             "u_shape"],
         )
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
@@ -234,6 +235,52 @@ class PlanTests(ApiTestCase):
         self.assertIsNotNone(payload["coverage"])
         self.assertIsNotNone(payload["removal"])
         self.assertGreater(payload["toolpath"]["statistics"]["pass_count"], 0)
+
+    def test_a_region_with_an_island_plans_and_reports_it(self) -> None:
+        """A hole in the region: the path goes around it and it is not counted as uncut material."""
+
+        status, payload, _ = self.plan({
+            "region": {"shape": "ring", "parameters": {"diameter_mm": 100.0, "island_diameter_mm": 30.0}},
+            "planner": {"id": "contour", "parameters": {"stepover_mm": 6.0}},
+        })
+        self.assertEqual(status, 200)
+        region = payload["region"]
+        self.assertEqual(len(region["islands"]), 1)
+        self.assertAlmostEqual(region["area_mm2"], pi * 50.0**2 - pi * 15.0**2, delta=2.0)
+        self.assertAlmostEqual(region["islands"][0]["area_mm2"], pi * 15.0**2, delta=0.3)
+        # Coverage is measured against the band, so the boss is not a permanent uncut patch.
+        self.assertAlmostEqual(
+            payload["coverage"]["region_area_mm2"], pi * 50.0**2 - pi * 15.0**2, delta=25.0
+        )
+        self.assertGreater(payload["coverage"]["ratio"], 0.95)
+        self.assertTrue(any("绕岛屿" in note for note in payload["toolpath"]["notes"]))
+
+    def test_an_imported_region_can_bring_islands(self) -> None:
+        status, payload, _ = self.plan({
+            "region": {"shape": "imported", "parameters": {
+                "points": [[0.0, 0.0], [60.0, 0.0], [60.0, 40.0], [0.0, 40.0]],
+                "islands": [[[20.0, 15.0], [40.0, 15.0], [40.0, 25.0], [20.0, 25.0]]],
+            }},
+            "planner": {"id": "contour", "parameters": {"stepover_mm": 4.0}},
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["region"]["parameters"], {"point_count": 4, "island_count": 1})
+        self.assertEqual(len(payload["region"]["islands"]), 1)
+        # 60 x 40 minus the 20 x 10 boss.
+        self.assertAlmostEqual(payload["region"]["area_mm2"], 2400.0 - 200.0, places=6)
+        self.assertGreater(payload["coverage"]["ratio"], 0.9)
+
+    def test_a_malformed_island_list_is_a_bad_request(self) -> None:
+        for islands in ("nope", [1.0], [[[1.0, 1.0], [2.0, 2.0]]]):
+            with self.subTest(islands=islands):
+                status, payload, _ = self.plan({
+                    "region": {"shape": "imported", "parameters": {
+                        "points": [[0.0, 0.0], [60.0, 0.0], [60.0, 40.0], [0.0, 40.0]],
+                        "islands": islands,
+                    }},
+                })
+                self.assertEqual(status, 400)
+                self.assertIn("岛屿", payload["error"])
 
     def test_an_imported_outline_plans_like_the_same_shape_built_from_parameters(self) -> None:
         """Cross check: the 60 x 40 outline gives the same path as the 60 x 40 rectangle region."""

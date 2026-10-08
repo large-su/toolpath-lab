@@ -28,7 +28,7 @@ class RegionCatalogTests(unittest.TestCase):
     def test_registered_shapes(self) -> None:
         self.assertEqual(
             sorted(REGION_SHAPES.ids()),
-            ["circle", "dome", "dumbbell", "ellipse", "rectangle", "square", "triangle", "u_shape"],
+            ["circle", "dome", "dumbbell", "ellipse", "rectangle", "ring", "square", "triangle", "u_shape"],
         )
 
     def test_catalog_publishes_labels_and_parameters(self) -> None:

@@ -54,7 +54,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from math import atan2, ceil, cos, floor, pi, sin
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -130,6 +130,29 @@ def bounding_box(polygon: NDArray[np.float64]) -> tuple[float, float, float, flo
         float(points[:, 1].min()),
         float(points[:, 1].max()),
     )
+
+
+def region_inside_mask(
+    region: Any, xs: NDArray[np.float64], ys: NDArray[np.float64]
+) -> NDArray[np.bool_]:
+    """Cell centres that belong to the region: inside `boundary()`, outside every island.
+
+    This is the single answer to "is this cell part of the region" -- coverage and the material removal
+    sweep both ask it, so both agree the moment a region has islands (holes). An island's material is
+    *meant* to stay, so counting it as region would report a permanently uncut hole; a solid region
+    (every shape without islands) gets exactly the mask those two modules always computed themselves.
+    """
+
+    mask = np.zeros((ys.shape[0], xs.shape[0]), dtype=bool)
+    for row, y in enumerate(ys):
+        for interval in scanline_intervals(ensure_ccw(region.boundary()), float(y)):
+            mask[row] |= (xs >= interval.start) & (xs <= interval.end)
+    for island in region.islands():
+        polygon = ensure_ccw(island)
+        for row, y in enumerate(ys):
+            for interval in scanline_intervals(polygon, float(y)):
+                mask[row] &= ~((xs >= interval.start) & (xs <= interval.end))
+    return mask
 
 
 def scanline_intervals(polygon: NDArray[np.float64], level: float) -> list[Interval]:

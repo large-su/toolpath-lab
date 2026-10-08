@@ -75,6 +75,17 @@ class SpiralPlanner(ContourPlanner):
             float(context.parameters["sample_step_mm"]), "采样步长 sample_step_mm"
         )
         ring_direction = str(context.parameters["ring_direction"])
+        if context.region.islands():
+            # A spiral is one continuous revolution that steps inwards; around an island the ring has to
+            # be *split* and walked the other way, which is not a spiral any more. Contouring handles
+            # islands, so hand over instead of machining into material that is meant to stay -- and say
+            # so, because the coverage check below cannot see it (an island is not region).
+            plain = super().plan(context)
+            return replace(
+                plain,
+                notes=plain.notes
+                + ("此形状带岛屿：螺旋无法绕着岛屿拆成连续的一圈，已按环切逐圈走（岛屿两侧分别偏置）",),
+            )
         rings = self.sampled_rings(context, stepover, sample_step, ring_direction)
         if not rings:
             raise PlanningError(

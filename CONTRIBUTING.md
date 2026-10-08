@@ -44,6 +44,28 @@ node --check toolpath_lab/web/js/main.js    # 前端语法（换成任一模块�
 
 改了界面就打开窗口点一遍：参数面板能生成、视图能切、播放能拖、导出能出文件。
 
+### 没有浏览器时怎么验前端
+
+`node --check` 只保证语法能过，而参数面板、播放联动、工件挤出这些**逻辑**其实都能在 Node 里跑
+（本项目的几轮改动就是这么验的）。做法是写一个**临时脚本**，跑完删掉：
+
+1. **把要测的模块拷成 `.mjs` 再 import**：仓库里没有 `package.json`，Node 会把 `.js` 当 CommonJS。
+   `panel.js` / `api.js` / `playback.js` 都不 import 别的模块，直接拷到 `_tmp_ui/` 下改名即可；
+   `viewport.js` 会 import `three` 与 `../vendor/*`，所以还要**造一个极小的 three 垫片**：
+   `node_modules/three/{package.json,index.js}` 里只实现用到的那几个类（`Color`、`BufferGeometry`、
+   `Float32BufferAttribute`、`Mesh`、`Group`、`Shape`/`Path`/`ExtrudeGeometry`、`Vector2/3`、
+   `Box3`、`DoubleSide`…），并把 `_tmp_ui/vendor/*.js` 换成空的同名导出，免得把整个 three 拖进来。
+2. **给它一个够用的假 DOM**：`document.createElement` 返回一个带 `children`/`appendChild`/`append`/
+   `replaceChildren`/`addEventListener`/`classList`/`dataset`/`style` 的普通对象就够了；面板构造时
+   会 `render()` 一次，所以 root 也要是这种元素。文件读取用 `{ arrayBuffer: async () => bytes }`
+   顶替 `File`（`readDrawingText` 只用到它）。
+3. **断言真实契约，而不是复述实现**：驱动真实方法（`panel.payload()`、`viewport._workpiece.call(...)`、
+   `progressiveHeightMap(...)`），断言"发出去的请求长什么样""几何里有没有那个孔""同一个移动内不
+   重建几何"这类**行为**，并尽量用**后端真实产出的 payload**（`catalog_payload()` / `describe()` 写
+   成 JSON 再读进来），而不是手搓一份假的。
+4. **只测逻辑，不测观感**：颜色、阴影、相机取景这些仍然要人眼看；脚本能证明的是"数据到几何这一步
+   是对的"。跑完把临时目录（`_tmp_ui/`、`node_modules/`）一起删掉，别提交进仓库。
+
 ## 代码约定
 
 - **依赖方向**：core 不导入其它层；planning / simulation / export 只依赖 core；server 组装全部；

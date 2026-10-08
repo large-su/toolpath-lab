@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "toolpath-lab"
-version = "0.0.1"
+version = "0.0.2"
 description = "2.5-axis toolpath planning base: three tool kinds with real head geometry (flutes, shanks, tapers), seven region shapes plus DXF outlines, raster/contour/adaptive strategies, coverage, 2.5D material removal and holder-collision checks, a three.js viewer and self-describing NC/CSV export."
 readme = "README.md"
 requires-python = ">=3.10"

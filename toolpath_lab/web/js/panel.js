@@ -96,6 +96,7 @@ export class ParameterPanel {
         values: clone(this.catalog.regions.defaults),
         outlines: [],  // outlines of the last imported drawing; empty until a file has been read
         outlineIndex: 0,  // which of them is being machined
+        islandsOn: false,  // treat the drawing's other outlines as islands (holes)?
         fileName: "",
       },
       planner: {
@@ -118,9 +119,17 @@ export class ParameterPanel {
     };
     if (this.state.region.id === IMPORTED_ID) {
       // The one region whose geometry is not a parameter map: the outline id and its points travel
-      // with the request, and the backend builds the region from them.
+      // with the request, and the backend builds the region from them. With the island switch on, the
+      // drawing's *other* outlines go along as holes -- a drawing of a pocket with a boss in it is
+      // exactly two outlines, and this is how the boss is declared.
       const outline = this.selectedOutline();
-      region.parameters = { points: outline ? clone(outline.points) : [] };
+      const options = { points: outline ? clone(outline.points) : [] };
+      if (this.state.region.islandsOn) {
+        options.islands = this.state.region.outlines
+          .filter((item, index) => index !== this.state.region.outlineIndex)
+          .map((item) => clone(item.points));
+      }
+      region.parameters = options;
     }
     return {
       tool: clone(this.state.tool),
@@ -254,6 +263,9 @@ export class ParameterPanel {
     }
     if (this.state.region.id === IMPORTED_ID) {
       section.appendChild(this._outlineRow());
+      if (this.state.region.outlines.length > 1) {
+        section.appendChild(this._islandRow());
+      }
     }
     return section;
   }
@@ -313,6 +325,27 @@ export class ParameterPanel {
     });
     cell.appendChild(select);
     row.append(label, cell);
+    return row;
+  }
+
+  // The drawing's other outlines can be declared as islands in one click. It only appears when the
+  // drawing actually has more than one outline, because with one there is nothing to leave standing.
+  _islandRow() {
+    const others = this.state.region.outlines.length - 1;
+    const row = document.createElement("label");
+    row.className = "checkbox-row";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = this.state.region.islandsOn;
+    input.addEventListener("change", () => {
+      this.state.region.islandsOn = input.checked;
+      this.onChange();
+    });
+    const text = document.createElement("span");
+    text.textContent = "其余 " + others + " 条轮廓作为岛屿";
+    text.title = "勾上后，图纸里除当前轮廓外的其他闭合轮廓都作为岛屿（孔）留下："
+      + "刀路绕开它们，覆盖率与切除仿真也不再把它们算成未切除的料";
+    row.append(input, text);
     return row;
   }
 

@@ -113,11 +113,22 @@ def _imported_region(
         )
     if isinstance(points, (str, bytes)) or not isinstance(points, Sequence):
         raise ParameterError("导入轮廓的 points 必须是 [x, y] 点串组成的数组")
+    islands = parameters.get("islands", ())
+    if islands is None:
+        islands = ()
+    if isinstance(islands, (str, bytes)) or not isinstance(islands, Sequence):
+        raise ParameterError("导入轮廓的岛屿 islands 必须是「点串数组」组成的数组")
+    for island in islands:
+        if isinstance(island, (str, bytes)) or not isinstance(island, Sequence):
+            raise ParameterError("导入轮廓的每个岛屿都必须是 [x, y] 点串组成的数组")
     try:
-        region = region_from_points(points)
+        region = region_from_points(points, islands)
     except (TypeError, ValueError) as error:
         raise ParameterError(f"导入轮廓的点串无法解析：{error}") from error
-    return region, {"points": [[x, y] for x, y in region.points]}
+    return region, {
+        "points": [[x, y] for x, y in region.points],
+        "islands": [[[x, y] for x, y in hole] for hole in region.holes],
+    }
 
 
 def _format(parameters: Mapping[str, Any]) -> str:

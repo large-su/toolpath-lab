@@ -38,6 +38,7 @@ from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.geometry2d import (
     bounding_box,
     ensure_ccw,
+    region_inside_mask,
     scanline_intervals,
     signed_area,
 )
@@ -133,7 +134,11 @@ def _inside_mask(
     ys: NDArray[np.float64],
     xs: NDArray[np.float64],
 ) -> NDArray[np.bool_]:
-    """Mark "cell centre inside the region" row by row, using scanline intervals."""
+    """Mark "cell centre inside the polygon" row by row, using scanline intervals.
+
+    Kept for the polygon-only callers (the placement of a reduced grid, say); whether a *region* owns a
+    cell is `region_inside_mask`, which also takes its islands away.
+    """
 
     mask = np.zeros((ys.shape[0], xs.shape[0]), dtype=bool)
     for row, y in enumerate(ys):
@@ -289,7 +294,8 @@ def measure_coverage(
     ys = y_min + (np.arange(rows, dtype=np.float64) + 0.5) * cell
     area_per_cell = cell * cell
 
-    inside = _inside_mask(polygon, ys, xs)
+    # Region minus islands: an island is material meant to stay, so it is not "uncut".
+    inside = region_inside_mask(region, xs, ys)
     covered = _covered_mask(
         _cutting_segments(toolpath), tool.footprint_radius_mm, xs, ys, cell
     )

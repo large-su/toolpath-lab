@@ -77,8 +77,9 @@ class DescriptionTests(unittest.TestCase):
     def test_the_description_counts_the_points_instead_of_dumping_them(self) -> None:
         described = region_from_points(CLOCKWISE).describe()
         self.assertEqual(described["id"], "imported")
-        self.assertEqual(described["parameters"], {"point_count": 4})
+        self.assertEqual(described["parameters"], {"point_count": 4, "island_count": 0})
         self.assertAlmostEqual(described["area_mm2"], 60 * 40, places=6)
+        self.assertEqual(described["islands"], [])
 
     def test_the_export_header_states_the_point_count(self) -> None:
         self.assertEqual(region_from_points(CLOCKWISE).header_text(), "imported - 4 points")

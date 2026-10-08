@@ -37,7 +37,13 @@ from toolpath_lab.core.parameters import (
 )
 from toolpath_lab.core.path import Move, Toolpath
 from toolpath_lab.planning.base import MOTION_PARAMETERS, Planner, PlanningContext
-from toolpath_lab.planning.geometry2d import scanline_intervals
+from toolpath_lab.planning.geometry2d import ensure_ccw, scanline_intervals
+from toolpath_lab.planning.islands import (
+    connector_is_clear,
+    distance_to_polygons,
+    sample_line,
+    split_runs,
+)
 from toolpath_lab.planning.registry import PLANNERS
 
 _MODE_LABELS = {"zigzag": "往复", "one_way": "单向"}
@@ -96,45 +102,56 @@ class RasterPlanner(Planner):
         self._warn_if_stepover_too_large(context, stepover)
 
         boundary = context.boundary
+        islands = [ensure_ccw(island) for island in context.region.islands()]
+        radius = context.cutting_radius_mm
+        sample_step = float(context.parameters.get("sample_step_mm", 1.0))
         u_axis = direction_2d(float(context.parameters["direction_deg"]))
         v_axis = np.array([-u_axis[1], u_axis[0]], dtype=np.float64)
         frame = np.column_stack((u_axis, v_axis))
         planar = boundary @ frame
 
         levels = self._pass_levels(planar[:, 1], stepover, offset)
-        passes: list[tuple[float, float, float]] = []
+        passes: list[tuple[np.ndarray, float]] = []
         for level in levels:
             for interval in scanline_intervals(planar, float(level)):
                 start = interval.start + offset
                 end = interval.end - offset
                 if end - start <= 1e-6:
                     continue
-                passes.append((start, end, float(level)))
+                world = np.array([[start, float(level)], [end, float(level)]]) @ frame.T
+                if not islands:
+                    # No islands: a pass stays the two-point segment this planner has always emitted.
+                    passes.append((world, float(level)))
+                    continue
+                # Islands: sample the pass and keep the runs that clear every island by the tool
+                # radius. A pass is no longer two points, which is the documented price of islands.
+                sampled = sample_line(world[0], world[1], sample_step)
+                clear = distance_to_polygons(sampled, islands) >= radius - 1e-6
+                for run in split_runs(sampled, clear, closed=False):
+                    passes.append((run, float(level)))
         if not passes:
             raise PlanningError(
                 "没有生成任何刀轨：请检查区域尺寸、刀具直径与切宽是否匹配"
             )
 
         moves: list[Move] = []
-        first = self._to_world(passes[0], frame, reverse=False)
+        first = passes[0][0]
         entry = context.to_positions(first)
         moves.extend(context.entry_moves(entry[0], entry[1] - entry[0]))
 
         previous: np.ndarray | None = None
-        for index, (start, end, level) in enumerate(passes):
+        for index, (points, _level) in enumerate(passes):
             reverse = mode == "zigzag" and index % 2 == 1
-            planar_points = np.array(
-                [[end, level], [start, level]] if reverse else [[start, level], [end, level]],
-                dtype=np.float64,
-            )
-            positions = context.to_positions(planar_points @ frame.T)
+            world = points[::-1] if reverse else points
+            positions = context.to_positions(world)
             if previous is not None:
-                moves.append(
-                    context.link_move(previous, positions[0])
-                    if mode == "zigzag"
-                    else context.rapid_between(previous, positions[0])
-                )
-            moves.append(context.cut_move(planar_points @ frame.T, pass_index=index,
+                if mode == "zigzag" and connector_is_clear(
+                    previous, positions[0], islands, radius, step_mm=sample_step
+                ):
+                    moves.append(context.link_move(previous, positions[0]))
+                else:
+                    moves.append(context.rapid_between(previous, positions[0]))
+            moves.append(context.cut_move(world, pass_index=index,
                                           label=f"第 {index + 1} 刀"))
             previous = positions[-1]
 
@@ -143,7 +160,7 @@ class RasterPlanner(Planner):
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
-            notes=self._notes(context, mode, stepover, len(passes)),
+            notes=self._notes(context, mode, stepover, len(passes), len(islands)),
         )
 
     # -- internal steps ----------------------------------------------------
@@ -197,17 +214,27 @@ class RasterPlanner(Planner):
 
     @staticmethod
     def _notes(
-        context: PlanningContext, mode: str, stepover: float, pass_count: int
+        context: PlanningContext,
+        mode: str,
+        stepover: float,
+        pass_count: int,
+        island_count: int = 0,
     ) -> tuple[str, ...]:
         direction = float(context.parameters["direction_deg"])
         boundary_mode = str(context.parameters.get("boundary_mode", "inset"))
         boundary = _BOUNDARY_LABELS.get(boundary_mode, _BOUNDARY_LABELS["inset"])
         allowance = float(context.parameters.get("stock_allowance_mm", 0.0))
         allowance_note = f"，边界余量 {allowance:g} mm" if allowance > 0.0 else ""
-        return (
+        notes = [
             f"{_MODE_LABELS[mode]}走刀，共 {pass_count} 刀，"
             f"切宽 {stepover:g} mm，走刀方向 {direction:g}°",
             f"边界处理：{boundary}（刀具贴壁间隙 R{context.cutting_radius_mm:g} mm）"
             f"{allowance_note}，安全高度 {context.safe_height_mm:g} mm、"
             f"快移 {context.rapid_feed_mm_per_min:g} mm/min",
-        )
+        ]
+        if island_count:
+            notes.append(
+                f"绕岛屿：{island_count} 个岛屿，每刀在离岛 R{context.cutting_radius_mm:g} mm 处断开"
+                "（断开处抬刀快移，不会横穿岛屿），所以一刀可能分成几段、采样点也不再只有两个端点"
+            )
+        return tuple(notes)

@@ -7,12 +7,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-ToolpathLab is a 2.5-axis toolpath planning base: given a cutting tool and a machining region (eight
-regular shapes - "球冠" (dome) being the one whose top face is a curved surface - or an outline imported
-from a DXF drawing), it plans raster, contour, spiral and adaptive-contour toolpaths, shows the
-workpiece, the toolpath, the cutter and the depth-coloured machined floor in a 3D window, plays the
-process back at the programmed feed rates (optionally letting the floor fill in progressively), and
-reports coverage, 2.5D material removal, holder-collision checks and self-describing NC / CSV exports.
+ToolpathLab is a 2.5-axis toolpath planning base: given a cutting tool and a machining region (nine
+regular shapes - "球冠" (dome) being the one whose top face is a curved surface, "圆环" (ring) the one
+with an island - or an outline imported from a DXF drawing, whose other outlines can become islands in
+one click), it plans raster, contour, spiral and adaptive-contour toolpaths, shows the workpiece, the
+toolpath, the cutter and the depth-coloured machined floor in a 3D window, plays the process back at the
+programmed feed rates (optionally letting the floor fill in progressively), and reports coverage, 2.5D
+material removal, holder-collision checks and self-describing NC / CSV exports.
 
 The backend is plain Python (numpy is the only dependency), the front-end is native ES modules with a
 vendored three.js, and the desktop window is provided by Electron. Tools, regions and strategies are
@@ -55,16 +56,22 @@ described by parameter declarations, and the parameter panel is generated from t
   statistics grow a clearance row while the shank is engaged. Two deliberate exclusions: entries are
   not checked (a ramp or helix may leave the region on purpose, which the notes report) and points
   outside the region do not count (they are not in the pocket).
-- **Regions**: square, rectangle, circle, ellipse, U shape, dumbbell, triangle and dome, all centred at
-  the origin and machined on the XY plane. Each one reduces to a single counter-clockwise boundary
+- **Regions**: square, rectangle, circle, ellipse, U shape, dumbbell, triangle, ring and dome, all centred
+  at the origin and machined on the XY plane. Each one reduces to a single counter-clockwise boundary
   polygon, which is what the toolpath planners clip against and what the 3D workpiece is extruded
   from - so a new shape needs no change to any strategy or to the front-end. A region can also come
-  from a drawing, see the next bullet. **The dome is the one region whose top face is not flat** (a
-  round base with a spherical cap through its rim): the toolpath is still constant-Z 2.5D layers (so
-  the upper layers cut air above the crown, and the notes say so), but **removed volume, the height map
-  and the 3D view are all measured from that surface** - the workpiece's top is drawn from `top_map`,
-  and the extra crown really is material to remove (volume = cylinder + `pi h^2 (3Rc - h)/3`, pinned by
-  an analytic test).
+  from a drawing, see the next bullet. **A region may have islands (holes)**: the ring is the built-in
+  analytic case (a round pocket with a concentric boss) and an imported drawing turns its *other*
+  outlines into islands with one switch. The tool centre stays a cutting radius away from every island,
+  the analysis counts the region as the outline *minus* the islands (so a boss is neither cut nor
+  reported as uncut, and the 3D solid is extruded with the holes), and the band between the outline and
+  an island is machined from both sides - outline rings inwards, island rings outwards, each keeping
+  only the half it is closer to. **The dome is the one region whose top face is not flat** (a round base
+  with a spherical cap through its rim): the toolpath is still constant-Z 2.5D layers (so the upper
+  layers cut air above the crown, and the notes say so), but **removed volume, the height map and the
+  3D view are all measured from that surface** - the workpiece's top is drawn from `top_map`, and the
+  extra crown really is material to remove (volume = cylinder + `pi h^2 (3Rc - h)/3`, pinned by an
+  analytic test).
 - **Drawing import**: pick a DXF file in the panel and the backend reads its closed outlines
   (`LWPOLYLINE`, `POLYLINE` and end-to-end `LINE` loops), then the outline you choose becomes the
   region. **Arcs and circles are still not guessed by default** - they are reported as skipped - but
@@ -346,6 +353,8 @@ the other, and zigzag alternates by itself.
 | Floor-ratio tolerance | the theoretical ridge between two passes (ball: `R-sqrt(R^2-(s/2)^2)`), so a flat mill's ridge of 0 keeps its old numbers | `toolpath_lab/planning/removal.py` |
 | Height-map display grid | reduced to at most 4096 cells (each takes the deepest cut in its block); only the 3D colouring reads it, no volume or ratio does | `toolpath_lab/planning/removal.py` |
 | Playback snapshots | at most **8** per sweep (each reduced to **1024** cells and sharing the finished floor's colour scale); geometry is rebuilt only on the frame a snapshot changes | `toolpath_lab/planning/removal.py` |
+| Island handling | the tool centre stays a cutting radius off every island; outline rings and island rings each keep only the half they are closer to (the midline rule); a raster pass breaks at the island and retracts | `toolpath_lab/planning/islands.py` |
+| Island rings | `offset_loops` only offsets inwards, so island rings are sampled outward offsets (arcs at convex corners, miters at reflex ones) pushed out by the chord sagitta so the polyline never dips inside the clearance | `toolpath_lab/planning/islands.py` |
 | Curved blank top | a region may carry `top_height_mm` (dome: `Rc = (R^2+h^2)/(2h)`); the 3D view draws it from a top grid of at most **32x32** cells, empty outside the region | `toolpath_lab/core/region.py` |
 | A curved blank is still 2.5D | layers are constant Z, there is no surface-following (upper layers cut air); the curve changes how much material there is and what is drawn, not the path | `toolpath_lab/planning/service.py` |
 | Uncut output caps | at most 8 patches and 800 rectangles (the rest only count towards the total) | `toolpath_lab/planning/coverage.py` |

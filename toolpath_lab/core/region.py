@@ -61,6 +61,17 @@ class RegionShape:
 
         raise NotImplementedError
 
+    def islands(self) -> tuple[NDArray[np.float64], ...]:
+        """Material inside the region that must **not** be machined: holes, each a CCW polygon.
+
+        Empty for every solid region, which is all of them until a shape or an imported drawing brings
+        one along. An island is *meant* to stay, so it is not "uncut material": the tool is kept a
+        cutting radius away from it, the analysis counts the region as `boundary() - islands`, and the
+        3D workpiece is extruded with them as holes.
+        """
+
+        return ()
+
     @property
     def is_flat_top(self) -> bool:
         """Whether the stock's top face is the machining plane (Z = 0) everywhere.
@@ -133,16 +144,27 @@ class RegionShape:
 
     def describe(self) -> dict[str, Any]:
         polygon = self.boundary()
+        islands = self.islands()
         return {
             "id": self.id,
             "label": self.label,
             "description": self.description,
             "parameters": self.to_params(),
-            "area_mm2": polygon_area(polygon),
+            "area_mm2": polygon_area(polygon)
+            - sum(abs(polygon_area(island)) for island in islands),
             "bounds_mm": polygon_bounds(polygon),
             # A flat top sends no map at all, so nothing about the old payloads changes.
             "flat_top": self.is_flat_top,
             "top_map": self.top_map(),
+            # Islands travel as polygons too: the 3D view needs them to cut the holes it extrudes.
+            "islands": [
+                {
+                    "boundary": [[round(float(x), 4), round(float(y), 4)] for x, y in island],
+                    "point_count": int(island.shape[0]),
+                    "area_mm2": round(abs(polygon_area(island)), 4),
+                }
+                for island in islands
+            ],
         }
 
 
@@ -444,6 +466,60 @@ class TriangleRegion(RegionShape):
 
 @REGION_SHAPES.register
 @dataclass(frozen=True, slots=True)
+class RingRegion(RegionShape):
+    """A round pocket with a concentric round boss left standing in it: the first region with an island.
+
+    This is the analytic island case: the machinable band is an annulus `(D - d) / 2` wide, so every
+    number a planner or the analysis produces can be checked against a closed form (the island is never
+    machined, the tool stays a radius away from it, and the ring it walks around it is a circle).
+    """
+
+    diameter_mm: float = 100.0
+    island_diameter_mm: float = 30.0
+
+    id: ClassVar[str] = "ring"
+    label: ClassVar[str] = "圆环"
+    description: ClassVar[str] = "圆形型腔 + 中心圆岛：刀路要绕开岛屿，覆盖率与切除仿真也不再算岛屿那块料"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("diameter_mm", "外径 D", K.FLOAT, 100.0, minimum=10.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域"),
+            spec("island_diameter_mm", "岛直径 d", K.FLOAT, 30.0, minimum=2.0, maximum=900.0,
+                 step=5.0, unit="mm", group="区域",
+                 help="中心圆岛的直径：这块料要留下，刀路绕它走、分析也不算它"
+                      "（必须小于外径，且带宽 (D−d)/2 要放得下刀具）"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.diameter_mm <= 0:
+            raise ParameterError("圆环外径必须为正")
+        if self.island_diameter_mm <= 0:
+            raise ParameterError("圆岛直径必须为正")
+        if self.island_diameter_mm >= self.diameter_mm:
+            raise ParameterError(
+                f"圆岛直径 {self.island_diameter_mm:g} mm 必须小于外径 {self.diameter_mm:g} mm"
+            )
+
+    @property
+    def annulus_width_mm(self) -> float:
+        """Width of the machinable band between the outline and the island."""
+
+        return (self.diameter_mm - self.island_diameter_mm) / 2.0
+
+    def boundary(self) -> NDArray[np.float64]:
+        radius = self.diameter_mm / 2.0
+        angles = np.linspace(0.0, 2.0 * pi, CURVE_SEGMENTS, endpoint=False)
+        return np.column_stack((radius * np.cos(angles), radius * np.sin(angles)))
+
+    def islands(self) -> tuple[NDArray[np.float64], ...]:
+        radius = self.island_diameter_mm / 2.0
+        angles = np.linspace(0.0, 2.0 * pi, CURVE_SEGMENTS, endpoint=False)
+        return (np.column_stack((radius * np.cos(angles), radius * np.sin(angles))),)
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
 class DomeRegion(RegionShape):
     """A round blank with a **spherical cap** on top: the first region whose top face is not flat.
 
@@ -528,27 +604,41 @@ class ImportedOutlineRegion(RegionShape):
     """
 
     points: tuple[tuple[float, float], ...] = ()
+    #: Further closed outlines of the same drawing, kept as islands (holes) inside the region.
+    holes: tuple[tuple[tuple[float, float], ...], ...] = ()
     id: ClassVar[str] = "imported"
     label: ClassVar[str] = "导入轮廓"
     description: ClassVar[str] = "从图纸导入的闭合轮廓（点串随请求给出）"
 
     def to_params(self) -> dict[str, Any]:
-        """Just the point count: the list itself is already in the boundary of the same response."""
+        """Just the counts: the lists themselves are already in the boundary of the same response."""
 
-        return {"point_count": len(self.points)}
+        return {"point_count": len(self.points), "island_count": len(self.holes)}
 
     def header_text(self) -> str:
-        return f"{self.id} - {len(self.points)} points"
+        text = f"{self.id} - {len(self.points)} points"
+        return f"{text} + {len(self.holes)} islands" if self.holes else text
 
     def boundary(self) -> NDArray[np.float64]:
-        polygon = np.asarray(self.points, dtype=np.float64).reshape(-1, 2)
-        if polygon.shape[0] < 3:
-            raise ParameterError("导入的轮廓至少需要 3 个点")
-        # The contract is counter-clockwise; a drawing may be either. Signed area decides, and it is
-        # computed here rather than imported from planning/geometry2d, which core must not depend on.
-        if _signed_polygon_area(polygon) < 0.0:
-            polygon = polygon[::-1]
-        return np.ascontiguousarray(polygon)
+        return _closed_polygon(self.points, "导入的轮廓至少需要 3 个点")
+
+    def islands(self) -> tuple[NDArray[np.float64], ...]:
+        return tuple(
+            _closed_polygon(hole, "导入的岛屿至少需要 3 个点") for hole in self.holes
+        )
+
+
+def _closed_polygon(points, message: str) -> NDArray[np.float64]:
+    """A CCW boundary polygon from raw pairs (the contract every consumer relies on)."""
+
+    polygon = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    if polygon.shape[0] < 3:
+        raise ParameterError(message)
+    # The contract is counter-clockwise; a drawing may be either. Signed area decides, and it is
+    # computed here rather than imported from planning/geometry2d, which core must not depend on.
+    if _signed_polygon_area(polygon) < 0.0:
+        polygon = polygon[::-1]
+    return np.ascontiguousarray(polygon)
 
 
 def _format_parameters(parameters: Mapping[str, Any]) -> str:
@@ -560,13 +650,17 @@ def _signed_polygon_area(polygon: NDArray[np.float64]) -> float:
     return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
 
 
-def region_from_points(points) -> RegionShape:
-    """Build an imported outline region from raw [x, y] points.
+def region_from_points(points, islands=()) -> RegionShape:
+    """Build an imported outline region from raw [x, y] points, with optional islands.
 
     This is the one place in the project where a region's geometry does not come through the
     parameter system: the DXF importer hands over a point list, and a ParameterSpec cannot describe
     one. Everything else (tool, strategy, all their parameters) still goes through the declarations,
     and the region still has to satisfy the same boundary contract.
+
+    `islands` are further closed outlines of the same drawing: they become holes in the region, which
+    the planners keep away from and the analysis does not count as uncut material (a drawing of a pocket
+    with a boss in it is exactly two outlines).
 
     Points are pairs, because a region is planar: a third coordinate is refused here rather than
     silently dropped, since the boundary is built by reshaping the list to (N, 2) and a "flattened"
@@ -574,23 +668,39 @@ def region_from_points(points) -> RegionShape:
     the boundary a plan response carries has to lose its trailing Z before it can be sent back.
     """
 
-    cleaned: list[tuple[float, float]] = []
-    for point in points:
-        values = list(point)
-        if len(values) != 2:
-            raise ParameterError("导入轮廓的点必须是 [x, y]（2.5D 区域是平面，不要带 Z）")
-        x, y = float(values[0]), float(values[1])
-        # JSON can carry NaN and infinity, and every other number in the project is checked against
-        # that (ParameterSpec._coerce_number); a non-finite point would poison the whole plan.
-        if not (isfinite(x) and isfinite(y)):
-            raise ParameterError("导入轮廓的点坐标必须是有限值")
-        cleaned.append((x, y))
+    cleaned = _clean_points(points, "导入轮廓")
     if len(cleaned) < 3:
         raise ParameterError("导入的轮廓至少需要 3 个点")
     first, last = cleaned[0], cleaned[-1]
     if ((first[0] - last[0]) ** 2 + (first[1] - last[1]) ** 2) ** 0.5 <= 1e-6:
         cleaned.pop()
-    return ImportedOutlineRegion(points=tuple(cleaned))
+    holes = tuple(
+        tuple(_clean_points(island, "导入的岛屿"))
+        for island in islands
+    )
+    return ImportedOutlineRegion(points=tuple(cleaned), holes=holes)
+
+
+def _clean_points(points, label: str) -> list[tuple[float, float]]:
+    """Validate a raw point list, dropping a repeated closing point."""
+
+    cleaned: list[tuple[float, float]] = []
+    for point in points:
+        values = list(point)
+        if len(values) != 2:
+            raise ParameterError(f"{label}的点必须是 [x, y]（2.5D 区域是平面，不要带 Z）")
+        x, y = float(values[0]), float(values[1])
+        # JSON can carry NaN and infinity, and every other number in the project is checked against
+        # that (ParameterSpec._coerce_number); a non-finite point would poison the whole plan.
+        if not (isfinite(x) and isfinite(y)):
+            raise ParameterError(f"{label}的点坐标必须是有限值")
+        cleaned.append((x, y))
+    if len(cleaned) < 3:
+        raise ParameterError(f"{label}至少需要 3 个点")
+    first, last = cleaned[0], cleaned[-1]
+    if ((first[0] - last[0]) ** 2 + (first[1] - last[1]) ** 2) ** 0.5 <= 1e-6:
+        cleaned.pop()
+    return cleaned
 
 
 def build_region(shape_id: str, raw_parameters: Mapping[str, Any] | None = None) -> RegionShape:

@@ -622,6 +622,13 @@ export class Viewport {
     const shape = new THREE.Shape(
       region.boundary.map((point) => new THREE.Vector2(point[0], point[1]))
     );
+    // Islands are holes in that extrusion: the material is meant to stay, so the solid must not cover
+    // it (the toolpath already avoids it, see the planners' island handling).
+    for (const island of region.islands || []) {
+      shape.holes.push(
+        new THREE.Path((island.boundary || []).map((point) => new THREE.Vector2(point[0], point[1])))
+      );
+    }
     const geometry = new THREE.ExtrudeGeometry(shape, {
       depth: thickness,
       bevelEnabled: false,

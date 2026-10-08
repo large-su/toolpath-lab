@@ -378,6 +378,36 @@ def check_http_api() -> tuple[bool, str]:
             expect(any("毛坯上表面不是平的" in note for note in payload["toolpath"]["notes"]),
                    "球冠区域没有在 notes 里说明等高分层会先切空气")
 
+        # A region with an island (a hole): the path must go around it, and the analysis must leave the
+        # boss out of both the region area and the uncut material.
+        status, body = _request(base, "/api/plan", {
+            "region": {"shape": "ring", "parameters": {"diameter_mm": 100.0, "island_diameter_mm": 30.0}},
+            "planner": {"id": "contour", "parameters": {"stepover_mm": 6.0}},
+        })
+        steps += 1
+        if status != 200:
+            problems.append(f"带岛屿的规划失败：{status} {body[:60]}")
+        else:
+            payload = json.loads(body)
+            analytic = 3.141592653589793 * (50.0**2 - 15.0**2)
+            expect(abs(payload["region"]["area_mm2"] - analytic) < 2.0,
+                   f"圆环区域面积不对：{payload['region']['area_mm2']:.1f} vs 解析 {analytic:.1f}")
+            expect(abs(payload["coverage"]["region_area_mm2"] - analytic) < 30.0,
+                   "岛屿被当成了未切除的料（覆盖率的分母应该是外圆减岛屿）")
+            expect(payload["coverage"]["ratio"] > 0.95,
+                   f"绕岛屿的覆盖率太低：{payload['coverage']['ratio']}")
+            expect(len(payload["region"]["islands"]) == 1 and payload["region"]["islands"][0]["point_count"] > 3,
+                   "响应里没有带岛屿多边形（三维视图要它来挖孔）")
+            # Safety invariant, and it is analytic here: the boss has radius 15, so no cutting point
+            # may come closer than the 3 mm tool radius to it.
+            radii = [
+                (point[0] ** 2 + point[1] ** 2) ** 0.5
+                for move in payload["toolpath"]["moves"] if move["kind"] == "cut"
+                for point in move["points"]
+            ]
+            expect(radii and min(radii) >= 18.0 - 1e-6,
+                   f"有刀点啃进了岛屿：最近 {min(radii):.4f} mm（应 ≥ 18）")
+
         # DXF import: the drawing comes in, its outlines go back, nothing is stored.
         dxf = "\n".join([
             "0", "SECTION", "2", "ENTITIES", "0", "LWPOLYLINE", "70", "1",

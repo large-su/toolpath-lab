@@ -35,6 +35,7 @@ from toolpath_lab.core.path import Toolpath
 from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.coverage import DEFAULT_CELL_MM, MAX_CELLS
+from toolpath_lab.planning.geometry2d import region_inside_mask
 
 _EPS = 1e-9
 
@@ -197,25 +198,6 @@ def _grid(size: float, cell_mm: float) -> tuple[NDArray[np.float64], float]:
     return (np.arange(count) + 0.5) * cell, cell
 
 
-def _inside_mask(
-    xs: NDArray[np.float64], ys: NDArray[np.float64], polygon: NDArray[np.float64]
-) -> NDArray[np.bool_]:
-    """Cells whose centre is inside the polygon, by the even-odd rule row by row."""
-
-    mask = np.zeros((ys.size, xs.size), dtype=bool)
-    x0, y0 = polygon[:, 0], polygon[:, 1]
-    x1, y1 = np.roll(x0, -1), np.roll(y0, -1)
-    for row, y in enumerate(ys):
-        crossing = ((y0 <= y) & (y1 > y)) | ((y1 <= y) & (y0 > y))
-        if not crossing.any():
-            continue
-        ratio = (y - y0[crossing]) / (y1[crossing] - y0[crossing])
-        hits = np.sort(x0[crossing] + ratio * (x1[crossing] - x0[crossing]))
-        for start in range(0, hits.size - 1, 2):
-            mask[row, (xs > hits[start]) & (xs < hits[start + 1])] = True
-    return mask
-
-
 def _sample_segment(
     first: NDArray[np.float64], second: NDArray[np.float64], step: float
 ) -> NDArray[np.float64]:
@@ -267,7 +249,8 @@ def measure_removal(
         ys, cell_y = _grid(span_y, cell)
     xs = xs + x_min
     ys = ys + y_min
-    inside = _inside_mask(xs, ys, polygon)
+    # Region minus islands: an island's material stays, so it is not region to machine.
+    inside = region_inside_mask(region, xs, ys)
 
     grid_x, grid_y = np.meshgrid(xs, ys)
     # The blank starts at the region's own top face: zero everywhere for every flat shape (so those

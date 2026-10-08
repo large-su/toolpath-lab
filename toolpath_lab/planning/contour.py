@@ -60,11 +60,33 @@ from toolpath_lab.core.parameters import (
 )
 from toolpath_lab.core.path import Move, MoveKind, Toolpath
 from toolpath_lab.planning.base import MOTION_PARAMETERS, Planner, PlanningContext
-from toolpath_lab.planning.geometry2d import offset_loops, point_in_polygon, resample_ring
+from toolpath_lab.planning.geometry2d import (
+    ensure_ccw,
+    offset_loops,
+    point_in_polygon,
+    resample_ring,
+)
+from toolpath_lab.planning.islands import (
+    connector_is_clear,
+    resample_outward_ring,
+    sagitta_mm,
+    trim_ring,
+)
 from toolpath_lab.planning.registry import PLANNERS
 
 #: Loops whose offset area is below this (mm^2) are dropped: a fragment too thin for a pass.
 _MIN_RING_AREA_MM2 = 0.5
+
+
+def _island_scale_mm(island: NDArray[np.float64]) -> float:
+    """A conservative radius of an island: half its bounding box diagonal.
+
+    Used only to size the sagitta allowance of the rings around it (a small radius is the conservative
+    choice), so a rough answer for an arbitrary polygon is enough.
+    """
+
+    span = island.max(axis=0) - island.min(axis=0)
+    return float(np.hypot(span[0], span[1]) / 2.0)
 
 #: Ring direction -> wording used in the notes.
 _DIRECTION_LABELS = {
@@ -108,56 +130,153 @@ class ContourPlanner(Planner):
             float(context.parameters["sample_step_mm"]), "采样步长 sample_step_mm"
         )
         ring_direction = str(context.parameters["ring_direction"])
+        islands = [ensure_ccw(island) for island in context.region.islands()]
+        # Every pass is a `(points, closed)` pair. Without islands they are the closed rings this
+        # planner has always walked; with islands they are the runs the midline rule leaves over,
+        # which is why the loop below branches on `closed` rather than assuming a ring.
         rings = self.sampled_rings(context, stepover, sample_step, ring_direction)
-        if not rings:
+        passes: list[tuple[NDArray[np.float64], bool]] = [
+            (ring, True) for level in rings for ring in level
+        ]
+        island_rings = 0
+        if islands:
+            passes, island_rings = self.island_runs(
+                context, stepover, sample_step, ring_direction, islands
+            )
+        if not passes:
             raise PlanningError(
                 f"环切没有生成任何刀轨：刀具贴壁间隙 {context.cutting_radius_mm:g} mm "
                 "已经超过区域的内切半径，请减小刀具直径或扩大区域"
+                + ("（或超过岛屿之间的带宽）" if islands else "")
             )
 
         moves: list[Move] = []
         previous: NDArray[np.float64] | None = None
-        previous_ring: NDArray[np.float64] | None = None
+        previous_points: NDArray[np.float64] | None = None
+        previous_closed = False
         index = 0
-        for level in rings:
-            for ring in level:
-                positions = context.to_positions(ring)
-                if previous is None:
-                    moves.extend(
-                        context.entry_moves(positions[0], positions[1] - positions[0])
-                    )
-                elif previous_ring is not None and self._is_nested(ring, previous_ring):
-                    moves.append(context.link_move(previous, positions[0]))
-                else:
-                    moves.append(context.rapid_between(previous, positions[0]))
-                moves.append(
-                    Move(
-                        MoveKind.CUT,
-                        positions,
-                        context.feed_mm_per_min,
-                        pass_index=index,
-                        label=f"第 {index + 1} 环",
-                    )
+        for points, closed in passes:
+            positions = context.to_positions(np.vstack([points, points[:1]]) if closed else points)
+            if previous is None:
+                moves.extend(
+                    context.entry_moves(positions[0], positions[1] - positions[0])
                 )
-                previous = positions[-1]
-                previous_ring = ring
-                index += 1
+            elif closed and previous_closed and self._is_nested(points, previous_points):
+                moves.append(context.link_move(previous, positions[0]))
+            elif islands and connector_is_clear(
+                previous, positions[0], islands, context.cutting_radius_mm, step_mm=sample_step
+            ):
+                moves.append(context.link_move(previous, positions[0]))
+            else:
+                moves.append(context.rapid_between(previous, positions[0]))
+            moves.append(
+                Move(
+                    MoveKind.CUT,
+                    positions,
+                    context.feed_mm_per_min,
+                    pass_index=index,
+                    label=f"第 {index + 1} 环",
+                )
+            )
+            previous = positions[-1]
+            previous_points = points
+            previous_closed = closed
+            index += 1
         moves.append(context.retract_move_up(previous))
 
-        ring_count = sum(len(level) for level in rings)
+        ring_count = len(passes)
+        notes = [
+            f"环切：共 {ring_count} 环（{len(rings)} 层），切宽 {stepover:g} mm，"
+            f"采样步长 {sample_step:g} mm，环绕向 {_DIRECTION_LABELS[ring_direction]}",
+            "同层分裂出的环之间抬刀快移，套在里面的环之间用连接进给",
+        ]
+        if islands:
+            notes.append(
+                f"绕岛屿：{len(islands)} 个岛屿（其中 {island_rings} 环绕岛走），"
+                "轮廓环与岛屿环各自只保留离自己更近的一半（中缝两侧合起来才是整条带），"
+                f"刀具贴壁间隙 R{context.cutting_radius_mm:g} mm 对岛屿同样有效"
+            )
+        notes.append(
+            f"边界固定内缩一个刀具贴壁间隙（R{context.cutting_radius_mm:g} mm），"
+            f"安全高度 {context.safe_height_mm:g} mm、"
+            f"快移 {context.rapid_feed_mm_per_min:g} mm/min"
+        )
         return Toolpath(
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
-            notes=(
-                f"环切：共 {ring_count} 环（{len(rings)} 层），切宽 {stepover:g} mm，"
-                f"采样步长 {sample_step:g} mm，环绕向 {_DIRECTION_LABELS[ring_direction]}",
-                "同层分裂出的环之间抬刀快移，套在里面的环之间用连接进给",
-                f"边界固定内缩一个刀具贴壁间隙（R{context.cutting_radius_mm:g} mm），"
-                f"安全高度 {context.safe_height_mm:g} mm、"
-                f"快移 {context.rapid_feed_mm_per_min:g} mm/min",
-            ),
+            notes=tuple(notes),
         )
+
+    def island_runs(
+        self,
+        context: PlanningContext,
+        stepover: float,
+        sample_step: float,
+        ring_direction: str,
+        islands: list[NDArray[np.float64]],
+    ) -> tuple[list[tuple[NDArray[np.float64], bool]], int]:
+        """Runs for a region with islands: outline rings and island rings, split at the midline.
+
+        The band between the outline and an island is machined from both sides -- rings offset inwards
+        from the outline and rings offset outwards from each island -- and every ring keeps only the part
+        it is closer to, so the two families meet near the middle instead of cutting the same strip
+        twice. The runs come back *open*: a ring trimmed around an island is no longer a loop, and
+        closing it would cut straight across the material that is meant to stay.
+        """
+
+        radius = context.cutting_radius_mm
+        outline = [ensure_ccw(context.boundary)]
+        passes: list[tuple[NDArray[np.float64], bool]] = []
+        island_rings = 0
+        index = 0
+        distance = radius
+        while True:
+            pieces: list[tuple[NDArray[np.float64], bool]] = []
+            for loop in offset_loops(context.boundary, distance, min_area_mm2=_MIN_RING_AREA_MM2):
+                sampled = resample_ring(loop, sample_step)
+                for run in trim_ring(
+                    sampled, near=outline, far=islands, clearance_mm=radius
+                ):
+                    if self._reverse_run(ring_direction, index, is_island=False):
+                        run = run[::-1]
+                    pieces.append((run, False))
+                    index += 1
+            for island in islands:
+                # The ring becomes a polyline and its chords dip inside it, so it is offset by the
+                # sagitta as well: the cutter keeps the full clearance, not clearance minus a chord.
+                scale = _island_scale_mm(island) + distance
+                sampled = resample_outward_ring(
+                    island, distance, sample_step, safety_mm=sagitta_mm(scale, sample_step)
+                )
+                if sampled is None:
+                    continue
+                for run in trim_ring(
+                    sampled, near=[island], far=outline, clearance_mm=radius
+                ):
+                    if self._reverse_run(ring_direction, index, is_island=True):
+                        run = run[::-1]
+                    pieces.append((run, False))
+                    index += 1
+                    island_rings += 1
+            if not pieces:
+                break
+            passes.extend(pieces)
+            distance += stepover
+        return passes, island_rings
+
+    def _reverse_run(self, ring_direction: str, index: int, *, is_island: bool) -> bool:
+        """Which way a run is walked.
+
+        Climb and conventional are named after the *region*: with the material outside an island ring,
+        keeping the same cutting direction on that side means walking it the other way round. Alternate
+        keeps alternating across the whole level, which is what it does on solid regions too.
+        """
+
+        base = self._should_reverse(ring_direction, index)
+        if ring_direction == "alternate":
+            return base
+        return (not base) if is_island else base
 
     # -- ring generation (shared with planning/spiral.py) -------------------
     def ring_layers(
