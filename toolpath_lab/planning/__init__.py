@@ -19,6 +19,8 @@ from toolpath_lab.planning import crosshatch as _crosshatch  # noqa: F401
 from toolpath_lab.planning import five_axis as _five_axis  # noqa: F401
 from toolpath_lab.planning import adaptive_scallop as _adaptive_scallop  # noqa: F401
 from toolpath_lab.planning import five_axis_adaptive as _five_axis_adaptive  # noqa: F401
+from toolpath_lab.planning import contour as _contour  # noqa: F401
+from toolpath_lab.planning import spiral as _spiral  # noqa: F401
 
 __all__ = [
     "PLANNERS",

@@ -10,6 +10,7 @@ import * as THREE from "three";
 import { OrbitControls } from "../vendor/OrbitControls.js";
 import { RoomEnvironment } from "../vendor/RoomEnvironment.js";
 import { StockSimulation } from "./stock.js";
+import { StockMesh } from "./stock_mesh.js";
 import { detectShankCollision, toolEnvelope } from "./collision.js";
 
 const COLORS = {
@@ -101,6 +102,7 @@ export class Viewport {
       showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true,
       showAdaptiveSpacing: true, showStock: false, showRoughing: true,
       checkToolCollision: true, pauseOnCollision: true,
+      showUncovered: false,
     };
     this.bounds = null;
     this.activeView = "fit";
@@ -156,6 +158,7 @@ export class Viewport {
     this.contourGroup = new THREE.Group();
     this.pathGroup = new THREE.Group();
     this.adaptiveSpacingGroup = new THREE.Group();
+    this.coverageGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
     this.poseGroup = new THREE.Group();
     this.stockGroup = new THREE.Group();
@@ -172,6 +175,7 @@ export class Viewport {
       this.importedGroup,
       this.contourGroup, this.pathGroup, this.traceGroup, this.poseGroup,
       this.adaptiveSpacingGroup,
+      this.coverageGroup,
       this.stockGroup, this.toolGroup
     );
 
@@ -182,6 +186,7 @@ export class Viewport {
     this.stockMesh = null;
     this.stockWallMesh = null;
     this.stockSimulation = null;
+    this.stockRenderMesh = null;
     this.stockPayload = null;
     this.importedModel = null;
     this.onStockUpdate = null;
@@ -248,12 +253,16 @@ export class Viewport {
     this._clear(this.contourGroup);
     this._clear(this.pathGroup);
     this._clear(this.adaptiveSpacingGroup);
+    // DataTexture is not disposed by the generic geometry/material cleanup.
+    for (const mesh of this.coverageGroup.children) mesh.material.map?.dispose();
+    this._clear(this.coverageGroup);
     this._clear(this.traceGroup);
     this._clear(this.poseGroup);
     this._clear(this.stockGroup);
     this.stockMesh = null;
     this.stockWallMesh = null;
     this.stockSimulation = null;
+    this.stockRenderMesh = null;
     this.stockPayload = payload;
     this.lastPlayheadTime = null;
     this._setCollisionState(null);
@@ -288,6 +297,7 @@ export class Viewport {
     this.rapidLine = this._line(groups.rapid, COLORS.rapid, 0.75, true);
     this.pathGroup.add(this.rapidLine);
     this._buildAdaptiveSpacingOverlay(payload, cutMoves);
+    this._buildCoverageOverlay(payload);
 
     if (payload.timeline && payload.timeline.positions) {
       const geometry = polylineGeometry([liftPaths([payload.timeline.positions])[0]]);
@@ -476,6 +486,8 @@ export class Viewport {
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.poseGroup.visible = this.display.showPath;
+    this.coverageGroup.visible = Boolean(this.display.showUncovered)
+      && this.coverageGroup.children.length > 0;
     this.adaptiveSpacingGroup.visible = this.display.showPath
       && this.display.showAdaptiveSpacing && Boolean(this.adaptiveSpacingRange);
     if (this.cutLine) {
@@ -489,39 +501,87 @@ export class Viewport {
     this.contourGroup.visible = this.display.showWorkpiece;
   }
 
+  _buildCoverageOverlay(payload) {
+    const coverage = payload.coverage;
+    if (!coverage?.available || !coverage.uncovered_cell_count) return;
+    const { nx, ny, bounds_mm: bounds, uncovered_mask: mask } = coverage.grid;
+    const pixels = new Uint8Array(nx * ny * 4);
+    for (let i = 0; i < mask.length; i += 1) {
+      pixels[i * 4] = 255;
+      pixels[i * 4 + 1] = 64;
+      pixels[i * 4 + 2] = 53;
+      pixels[i * 4 + 3] = mask[i] ? 255 : 0;
+    }
+    const texture = new THREE.DataTexture(pixels, nx, ny, THREE.RGBAFormat);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+    let geometry;
+    // Reuse the target surface topology, not the stock. The mesh boundary clips
+    // the grid texture so there is no red shell outside the selected region.
+    if (payload.surface?.mesh) {
+      geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(payload.surface.mesh.vertices.flat(), 3));
+      geometry.setIndex(payload.surface.mesh.indices);
+    } else {
+      const shape = new THREE.Shape(payload.region.boundary.map(p => new THREE.Vector2(p[0], p[1])));
+      geometry = new THREE.ShapeGeometry(shape);
+      geometry.translate(0, 0, Number(payload.surface?.parameters?.base_z_mm || 0));
+    }
+    const positions = geometry.getAttribute("position");
+    const uv = [];
+    for (let i = 0; i < positions.count; i += 1) {
+      uv.push((positions.getX(i) - bounds[0][0]) / (bounds[0][1] - bounds[0][0]),
+        (positions.getY(i) - bounds[1][0]) / (bounds[1][1] - bounds[1][0]));
+      positions.setZ(i, positions.getZ(i) + PATH_LIFT_MM * 0.5);
+    }
+    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+    // Respect stock depth: a diagnostic overlay must not look like a second outer skin.
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+      map: texture, transparent: true, opacity: 0.76, alphaTest: 0.01,
+      side: THREE.DoubleSide, depthWrite: false, depthTest: true, toneMapped: false,
+    }));
+    mesh.renderOrder = 2;
+    this.coverageGroup.add(mesh);
+  }
+
   _enableStock() {
     if (this.stockSimulation || !this.stockPayload || !this.stockPayload.stock
         || !this.stockPayload.timeline) return;
     this.stockSimulation = new StockSimulation(
       this.stockPayload.stock, this.stockPayload.timeline, this.stockPayload.tool
     );
+    this.stockRenderMesh = new StockMesh(this.stockSimulation, boundary =>
+      THREE.ShapeUtils.triangulateShape(boundary.map(p => new THREE.Vector2(...p)), []));
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute(
-      "position", new THREE.Float32BufferAttribute(this.stockSimulation.positions(), 3)
+      "position", new THREE.Float32BufferAttribute(this.stockRenderMesh.topPositions, 3)
     );
     geometry.setAttribute(
-      "color", new THREE.Float32BufferAttribute(this.stockSimulation.colors(), 3)
+      "color", new THREE.Float32BufferAttribute(this.stockRenderMesh.topColors, 3)
     );
-    geometry.setIndex(this.stockSimulation.indices());
+    geometry.setIndex(this.stockRenderMesh.topIndices);
     geometry.computeVertexNormals();
     this.stockMesh = new THREE.Mesh(
       geometry,
       new THREE.MeshStandardMaterial({
         color: 0xffffff, vertexColors: true, metalness: 0.05, roughness: 0.86,
-        transparent: true, opacity: 0.86,
+        transparent: false, opacity: 1,
       })
     );
     const wallGeometry = new THREE.BufferGeometry();
     wallGeometry.setAttribute(
-      "position", new THREE.Float32BufferAttribute(this.stockSimulation.boundaryPositions(), 3)
+      "position", new THREE.Float32BufferAttribute(this.stockRenderMesh.shellPositions, 3)
     );
-    wallGeometry.setIndex(this.stockSimulation.boundaryIndices());
+    wallGeometry.setIndex(this.stockRenderMesh.shellIndices);
     wallGeometry.computeVertexNormals();
     this.stockWallMesh = new THREE.Mesh(
       wallGeometry,
       new THREE.MeshStandardMaterial({
         color: COLORS.stock, metalness: 0.35, roughness: 0.58,
-        transparent: true, opacity: 0.9, side: THREE.DoubleSide,
+        transparent: false, opacity: 1, side: THREE.DoubleSide,
       })
     );
     this.stockMesh.castShadow = true;
@@ -539,6 +599,7 @@ export class Viewport {
     this.stockMesh = null;
     this.stockWallMesh = null;
     this.stockSimulation = null;
+    this.stockRenderMesh = null;
     this.stockGroup.visible = false;
     this.lastPlayheadTime = null;
     this._setCollisionState(null);
@@ -547,18 +608,19 @@ export class Viewport {
 
   _updateStockMesh() {
     if (!this.stockMesh || !this.stockSimulation) return;
+    this.stockRenderMesh.update();
     const attribute = this.stockMesh.geometry.getAttribute("position");
-    attribute.array.set(this.stockSimulation.positions());
+    attribute.array.set(this.stockRenderMesh.topPositions);
     attribute.needsUpdate = true;
     this.stockMesh.geometry.computeVertexNormals();
     const colorAttribute = this.stockMesh.geometry.getAttribute("color");
     if (colorAttribute) {
-      colorAttribute.array.set(this.stockSimulation.colors());
+      colorAttribute.array.set(this.stockRenderMesh.topColors);
       colorAttribute.needsUpdate = true;
     }
     if (this.stockWallMesh) {
       const wallAttribute = this.stockWallMesh.geometry.getAttribute("position");
-      wallAttribute.array.set(this.stockSimulation.boundaryPositions());
+      wallAttribute.array.set(this.stockRenderMesh.shellPositions);
       wallAttribute.needsUpdate = true;
       this.stockWallMesh.geometry.computeVertexNormals();
     }

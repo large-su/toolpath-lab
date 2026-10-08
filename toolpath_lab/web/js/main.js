@@ -5,6 +5,7 @@ import { ParameterPanel } from "./panel.js";
 import { Playback } from "./playback.js";
 import { loadModelFile } from "./model.js";
 import { VIEW_BUTTONS, Viewport } from "./viewport.js";
+import { renderNotice } from "./notice.js";
 
 const REGENERATE_DEBOUNCE_MS = 200;
 
@@ -36,6 +37,8 @@ let latestStockStats = null;
 let latestCollision = null;
 let collisionEpisodeActive = false;
 let lastCollisionTime = -1;
+let collisionNoticeDismissed = false;
+let collisionNoticeTime = -1;
 
 // ------------------------------------------------------------------ 工具
 function seconds(value) {
@@ -46,15 +49,18 @@ function seconds(value) {
 }
 
 function showBanner(message, kind) {
-  dom.banner.textContent = message;
+  // An old info timer must not hide a newly displayed warning or error.
+  window.clearTimeout(showBanner.timer);
+  renderNotice(dom.banner, message, hideBanner, kind === "info" ? "关闭提示" : "关闭警告",
+    kind === "info" ? "status" : "alert");
   dom.banner.className = "banner" + (kind === "info" ? " info" : "");
   if (kind === "info") {
-    window.clearTimeout(showBanner.timer);
     showBanner.timer = window.setTimeout(hideBanner, 4000);
   }
 }
 
 function hideBanner() {
+  window.clearTimeout(showBanner.timer);
   dom.banner.className = "banner hidden";
 }
 
@@ -76,7 +82,7 @@ async function boot() {
   window.addEventListener("resize", () => viewport.resize());
   window.addEventListener("keydown", (event) => {
     const tag = document.activeElement ? document.activeElement.tagName : "";
-    if (event.code === "Space" && !["INPUT", "SELECT", "TEXTAREA"].includes(tag)) {
+    if (event.code === "Space" && !["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(tag)) {
       event.preventDefault();
       playback.toggle();
     }
@@ -197,6 +203,8 @@ async function regenerate() {
   try {
     const result = await requestPlan(panel.payload());
     lastResult = result;
+    collisionNoticeDismissed = false;
+    collisionNoticeTime = -1;
     viewport.setResult(result);
     viewport.setTool(result.tool);
     playback.load(result.timeline);
@@ -253,6 +261,9 @@ function renderStats(result) {
   const adaptive = result.toolpath.metadata && result.toolpath.metadata.adaptive;
   const roughing = result.toolpath.metadata?.roughing;
   const smoothing = result.toolpath.metadata?.orientation_smoothing;
+  const contour = result.toolpath.metadata?.contour;
+  if (contour) rows.push(["偏置圈数", String(contour.ring_count)]);
+  if (result.toolpath.metadata?.spiral) rows.push(["连续切削", "1 段（精加工）"]);
   if (result.toolpath.metadata?.five_axis_adaptive) rows.push(["残留模型", "球头刀·估算"]);
   if (smoothing) rows.push(
     ["刀轴平滑", Number(smoothing.raw_peak_gradient_deg_mm).toFixed(1) + " → "
@@ -282,6 +293,34 @@ function renderStats(result) {
     + result.tool.diameter_mm.toFixed(1) + " · " + result.toolpath.planner_label;
   const container = document.createElement("div");
   container.append(heading, list);
+  const coverage = result.coverage;
+  if (coverage) {
+    const analysis = document.createElement("div");
+    analysis.className = "coverage-summary";
+    analysis.title = coverage.note;
+    const summary = document.createElement("dl");
+    const displayRows = coverage.available ? [
+      ["覆盖率（XY）", coverage.coverage_percent.toFixed(1) + "%"],
+      ["未覆盖面积", coverage.uncovered_area_mm2.toFixed(1) + " mm²"],
+      ["分析网格", coverage.grid.cell_size_mm.map(v => v.toFixed(2)).join(" × ") + " mm"],
+    ] : [["覆盖分析", "区域过窄，网格未采到"]];
+    for (const [label, value] of displayRows) summary.append(...statRow(label, value));
+    const note = document.createElement("p");
+    note.textContent = "整条精加工·投影估算，非切除比例";
+    analysis.append(summary, note);
+    if (coverage.approximate_contact) {
+      const limitation = document.createElement("p");
+      limitation.textContent = "曲面/圆角/倾斜刀具：不代表实际到面";
+      analysis.appendChild(limitation);
+    }
+    if (panel?.displayOptions().showUncovered) {
+      const legend = document.createElement("p");
+      legend.className = "coverage-legend";
+      legend.textContent = "■ 红色：预计未覆盖（目标面，受毛坯遮挡）";
+      analysis.appendChild(legend);
+    }
+    container.appendChild(analysis);
+  }
   if (roughing) {
     const stage = document.createElement("div");
     stage.className = "roughing-runtime";
@@ -342,12 +381,25 @@ function renderStockStats(stats) {
 }
 
 function renderCollisionStats(hit) {
+  // Closing a live notice suppresses this episode, not the detector or next collision.
+  // Reset outside the collision or on timeline rewind; re-rendering stats alone preserves dismissal.
+  if (!hit || hit.time_s < collisionNoticeTime - 1e-9) collisionNoticeDismissed = false;
+  collisionNoticeTime = hit ? hit.time_s : -1;
   const element = dom.stats.querySelector(".collision-runtime");
   if (!element) return;
   element.classList.toggle("collision-alert", Boolean(hit));
-  element.textContent = hit
-    ? `⚠ ${hit.part}干涉 · ${hit.time_s.toFixed(2)} s\n位置 ${hit.position.map((v) => v.toFixed(1)).join(", ")} mm\n竖直重叠约 ${hit.overlap_mm.toFixed(2)} mm`
-    : "刀身检测：当前未发现干涉（高度场近似）";
+  element.hidden = Boolean(hit && collisionNoticeDismissed);
+  if (hit) {
+    renderNotice(element,
+      `⚠ ${hit.part}干涉 · ${hit.time_s.toFixed(2)} s\n位置 ${hit.position.map((v) => v.toFixed(1)).join(", ")} mm\n竖直重叠约 ${hit.overlap_mm.toFixed(2)} mm`,
+      () => {
+        collisionNoticeDismissed = true;
+        element.hidden = true;
+      }, "关闭干涉警告");
+  } else {
+    element.removeAttribute("role");
+    element.textContent = "刀身检测：当前未发现干涉（高度场近似）";
+  }
 }
 
 function renderPlaybar(state) {

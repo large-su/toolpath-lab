@@ -1,0 +1,96 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.TOOLPATH_BROWSER_MODULE || "playwright");
+const browser = await chromium.launch({ channel: "msedge", headless: true,
+  args: ["--enable-unsafe-swiftshader"] });
+try {
+  const page = await browser.newPage({ viewport: { width: 1500, height: 1050 } });
+  const errors = [];
+  page.on("pageerror", e => errors.push(e.message));
+  await page.goto(process.env.TOOLPATH_TEST_URL || "http://127.0.0.1:8771/");
+  await page.waitForFunction(() => window.toolpathLab?.viewport.stockPayload);
+  const library = page.getByLabel("常用刀具库", { exact: true });
+  assert.equal(await library.locator("option").count(), 9);
+  assert.equal(await library.inputValue(), "flat_d6");
+  await page.evaluate(async () => {
+    const app = window.toolpathLab;
+    app.panel.state.planner.values.feed_mm_per_min = 1234;
+    app.panel.render();
+    await app.regenerate();
+  });
+  await library.selectOption("flat_d10");
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.tool.diameter_mm === 10);
+  assert.equal(await page.getByLabel("刀具长度 L", { exact: true }).inputValue(), "40");
+  assert.equal(await page.getByLabel("进给速度 F", { exact: true }).inputValue(), "1234");
+  await page.getByLabel("刀具直径 D", { exact: true }).fill("11");
+  await page.getByLabel("刀具直径 D", { exact: true }).dispatchEvent("change");
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.tool.diameter_mm === 11);
+  assert.equal(await library.inputValue(), "custom");
+  await library.selectOption("bull_d10_r2");
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.tool.kind === "bull");
+  assert.equal(await page.getByLabel("鼻圆角 Rn", { exact: true }).inputValue(), "2");
+  assert.equal(await page.getByLabel("鼻圆角 Rn", { exact: true }).isVisible(), true);
+  await library.selectOption("ball_d6");
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.tool.kind === "ball");
+  assert.equal(await page.getByLabel("鼻圆角 Rn", { exact: true }).isVisible(), false);
+  await library.selectOption("flat_d6");
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.tool.kind === "flat");
+  await page.getByLabel("形状", { exact: true }).selectOption("circle");
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.region.id === "circle");
+  await page.getByLabel("策略", { exact: true }).selectOption("contour");
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.toolpath.planner === "contour");
+  await page.getByLabel("切宽 ae", { exact: true }).fill("3");
+  await page.getByLabel("切宽 ae", { exact: true }).dispatchEvent("change");
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.request.planner.parameters.stepover_mm === 3);
+  await page.getByLabel("快移", { exact: true }).uncheck();
+  await page.getByLabel("刀具", { exact: true }).uncheck();
+  await page.locator('[data-view="top"]').click();
+  const contour = await page.evaluate(() => window.toolpathLab.viewport.stockPayload.toolpath);
+  assert.ok(contour.moves.filter(m => m.kind === "cut").length > 5);
+  assert.match(await page.locator("#stats").innerText(), /偏置圈数/);
+  if (process.env.TOOLPATH_CONTOUR_SCREENSHOT) await page.screenshot({ path: process.env.TOOLPATH_CONTOUR_SCREENSHOT });
+  await page.getByLabel("环绕方向", { exact: true }).selectOption("cw");
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.toolpath.metadata.contour.winding === "cw");
+  await page.getByLabel("策略", { exact: true }).selectOption("spiral");
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.toolpath.planner === "spiral");
+  const spiral = await page.evaluate(() => window.toolpathLab.viewport.stockPayload.toolpath);
+  assert.deepEqual(spiral.moves.map(m => m.kind), ["rapid", "cut", "rapid"]);
+  assert.equal(spiral.metadata.spiral.continuous_cut, true);
+  assert.match(await page.locator("#stats").innerText(), /1 段（精加工）/);
+  if (process.env.TOOLPATH_SPIRAL_SCREENSHOT) await page.screenshot({ path: process.env.TOOLPATH_SPIRAL_SCREENSHOT });
+  await page.getByLabel("刀具", { exact: true }).check();
+  await page.evaluate(() => window.toolpathLab.playback.seekProgress(.5));
+  assert.ok(await page.evaluate(() => window.toolpathLab.viewport.toolGroup.visible));
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出 NC", exact: true }).click();
+  const download = await downloadPromise;
+  const gcode = await readFile(await download.path(), "utf8");
+  assert.match(gcode, /G1/);
+  assert.match(gcode, /G0/);
+  assert.ok(gcode.length > 1000);
+  await page.evaluate(async () => {
+    const app = window.toolpathLab, panel = app.panel;
+    const descriptor = panel.catalog.surfaces.types.find(s => s.id === "freeform");
+    panel.state.surface = { id: "freeform", values: Object.fromEntries(descriptor.parameters.map(p => [p.key, p.default])) };
+    panel.state.region = { id: "circle", values: { diameter_mm: 40 } };
+    panel.state.roughing.enabled = true;
+    panel.render();
+    await app.regenerate();
+  });
+  await page.waitForFunction(() => window.toolpathLab.viewport.stockPayload.toolpath.metadata.roughing?.layer_count > 0);
+  const curved = await page.evaluate(() => {
+    const data = window.toolpathLab.viewport.stockPayload;
+    const finish = data.toolpath.moves.slice(data.toolpath.metadata.roughing.finish_start_move_index);
+    return { count: finish.length, cutKinds: finish.map(m => m.kind),
+      zs: finish[1].points.map(p => p[2]), duration: data.timeline.duration_s };
+  });
+  assert.equal(curved.count, 3);
+  assert.deepEqual(curved.cutKinds, ["rapid", "cut", "rapid"]);
+  assert.ok(Math.max(...curved.zs) - Math.min(...curved.zs) > 1);
+  assert.equal(errors.length, 0, JSON.stringify(errors));
+  console.log("PASS: eight presets, manual override, unchanged feed, contour/spiral selection, winding, playback, NC export and curved spiral with roughing.");
+  console.log(JSON.stringify({ contour_rings: contour.metadata.contour.ring_count,
+    spiral_points: spiral.moves[1].points.length, nc_characters: gcode.length }));
+} finally { await browser.close(); }

@@ -76,6 +76,7 @@ export class ParameterPanel {
         showWorkpiece: true, showPath: true, showRapid: true, showTrace: true,
         showTool: true, showAdaptiveSpacing: true, showStock: false, showRoughing: true,
         checkToolCollision: true, pauseOnCollision: true,
+        ...clone(this.catalog.display?.defaults || {}),
       },
     };
     this.rows = [];
@@ -114,7 +115,7 @@ export class ParameterPanel {
   render() {
     this.rows = [];
     this.root.replaceChildren(
-      this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
+      this._toolSection(),
       this._modelSection(),
       this._regionSection(),
       this._surfaceSection(),
@@ -192,10 +193,47 @@ export class ParameterPanel {
       const control = this._buildControl(spec, values[spec.key], (value) => {
         values[spec.key] = value;
         this.refreshVisibility();
+        if (capability === "tool") this._refreshToolPreset();
         this.onChange();
       });
       section.appendChild(this._wrapRow(spec, control, capability, values));
     }
+    return section;
+  }
+
+  _toolPresetId() {
+    const keys = this.catalog.tool.parameters.map(item => item.key);
+    const preset = (this.catalog.tool.library || []).find(item => keys.every(key => {
+      // The hidden nose radius is irrelevant to flat and ball geometry.
+      if (key === "nose_radius_mm" && this.state.tool.kind !== "bull") return true;
+      const expected = item.values[key], actual = this.state.tool[key];
+      return typeof expected === "number" ? Math.abs(Number(actual) - expected) < 1e-8 : actual === expected;
+    }));
+    return preset?.id || "custom";
+  }
+
+  _refreshToolPreset() {
+    if (this.toolPresetControl) this.toolPresetControl.value = this._toolPresetId();
+  }
+
+  _toolSection() {
+    const section = this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool");
+    const spec = this.catalog.tool.preset_selector;
+    if (!spec) return section;
+    const control = this._buildControl(spec, this._toolPresetId(), value => {
+      const preset = this.catalog.tool.library.find(item => item.id === value);
+      // 'Custom' changes no geometry: it simply lets the user keep editing.
+      if (!preset) return;
+      this.state.tool = clone(preset.values);
+      this.render();
+      this.onChange();
+    });
+    this.toolPresetControl = control.node;
+    section.insertBefore(this._wrapRow(spec, control, null, {}), section.children[1]);
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = "教学几何预设，选择后仍可修改；进给速度保持不变。";
+    section.appendChild(note);
     return section;
   }
 
@@ -308,9 +346,13 @@ export class ParameterPanel {
 
   _displaySection() {
     const section = this._section("显示");
-    for (const option of DISPLAY_OPTIONS) {
+    const analysisOptions = (this.catalog.display?.parameters || []).map(spec => ({
+      key: spec.key, label: spec.label, help: spec.help, color: "#ff4035",
+    }));
+    for (const option of [...DISPLAY_OPTIONS, ...analysisOptions]) {
       const row = document.createElement("label");
       row.className = "checkbox-row";
+      if (option.help) row.title = option.help;
       const input = document.createElement("input");
       input.type = "checkbox";
       input.checked = this.state.display[option.key];
@@ -329,6 +371,12 @@ export class ParameterPanel {
       text.textContent = option.label;
       row.appendChild(text);
       section.appendChild(row);
+    }
+    if (analysisOptions.length) {
+      const hint = document.createElement("div");
+      hint.className = "note";
+      hint.textContent = "红色为精加工预计漏覆盖区域，不随播放改变；覆盖率不是材料切除比例。";
+      section.appendChild(hint);
     }
     return section;
   }

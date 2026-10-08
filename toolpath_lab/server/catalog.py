@@ -9,9 +9,11 @@ from __future__ import annotations
 from typing import Any
 
 from toolpath_lab import __version__
+from toolpath_lab.core.parameters import ParameterKind, ParameterSet, spec
 from toolpath_lab.core.region import REGION_SHAPES, region_catalog
 from toolpath_lab.core.surface import SURFACE_TYPES, surface_catalog
 from toolpath_lab.core.tool import tool_parameters
+from toolpath_lab.core.tool_library import tool_library, tool_preset_selector
 from toolpath_lab.planning import RAPID_FEED_MM_PER_MIN, SAFE_HEIGHT_MM
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
 from toolpath_lab.planning.roughing import roughing_parameters
@@ -19,6 +21,11 @@ from toolpath_lab.planning.roughing import roughing_parameters
 DEFAULT_REGION_ID = "square"
 DEFAULT_SURFACE_ID = "flat"
 DEFAULT_PLANNER_ID = "raster"
+
+DISPLAY_PARAMETERS = ParameterSet((
+    spec("showUncovered", "未覆盖区域（XY估算）", ParameterKind.BOOL, False, group="显示",
+         help="红色为整条精加工刀路预计未覆盖的 XY 投影区域，与播放进度无关；不是实际剩余材料。"),
+))
 
 
 def _defaults(registry: Any, item_id: str) -> dict[str, Any]:
@@ -49,6 +56,8 @@ def catalog_payload() -> dict[str, Any]:
         "tool": {
             "parameters": tool_parameters().to_dicts(),
             "defaults": default_tool_parameters(),
+            "library": tool_library(),
+            "preset_selector": tool_preset_selector().to_dict(),
         },
         "regions": {
             "shapes": region_catalog(),
@@ -68,6 +77,10 @@ def catalog_payload() -> dict[str, Any]:
         "roughing": {
             "parameters": roughing_parameters().to_dicts(),
             "defaults": roughing_parameters().defaults(),
+        },
+        "display": {
+            "parameters": DISPLAY_PARAMETERS.to_dicts(),
+            "defaults": DISPLAY_PARAMETERS.defaults(),
         },
         # 这些量在主程序里是固定的，界面上只做展示；想变成参数就在 planning/base.py 里改。
         "fixed": {

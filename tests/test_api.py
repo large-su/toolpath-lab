@@ -89,6 +89,13 @@ class StaticTests(ApiTestCase):
 
 
 class CatalogTests(ApiTestCase):
+    def test_tool_library_is_validated_and_declared(self) -> None:
+        _, body, _ = self.get("/api/catalog")
+        tool = json.loads(body)["tool"]
+        self.assertEqual(len(tool["library"]), 8)
+        self.assertEqual(tool["preset_selector"]["kind"], "choice")
+        self.assertEqual(tool["preset_selector"]["choices"][0]["value"], "custom")
+
     def test_health(self) -> None:
         status, body, _ = self.get("/api/health")
         payload = json.loads(body)
@@ -102,7 +109,7 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(
             [item["id"] for item in payload["planners"]["list"]],
-            ["raster", "crosshatch", "five_axis", "adaptive_scallop", "five_axis_adaptive"],
+            ["raster", "crosshatch", "five_axis", "adaptive_scallop", "five_axis_adaptive", "contour", "spiral"],
         )
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]),
@@ -136,6 +143,35 @@ class CatalogTests(ApiTestCase):
 
 
 class PlanTests(ApiTestCase):
+    def test_contour_and_spiral_generate_timeline_and_coverage(self) -> None:
+        for planner in ("contour", "spiral"):
+            with self.subTest(planner=planner):
+                status, data, _ = self.plan({"planner": {"id": planner}, "region": {"shape": "circle"}})
+                self.assertEqual(status, 200)
+                self.assertEqual(data["toolpath"]["planner"], planner)
+                self.assertGreater(data["toolpath"]["metadata"]["contour"]["ring_count"], 1)
+                self.assertTrue(data["timeline"]["positions"])
+                self.assertTrue(data["coverage"]["available"])
+
+    def test_new_strategies_reject_concave_selection_without_crashing(self) -> None:
+        body = {"region": {"shape": "polygon", "parameters": {
+            "boundary": [[0, 0], [20, 0], [20, 8], [8, 8], [8, 20], [0, 20]]}}}
+        for planner in ("contour", "spiral"):
+            body["planner"] = {"id": planner}
+            status, data, _ = self.plan(body)
+            self.assertEqual(status, 422)
+            self.assertIn("凹多边形", data["error"])
+
+    def test_plan_includes_projected_finish_coverage(self) -> None:
+        status, data, _ = self.plan({"planner": {"id": "raster", "parameters": {"stepover_mm": 12}}})
+        self.assertEqual(status, 200)
+        coverage = data["coverage"]
+        self.assertTrue(coverage["estimate_only"])
+        self.assertEqual(coverage["scope"], "complete_finishing_path")
+        self.assertGreater(coverage["uncovered_area_mm2"], 1000)
+        grid = coverage["grid"]
+        self.assertEqual(len(grid["uncovered_mask"]), grid["nx"] * grid["ny"])
+
     def test_optional_roughing_is_catalogued_and_returned_before_finish(self) -> None:
         _, body, _ = self.get("/api/catalog")
         settings = json.loads(body)["roughing"]
@@ -352,9 +388,9 @@ class PlanTests(ApiTestCase):
         self.assertEqual(parameters["feed_mm_per_min"], 600.0)
 
     def test_unknown_planner_is_a_bad_request(self) -> None:
-        status, payload, _ = self.plan({"planner": {"id": "spiral"}})
+        status, payload, _ = self.plan({"planner": {"id": "does_not_exist"}})
         self.assertEqual(status, 400)
-        self.assertIn("spiral", payload["error"])
+        self.assertIn("does_not_exist", payload["error"])
 
     def test_unknown_region_shape_is_a_bad_request(self) -> None:
         status, payload, _ = self.plan({"region": {"shape": "hexagon"}})

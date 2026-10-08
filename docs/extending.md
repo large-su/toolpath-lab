@@ -6,15 +6,15 @@
 ## 1. 新增一个刀路策略（推荐从这里开始）
 
 最完整的例子就在仓库里：examples/plugins/contour_planner.py（环切，自带它需要的等距偏置几何）。
-复制进主程序即可：
+本版已有正式 `contour` 策略，试用示例时请使用新的文件名，并先把示例的 `id` 改为 `contour_demo`，不要覆盖正式实现：
 
 ```bash
-cp examples/plugins/contour_planner.py toolpath_lab/planning/contour.py
+cp examples/plugins/contour_planner.py toolpath_lab/planning/contour_demo.py
 ```
 
 ```python
 # toolpath_lab/planning/__init__.py
-from toolpath_lab.planning import contour as _contour  # noqa: F401
+from toolpath_lab.planning import contour_demo as _contour_demo  # noqa: F401
 ```
 
 最短的骨架长这样：

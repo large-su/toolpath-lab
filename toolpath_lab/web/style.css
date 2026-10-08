@@ -406,13 +406,32 @@ input[type="checkbox"] {
   top: 14px;
   right: 14px;
   z-index: 3;
-  width: 186px;
+  width: 220px;
+  max-height: calc(100% - 90px);
+  overflow-y: auto;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: rgba(7, 16, 20, 0.86);
   backdrop-filter: blur(10px);
-  pointer-events: none;
+  pointer-events: auto;
+}
+
+.coverage-summary {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px dashed var(--line);
+}
+
+.coverage-summary p {
+  margin: 5px 0 0;
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.coverage-summary .coverage-legend {
+  color: #ff7869;
 }
 
 .stats h4 {
@@ -481,7 +500,13 @@ input[type="checkbox"] {
 }
 
 .collision-runtime.collision-alert {
+  position: relative;
+  padding-right: 24px;
   color: #ff7869;
+}
+
+.collision-runtime[hidden] {
+  display: none;
 }
 
 .stock-runtime {
@@ -514,7 +539,7 @@ input[type="checkbox"] {
   bottom: 18px;
   z-index: 4;
   max-width: 70%;
-  padding: 7px 12px;
+  padding: 7px 34px 7px 12px;
   border: 1px solid rgba(255, 138, 128, 0.4);
   border-radius: 5px;
   background: rgba(60, 16, 14, 0.9);
@@ -532,6 +557,38 @@ input[type="checkbox"] {
 
 .banner.hidden {
   display: none;
+}
+
+.notice-message {
+  overflow-wrap: anywhere;
+}
+
+.notice-close {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.notice-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.notice-close:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
 }
 
 /* -------------------------------------------------------------- 播放条 */

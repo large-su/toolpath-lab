@@ -6,6 +6,13 @@ function pointInPolygon(x, y, boundary) {
   let inside = false;
   let previous = boundary[boundary.length - 1];
   for (const current of boundary) {
+    const dx = current[0] - previous[0], dy = current[1] - previous[1];
+    const cross = (x - previous[0]) * dy - (y - previous[1]) * dx;
+    if (Math.abs(cross) <= 1e-8 * Math.max(1, Math.hypot(dx, dy))
+        && x >= Math.min(previous[0], current[0]) - 1e-8
+        && x <= Math.max(previous[0], current[0]) + 1e-8
+        && y >= Math.min(previous[1], current[1]) - 1e-8
+        && y <= Math.max(previous[1], current[1]) + 1e-8) return true;
     const crosses = (previous[1] > y) !== (current[1] > y);
     const denominator = current[1] - previous[1] || 1e-12;
     const crossingX = (current[0] - previous[0]) * (y - previous[1]) / denominator + previous[0];
@@ -53,6 +60,7 @@ export class StockSimulation {
       let bestDistance = Infinity;
       for (let row = 0; row < this.ny; row += 1) {
         for (let col = 0; col < this.nx; col += 1) {
+          if (!this.active[row * this.nx + col]) continue;
           const dx = this.xs[col] - point[0];
           const dy = this.ys[row] - point[1];
           const distance = dx * dx + dy * dy;
@@ -166,6 +174,10 @@ export class StockSimulation {
 
   heightAt(x, y) {
     if (!pointInPolygon(x, y, this.spec.boundary)) return null;
+    return this.heightWeights(x, y).reduce((sum, [index, weight]) => sum + this.heights[index] * weight, 0);
+  }
+
+  heightWeights(x, y) {
     const xStep = (this.xs[this.nx - 1] - this.xs[0]) / (this.nx - 1);
     const yStep = (this.ys[this.ny - 1] - this.ys[0]) / (this.ny - 1);
     const fx = Math.max(0, Math.min(this.nx - 1, (x - this.xs[0]) / xStep));
@@ -175,8 +187,19 @@ export class StockSimulation {
     const tx = fx - col;
     const ty = fy - row;
     const a = row * this.nx + col;
-    return this.heights[a] * (1 - tx) * (1 - ty) + this.heights[a + 1] * tx * (1 - ty)
-      + this.heights[a + this.nx] * (1 - tx) * ty + this.heights[a + this.nx + 1] * tx * ty;
+    const samples = [[a, (1 - tx) * (1 - ty)], [a + 1, tx * (1 - ty)],
+      [a + this.nx, (1 - tx) * ty], [a + this.nx + 1, tx * ty]]
+      .filter(([index, weight]) => this.active[index] && weight > 0);
+    const sum = samples.reduce((total, sample) => total + sample[1], 0);
+    if (sum > 1e-12) return samples.map(([index, weight]) => [index, weight / sum]);
+    // A very thin boundary cell can contain no active corner: use nearest interior sample.
+    let best = -1, distance = Infinity;
+    for (let i = 0; i < this.active.length; i += 1) {
+      if (!this.active[i]) continue;
+      const d = (this.xs[i % this.nx] - x) ** 2 + (this.ys[Math.floor(i / this.nx)] - y) ** 2;
+      if (d < distance) { best = i; distance = d; }
+    }
+    return best >= 0 ? [[best, 1]] : [];
   }
 
   _removePoint(point) {

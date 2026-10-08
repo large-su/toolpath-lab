@@ -62,7 +62,7 @@ def _adaptive_plan(surface=None, parameters=None):
 class RegistryTests(unittest.TestCase):
     def test_raster_and_crosshatch_strategies_are_registered(self) -> None:
         self.assertEqual(
-            PLANNERS.ids(), ["raster", "crosshatch", "five_axis", "adaptive_scallop", "five_axis_adaptive"]
+            PLANNERS.ids(), ["raster", "crosshatch", "five_axis", "adaptive_scallop", "five_axis_adaptive", "contour", "spiral"]
         )
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:

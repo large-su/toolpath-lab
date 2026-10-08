@@ -11,6 +11,7 @@ from typing import Any
 from toolpath_lab import __version__
 from toolpath_lab.core.path import Toolpath
 from toolpath_lab.planning import run_plan
+from toolpath_lab.planning.coverage import analyze_coverage
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.simulation import Timeline, build_timeline, stock_spec_for
 
@@ -26,6 +27,7 @@ class PlanResult:
     toolpath: Toolpath
     timeline: Timeline | None
     warnings: tuple[str, ...]
+    coverage: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         request = self.request
@@ -45,6 +47,7 @@ class PlanResult:
             },
             "surface": request.surface.describe(request.region),
             "stock": stock_spec_for(request.region, request.surface, request.tool).to_payload(),
+            "coverage": self.coverage,
             "toolpath": self.toolpath.to_payload(),
             "timeline": None if self.timeline is None else self.timeline.to_payload(),
             "warnings": list(self.warnings),
@@ -75,4 +78,5 @@ def execute_plan(
         toolpath=outcome.toolpath,
         timeline=timeline,
         warnings=tuple(request.warnings) + tuple(outcome.warnings),
+        coverage=analyze_coverage(outcome.toolpath, request.region, request.tool, request.surface),
     )
