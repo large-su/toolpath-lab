@@ -107,7 +107,7 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(
             [item["id"] for item in payload["planners"]["list"]],
-            ["raster", "contour", "adaptive_contour"],
+            ["raster", "contour", "spiral", "adaptive_contour"],
         )
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]),
@@ -204,9 +204,9 @@ class PlanTests(ApiTestCase):
         self.assertEqual(parameters["feed_mm_per_min"], 600.0)
 
     def test_unknown_planner_is_a_bad_request(self) -> None:
-        status, payload, _ = self.plan({"planner": {"id": "spiral"}})
+        status, payload, _ = self.plan({"planner": {"id": "trochoidal"}})
         self.assertEqual(status, 400)
-        self.assertIn("spiral", payload["error"])
+        self.assertIn("trochoidal", payload["error"])
 
     def test_unknown_region_shape_is_a_bad_request(self) -> None:
         status, payload, _ = self.plan({"region": {"shape": "hexagon"}})

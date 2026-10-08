@@ -21,6 +21,7 @@ from toolpath_lab.planning.service import PlanningOutcome, get_planner, run_plan
 # Import order = the order strategies appear in the UI; these lines are the registration.
 from toolpath_lab.planning import raster as _raster  # noqa: F401
 from toolpath_lab.planning import contour as _contour  # noqa: F401
+from toolpath_lab.planning import spiral as _spiral  # noqa: F401
 from toolpath_lab.planning import adaptive as _adaptive  # noqa: F401
 
 __all__ = [

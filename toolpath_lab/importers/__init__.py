@@ -6,6 +6,11 @@ so it can be tested without files or HTTP.
 
 from __future__ import annotations
 
-from toolpath_lab.importers.dxf import ImportResult, Outline, parse_dxf
+from toolpath_lab.importers.dxf import (
+    IMPORT_PARAMETERS,
+    ImportResult,
+    Outline,
+    parse_dxf,
+)
 
-__all__ = ["ImportResult", "Outline", "parse_dxf"]
+__all__ = ["IMPORT_PARAMETERS", "ImportResult", "Outline", "parse_dxf"]

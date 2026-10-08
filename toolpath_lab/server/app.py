@@ -149,14 +149,19 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         """Read a DXF drawing from the request body and answer with its outlines.
 
         The body is either the raw DXF text (what a file upload sends) or JSON with a "text" field
-        (what a script sends). Nothing is stored: the caller gets the outlines back and passes the one
-        it wants to /api/plan, which keeps the service stateless. A drawing with no usable outline is
-        a 400 carrying the parser's own explanation.
+        (what a script sends). Import options (`IMPORT_PARAMETERS`, currently the chord tolerance for
+        arcs) come from the same JSON object, or from the query string for the raw-text form, and are
+        validated by the very declaration `/api/catalog` publishes. Nothing is stored: the caller gets
+        the outlines back and passes the one it wants to /api/plan, which keeps the service stateless.
+        A drawing with no usable outline is a 400 carrying the parser's own explanation.
         """
 
         raw = self._read_text()
         if raw is None:
             raise ParameterError("请求体是空的，请把 DXF 文件内容放在请求体里")
+        values: dict[str, Any] = {}
+        query = parse_qs(urlsplit(self.path).query)
+        values.update({key: item[-1] for key, item in query.items() if key in _IMPORT_KEYS})
         if raw.lstrip().startswith("{"):
             try:
                 payload = json.loads(raw)
@@ -164,7 +169,14 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
                 payload = None
             if isinstance(payload, Mapping) and "text" in payload:
                 raw = str(payload["text"])
-        result = parse_dxf(raw)
+                nested = payload.get("parameters")
+                if isinstance(nested, Mapping):
+                    values.update({key: value for key, value in nested.items()
+                                   if key in _IMPORT_KEYS})
+                values.update({key: value for key, value in payload.items()
+                               if key in _IMPORT_KEYS})
+        options = IMPORT_PARAMETERS.coerce(values)
+        result = parse_dxf(raw, arc_tolerance_mm=float(options["arc_tolerance_mm"]))
         if not result.outlines:
             raise ParameterError("；".join(result.warnings) or "没有读到可用的闭合轮廓")
         return json_response(
@@ -180,6 +192,8 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
                     for outline in result.outlines
                 ],
                 "skipped": list(result.skipped),
+                "approximated": list(result.approximated),
+                "parameters": options,
                 "warnings": list(result.warnings),
             }
         )

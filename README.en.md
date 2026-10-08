@@ -76,6 +76,14 @@ described by parameter declarations, and the parameter panel is generated from t
     it says so - either "this would cost N times the time" or "tightening further does not improve
     anything", the latter usually being a limit of the tool geometry (a round tool cannot reach a
     sharp corner).
+  - **spiral** - the same offset chain, walked as **one continuous cut per level**: every revolution
+    blends into the next ring, so the tool steps in by one stepover per turn and never lifts or links
+    inside a level. The outermost ring is still cut in full first (a blend only touches it where it
+    starts), and sibling rings after a concave split still retract. It suits shapes machined from a
+    **single front**; a thin wall, a U-shaped bar or a dumbbell is cut from two fronts at once, where
+    ring-by-ring contouring advances both while one spiral only reaches the second front later in its
+    revolution - so the planner **measures both coverages** and falls back to contouring (with a note
+    saying why) as soon as the spiral would lose more than two points of coverage.
 - **Parameters**: stepover, pass direction, feed rate, safe height, rapid feed, corner feed
   reduction, total depth and depth of cut, plus per-strategy extras (boundary handling and stock
   allowance for raster, ring direction for contour, the coverage target and time budget for
@@ -267,7 +275,7 @@ Dependencies point in one direction: `core` depends on nothing, `planning` / `si
 | Helix radius | `helix_radius_mm` | 1.5 mm | 0.2-20 | every strategy (clamped to the cutter's wall clearance, a wider helix would cut the wall) |
 | Boundary handling | `boundary_mode` | inset by the tool radius | inset / none | raster (`none` puts the tool centre on the contour) |
 | Stock allowance | `stock_allowance_mm` | 0 mm | 0-20 | raster (leave a ring inside the contour) |
-| Ring direction | `ring_direction` | alternate | alternate / climb / conventional | contour |
+| Ring direction | `ring_direction` | alternate | alternate / climb / conventional | contour and spiral (a spiral cannot alternate, so it follows the outermost ring) |
 | Coverage target | `coverage_target` | 99.5 % | 50-100 | adaptive contour (below it the stepover is tightened) |
 | Time budget | `max_time_ratio` | 2 × | 1-10 | adaptive contour (a round costing more is rejected) |
 | Maximum rounds | `max_rounds` | 3 | 0-8 | adaptive contour |
@@ -307,6 +315,7 @@ the other, and zigzag alternates by itself.
 | Playback sampling cap | at most 4000 timeline samples | `toolpath_lab/server/service.py` |
 | Collision tolerance | 0.01 mm: offset-polygon rounding is not a collision (an exact fit reports a margin of 0) | `toolpath_lab/planning/collision.py` |
 | Entries are not clipped | a ramp or helix runs its geometric length, may leave the region, and only reports its length and reach | `toolpath_lab/planning/entry.py` |
+| Spiral suitability | coverage is compared against contouring on the same shape; more than **2 points** of loss falls back to contouring (a single-fronted shape only loses its seam) | `toolpath_lab/planning/spiral.py` |
 
 The full recipe for adding a parameter (declare, read, test, changelog) is in
 [docs/extending.md](docs/extending.md) section 3.

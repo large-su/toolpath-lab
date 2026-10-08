@@ -12,6 +12,7 @@ from typing import Any
 from toolpath_lab import __version__
 from toolpath_lab.core.region import REGION_SHAPES, region_catalog
 from toolpath_lab.core.tool import tool_library, tool_parameters
+from toolpath_lab.importers import IMPORT_PARAMETERS
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
 
 DEFAULT_REGION_ID = "square"
@@ -55,5 +56,10 @@ def catalog_payload() -> dict[str, Any]:
             "list": planner_catalog(),
             "default_id": DEFAULT_PLANNER_ID,
             "defaults": default_planner_parameters(),
+        },
+        # Options of the drawing import; the panel renders the same declaration the endpoint validates.
+        "import": {
+            "parameters": IMPORT_PARAMETERS.to_dicts(),
+            "defaults": IMPORT_PARAMETERS.defaults(),
         },
     }

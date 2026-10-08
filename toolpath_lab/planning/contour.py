@@ -108,17 +108,8 @@ class ContourPlanner(Planner):
             float(context.parameters["sample_step_mm"]), "采样步长 sample_step_mm"
         )
         ring_direction = str(context.parameters["ring_direction"])
-        boundary = context.boundary
-        distance = context.cutting_radius_mm
-
-        layers: list[list[NDArray[np.float64]]] = []
-        while True:
-            loops = offset_loops(boundary, distance, min_area_mm2=_MIN_RING_AREA_MM2)
-            if not loops:
-                break
-            layers.append(loops)
-            distance += stepover
-        if not layers:
+        rings = self.sampled_rings(context, stepover, sample_step, ring_direction)
+        if not rings:
             raise PlanningError(
                 f"环切没有生成任何刀轨：刀具贴壁间隙 {context.cutting_radius_mm:g} mm "
                 "已经超过区域的内切半径，请减小刀具直径或扩大区域"
@@ -126,20 +117,16 @@ class ContourPlanner(Planner):
 
         moves: list[Move] = []
         previous: NDArray[np.float64] | None = None
-        previous_loop: NDArray[np.float64] | None = None
+        previous_ring: NDArray[np.float64] | None = None
         index = 0
-        for loops in layers:
-            for loop in loops:
-                sampled = resample_ring(loop, sample_step)
-                closed = np.vstack([sampled, sampled[:1]])
-                if self._should_reverse(ring_direction, index):
-                    closed = closed[::-1]
-                positions = context.to_positions(closed)
+        for level in rings:
+            for ring in level:
+                positions = context.to_positions(ring)
                 if previous is None:
                     moves.extend(
                         context.entry_moves(positions[0], positions[1] - positions[0])
                     )
-                elif previous_loop is not None and self._is_nested(loop, previous_loop):
+                elif previous_ring is not None and self._is_nested(ring, previous_ring):
                     moves.append(context.link_move(previous, positions[0]))
                 else:
                     moves.append(context.rapid_between(previous, positions[0]))
@@ -153,17 +140,17 @@ class ContourPlanner(Planner):
                     )
                 )
                 previous = positions[-1]
-                previous_loop = loop
+                previous_ring = ring
                 index += 1
         moves.append(context.retract_move_up(previous))
 
-        ring_count = sum(len(loops) for loops in layers)
+        ring_count = sum(len(level) for level in rings)
         return Toolpath(
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
             notes=(
-                f"环切：共 {ring_count} 环（{len(layers)} 层），切宽 {stepover:g} mm，"
+                f"环切：共 {ring_count} 环（{len(rings)} 层），切宽 {stepover:g} mm，"
                 f"采样步长 {sample_step:g} mm，环绕向 {_DIRECTION_LABELS[ring_direction]}",
                 "同层分裂出的环之间抬刀快移，套在里面的环之间用连接进给",
                 f"边界固定内缩一个刀具贴壁间隙（R{context.cutting_radius_mm:g} mm），"
@@ -171,6 +158,57 @@ class ContourPlanner(Planner):
                 f"快移 {context.rapid_feed_mm_per_min:g} mm/min",
             ),
         )
+
+    # -- ring generation (shared with planning/spiral.py) -------------------
+    def ring_layers(
+        self, context: PlanningContext, stepover: float
+    ) -> list[list[NDArray[np.float64]]]:
+        """Raw inward offset loops, outermost level first: the chain both planners walk.
+
+        Extracted so that the spiral planner can reuse the very same offsets and differ only in how it
+        gets from one ring to the next. The arrays are what `offset_loops` returns: counter-clockwise,
+        not resampled, possibly several loops per level once a concave neck splits.
+        """
+
+        boundary = context.boundary
+        layers: list[list[NDArray[np.float64]]] = []
+        distance = context.cutting_radius_mm
+        while True:
+            loops = offset_loops(boundary, distance, min_area_mm2=_MIN_RING_AREA_MM2)
+            if not loops:
+                break
+            layers.append(loops)
+            distance += stepover
+        return layers
+
+    def sampled_rings(
+        self,
+        context: PlanningContext,
+        stepover: float,
+        sample_step: float,
+        ring_direction: str,
+    ) -> list[list[NDArray[np.float64]]]:
+        """The rings of `ring_layers` as **closed** polylines (last point == first), oriented to cut.
+
+        The ring counter runs across levels, because "alternate" flips every second ring of the whole
+        toolpath rather than every second ring within a level; the reversal is applied to the closed
+        polyline, so the starting point of a reversed ring is the same as the forward one (which keeps
+        the toolpath bit-identical to the pre-refactor contour planner).
+        """
+
+        rings: list[list[NDArray[np.float64]]] = []
+        index = 0
+        for loops in self.ring_layers(context, stepover):
+            level: list[NDArray[np.float64]] = []
+            for loop in loops:
+                sampled = resample_ring(loop, sample_step)
+                closed = np.vstack([sampled, sampled[:1]])
+                if self._should_reverse(ring_direction, index):
+                    closed = closed[::-1]
+                level.append(closed)
+                index += 1
+            rings.append(level)
+        return rings
 
     @staticmethod
     def _should_reverse(ring_direction: str, index: int) -> bool:

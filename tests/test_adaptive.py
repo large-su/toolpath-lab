@@ -35,7 +35,7 @@ def _run(shape: str = "square", *, tool: Tool | None = None, **parameters):
 
 class RegistrationTests(unittest.TestCase):
     def test_the_adaptive_planner_is_registered_last(self) -> None:
-        self.assertEqual(PLANNERS.ids(), ["raster", "contour", "adaptive_contour"])
+        self.assertEqual(PLANNERS.ids(), ["raster", "contour", "spiral", "adaptive_contour"])
 
     def test_the_catalog_lists_the_adaptive_parameters(self) -> None:
         entry = {item["id"]: item for item in planner_catalog()}["adaptive_contour"]
