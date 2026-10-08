@@ -2,10 +2,26 @@
 
 不依赖任何 Web 框架——整个服务就是一个 http.server，路由一屏能读完。
 默认只监听回环地址，并且只从 toolpath_lab/web 目录提供静态文件。
+
+导入的模型（STL）保存在服务实例的内存模型库里：进程重启即清空，
+所以没有额外的存储依赖，也不需要清理磁盘。
+
+接口一览：
+
+    GET    /api/health            健康检查
+    GET    /api/catalog           能力目录（含已导入的模型列表）
+    POST   /api/plan              生成刀路
+    POST   /api/export/gcode      导出 NC 程序
+    GET    /api/models            已导入的模型列表
+    POST   /api/models            上传模型（{"name": "...", "data_base64": "..."}）
+    GET    /api/models/{id}       模型详情（含三维显示用的三角形坐标）
+    DELETE /api/models/{id}       删除模型
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import traceback
 from dataclasses import dataclass
@@ -18,13 +34,14 @@ from urllib.parse import unquote, urlsplit
 
 from toolpath_lab import __version__
 from toolpath_lab.core.errors import ParameterError, PlanningError, RegistryError
+from toolpath_lab.core.mesh import ModelLibrary, model_library_payload
 from toolpath_lab.export import toolpath_to_gcode
 from toolpath_lab.server.catalog import catalog_payload
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.server.service import execute_plan
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
-MAX_BODY_BYTES = 4 * 1024 * 1024
+MAX_BODY_BYTES = 32 * 1024 * 1024
 
 CONTENT_TYPES: dict[str, str] = {
     ".html": "text/html; charset=utf-8",
@@ -36,6 +53,7 @@ CONTENT_TYPES: dict[str, str] = {
     ".png": "image/png",
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
+    ".stl": "model/stl",
 }
 
 
@@ -62,6 +80,16 @@ def text_response(text: str, *, content_type: str, filename: str | None = None) 
     return Response(int(HTTPStatus.OK), text.encode("utf-8"), content_type, filename)
 
 
+class ToolpathLabServer(ThreadingHTTPServer):
+    """带模型库的 HTTP 服务：导入的模型随服务实例一起存在内存里。"""
+
+    daemon_threads = True
+
+    def __init__(self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler]) -> None:
+        super().__init__(address, handler)
+        self.models = ModelLibrary()
+
+
 class ToolpathLabHandler(BaseHTTPRequestHandler):
     """接口路由 + 静态文件。"""
 
@@ -73,6 +101,9 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         self._dispatch("POST")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._dispatch("DELETE")
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         print(f"[toolpath-lab] {self.address_string()} {format % args}", flush=True)
@@ -96,6 +127,20 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             )
         self._send(response)
 
+    @property
+    def models(self) -> ModelLibrary:
+        """当前服务实例的模型库。
+
+        直接构造 BaseHTTPRequestHandler 的用法（例如自建 server）也能工作：
+        第一次访问时补一个空的模型库。
+        """
+
+        library = getattr(self.server, "models", None)
+        if library is None:
+            library = ModelLibrary()
+            self.server.models = library  # type: ignore[attr-defined]
+        return library
+
     def _route(self, method: str, path: str) -> Response:
         if path.startswith("/api/"):
             return self._route_api(method, path)
@@ -107,16 +152,65 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         if path == "/api/health" and method == "GET":
             return json_response({"ok": True, "version": __version__, "service": "toolpath-lab"})
         if path == "/api/catalog" and method == "GET":
-            return json_response(catalog_payload())
+            return json_response(catalog_payload(self.models))
         if path == "/api/plan" and method == "POST":
-            result = execute_plan(PlanRequest.from_payload(self._read_json()))
+            result = execute_plan(
+                PlanRequest.from_payload(self._read_json(), models=self.models)
+            )
             return json_response(result.to_payload())
         if path == "/api/export/gcode" and method == "POST":
             return self._export_gcode(self._read_json())
+
+        if path == "/api/models":
+            if method == "GET":
+                return json_response(model_library_payload(self.models))
+            if method == "POST":
+                return self._upload_model(self._read_json())
+            return error_response("方法不允许", HTTPStatus.METHOD_NOT_ALLOWED)
+        if path.startswith("/api/models/"):
+            model_id = path[len("/api/models/"):]
+            if method == "GET":
+                return self._model_detail(model_id)
+            if method == "DELETE":
+                return self._delete_model(model_id)
+            return error_response("方法不允许", HTTPStatus.METHOD_NOT_ALLOWED)
+
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
 
+    # -- 模型 --------------------------------------------------------------
+    def _upload_model(self, payload: Mapping[str, Any] | None) -> Response:
+        """上传一个 STL：{"name": "part.stl", "data_base64": "..."}。
+
+        用 base64 塞进 JSON，而不是 multipart：解析只需两行，命令行与脚本也更好拼。
+        """
+
+        data = payload or {}
+        name = str(data.get("name") or "model.stl").strip() or "model.stl"
+        encoded = data.get("data_base64")
+        if not isinstance(encoded, str) or not encoded.strip():
+            raise ParameterError("上传模型需要 data_base64 字段（STL 文件的 base64 内容）")
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ParameterError(f"data_base64 不是合法的 base64：{error}") from error
+        if not raw:
+            raise ParameterError("模型内容是空的")
+        model = self.models.add(name, raw)
+        return json_response({"ok": True, "model": model.describe()}, HTTPStatus.CREATED)
+
+    def _model_detail(self, model_id: str) -> Response:
+        model = self.models.get(model_id)
+        return json_response({"ok": True, "model": {**model.describe(), **model.mesh_payload()}})
+
+    def _delete_model(self, model_id: str) -> Response:
+        if not self.models.remove(model_id):
+            return error_response(f"没有这个模型 {model_id!r}", HTTPStatus.NOT_FOUND)
+        return json_response({"ok": True, "deleted": model_id})
+
     def _export_gcode(self, payload: Mapping[str, Any] | None) -> Response:
-        result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
+        result = execute_plan(
+            PlanRequest.from_payload(payload, models=self.models), with_timeline=False
+        )
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         content = toolpath_to_gcode(
             result.toolpath,
@@ -186,12 +280,10 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             self.wfile.write(response.body)
 
 
-def create_server(host: str = "127.0.0.1", port: int = 8770) -> ThreadingHTTPServer:
-    """创建（但不启动）HTTP 服务。"""
+def create_server(host: str = "127.0.0.1", port: int = 8770) -> ToolpathLabServer:
+    """创建（但不启动）HTTP 服务；返回的服务带一个空的模型库。"""
 
-    server = ThreadingHTTPServer((host, port), ToolpathLabHandler)
-    server.daemon_threads = True
-    return server
+    return ToolpathLabServer((host, port), ToolpathLabHandler)
 
 
 def serve_forever(host: str = "127.0.0.1", port: int = 8770) -> None:

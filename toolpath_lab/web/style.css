@@ -280,6 +280,29 @@ input[type="checkbox"] {
   border-radius: 1px;
 }
 
+/* ------------------------------------------------------------ 模型一行 */
+.model-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.model-row select {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.model-row .button {
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.model-row .button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .note {
   margin-top: 4px;
   padding-top: 10px;

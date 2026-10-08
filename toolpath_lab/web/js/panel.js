@@ -1,17 +1,16 @@
 // 参数面板完全由 /api/catalog 生成：每个能力在 Python 里声明一次参数，
-// 这里负责把它们渲染出来。新增一个区域形状或策略，刷新页面就会出现，不用改本文件。
+// 这里负责把它们渲染出来。新增一个区域形状、加工面或策略，刷新页面就会出现，不用改本文件。
+//
+// 唯一的例外是"模型"：它不是一个 ParameterSpec，而是"先上传 STL，再被区域/加工面引用"，
+// 所以这里多画一节：文件选择 + 已导入模型的下拉框 + 删除。
 
 const DISPLAY_OPTIONS = [
   { key: "showWorkpiece", label: "工件" },
+  { key: "showStock", label: "毛坯", color: "var(--text-dim)" },
   { key: "showPath", label: "刀路", color: "var(--orange)" },
   { key: "showRapid", label: "快移", color: "var(--cyan)" },
   { key: "showTrace", label: "已走轨迹", color: "var(--teal)" },
   { key: "showTool", label: "刀具" },
-];
-
-const FIXED_NOTES = [
-  ["安全高度", "fixed.safe_height_mm", "mm"],
-  ["快移速度", "fixed.rapid_feed_mm_per_min", "mm/min"],
 ];
 
 function clone(value) {
@@ -39,32 +38,64 @@ function formatNumber(value) {
   return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000) / 1000);
 }
 
+function formatSize(model) {
+  const size = (model && model.size_mm) || [0, 0, 0];
+  return size.map((value) => Math.round(value * 10) / 10).join(" × ") + " mm";
+}
+
 export class ParameterPanel {
   constructor(options) {
     this.root = options.root;
     this.catalog = options.catalog;
     this.onChange = options.onChange || (() => {});
     this.onDisplayChange = options.onDisplayChange || (() => {});
+    this.onModelUpload = options.onModelUpload || (() => {});
+    this.onModelDelete = options.onModelDelete || (() => {});
+    this.models = clone((this.catalog.models && this.catalog.models.list) || []);
     this.state = {
       tool: clone(this.catalog.tool.defaults),
+      modelId: "",
       region: {
         id: this.catalog.regions.default_id,
         values: clone(this.catalog.regions.defaults),
+      },
+      surface: {
+        id: this.catalog.surfaces.default_id,
+        values: clone(this.catalog.surfaces.defaults),
+      },
+      stock: {
+        id: this.catalog.stocks.default_id,
+        values: clone(this.catalog.stocks.defaults),
       },
       planner: {
         id: this.catalog.planners.default_id,
         values: clone(this.catalog.planners.defaults),
       },
-      display: { showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true },
+      display: {
+        showWorkpiece: true, showStock: true, showPath: true, showRapid: true,
+        showTrace: true, showTool: true,
+      },
     };
     this.rows = [];
+    this.fileInput = document.createElement("input");
+    this.fileInput.type = "file";
+    this.fileInput.accept = ".stl,model/stl";
+    this.fileInput.hidden = true;
+    this.fileInput.addEventListener("change", () => {
+      const file = this.fileInput.files && this.fileInput.files[0];
+      this.fileInput.value = "";
+      if (file) this.onModelUpload(file);
+    });
     this.render();
   }
 
   payload() {
     return {
       tool: clone(this.state.tool),
+      model: { id: this.state.modelId },
       region: { shape: this.state.region.id, parameters: clone(this.state.region.values) },
+      surface: { kind: this.state.surface.id, parameters: clone(this.state.surface.values) },
+      stock: { kind: this.state.stock.id, parameters: clone(this.state.stock.values) },
       planner: { id: this.state.planner.id, parameters: clone(this.state.planner.values) },
     };
   }
@@ -73,12 +104,53 @@ export class ParameterPanel {
     return Object.assign({}, this.state.display);
   }
 
+  modelId() {
+    return this.state.modelId;
+  }
+
+  /** 由外部（main.js）在导入 / 删除之后调用，刷新模型列表。 */
+  setModels(models, selectedId) {
+    this.models = clone(models || []);
+    if (selectedId !== undefined) this.state.modelId = selectedId || "";
+    if (this.state.modelId && !this.models.some((item) => item.id === this.state.modelId)) {
+      this.state.modelId = "";
+    }
+    this.render();
+  }
+
+  /** 导入成功后把区域 / 加工面 / 毛坯切到"用模型"：这是最常用的组合。 */
+  useModelEverywhere() {
+    if (!this.state.modelId) return;
+    if (this.catalog.regions.shapes.some((item) => item.id === "model")) {
+      this.state.region.id = "model";
+      this.state.region.values = carryOver(
+        this.state.region.values, this._item(this.catalog.regions.shapes, "model")
+      );
+    }
+    if (this.catalog.surfaces.list.some((item) => item.id === "model")) {
+      this.state.surface.id = "model";
+      this.state.surface.values = carryOver(
+        this.state.surface.values, this._item(this.catalog.surfaces.list, "model")
+      );
+    }
+    if (this.catalog.stocks.list.some((item) => item.id === "model")) {
+      this.state.stock.id = "model";
+      this.state.stock.values = carryOver(
+        this.state.stock.values, this._item(this.catalog.stocks.list, "model")
+      );
+    }
+    this.render();
+  }
+
   // ------------------------------------------------------------- 渲染
   render() {
     this.rows = [];
     this.root.replaceChildren(
       this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
+      this._modelSection(),
+      this._stockSection(),
       this._regionSection(),
+      this._surfaceSection(),
       this._plannerSection(),
       this._displaySection(),
       this._noteSection()
@@ -108,6 +180,110 @@ export class ParameterPanel {
     return section;
   }
 
+  // -------------------------------------------------------------- 模型
+  _modelSection() {
+    const section = this._section("模型");
+
+    const row = document.createElement("div");
+    row.className = "model-row";
+
+    const select = document.createElement("select");
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = this.models.length ? "（不使用模型）" : "（尚未导入）";
+    select.appendChild(none);
+    for (const model of this.models) {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = model.name;
+      if (model.id === this.state.modelId) option.selected = true;
+      select.appendChild(option);
+    }
+    select.addEventListener("change", () => {
+      this.state.modelId = select.value;
+      this.render();
+      this.onChange();
+    });
+
+    const importButton = document.createElement("button");
+    importButton.type = "button";
+    importButton.className = "button";
+    importButton.textContent = "导入 STL…";
+    importButton.title = "把 .stl 文件读进后端内存模型库（二进制与 ASCII 都支持）";
+    importButton.addEventListener("click", () => this.fileInput.click());
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "button";
+    deleteButton.textContent = "删除";
+    deleteButton.disabled = !this.state.modelId;
+    deleteButton.addEventListener("click", () => {
+      if (this.state.modelId) this.onModelDelete(this.state.modelId);
+    });
+
+    row.append(select, importButton, deleteButton);
+    section.append(row, this.fileInput);
+
+    const current = this.models.find((item) => item.id === this.state.modelId);
+    const note = document.createElement("div");
+    note.className = "note";
+    if (current) {
+      const line = document.createElement("div");
+      line.textContent = `尺寸 ${formatSize(current)} · ${current.triangle_count} 个三角形`;
+      const hint = document.createElement("div");
+      hint.textContent = "区域「模型轮廓」与加工面「导入模型」都会使用它；模型只保存在后端内存里，重启需重新导入";
+      note.append(line, hint);
+    } else {
+      note.textContent = "导入 STL 后，可把区域切成「模型轮廓」、把加工面切成「导入模型」，就能在零件的真实表面上生成刀路";
+    }
+    section.appendChild(note);
+    return section;
+  }
+
+  _stockSection() {
+    const section = this._section("毛坯");
+    const stocks = this.catalog.stocks.list;
+    const current = this._item(stocks, this.state.stock.id);
+    const selectorSpec = {
+      key: "__stock__",
+      label: "类型",
+      kind: "choice",
+      choices: stocks.map((item) => ({
+        value: item.id,
+        label: item.label,
+        disabled: item.id === "model" && this.models.length === 0,
+      })),
+      help: current.description,
+    };
+    const selector = this._buildControl(selectorSpec, this.state.stock.id, (value) => {
+      this.state.stock.id = value;
+      this.state.stock.values = carryOver(
+        this.state.stock.values,
+        this._item(stocks, value)
+      );
+      this.render();
+      this.onChange();
+    });
+    section.appendChild(this._wrapRow(selectorSpec, selector, null, this.state.stock.values));
+    for (const spec of current.parameters) {
+      const control = this._buildControl(spec, this.state.stock.values[spec.key], (value) => {
+        this.state.stock.values[spec.key] = value;
+        this.onChange();
+      });
+      section.appendChild(
+        this._wrapRow(spec, control, "stock", this.state.stock.values)
+      );
+    }
+    if (this.state.stock.id !== "none") {
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = "毛坯的顶面高度是分层粗加工的起点：把切深 ap 设成大于 0，"
+        + "刀路就会从毛坯顶面按切深一层层往下切到加工面";
+      section.appendChild(note);
+    }
+    return section;
+  }
+
   _regionSection() {
     const section = this._section("区域");
     const shapes = this.catalog.regions.shapes;
@@ -116,7 +292,12 @@ export class ParameterPanel {
       key: "__shape__",
       label: "形状",
       kind: "choice",
-      choices: shapes.map((item) => ({ value: item.id, label: item.label })),
+      choices: shapes.map((item) => ({
+        value: item.id,
+        label: item.label,
+        // 还没导入模型时，"模型轮廓"选了也没用，直接标成不可选。
+        disabled: item.id === "model" && this.models.length === 0,
+      })),
       help: current.description,
     };
     const selector = this._buildControl(selectorSpec, this.state.region.id, (value) => {
@@ -136,6 +317,43 @@ export class ParameterPanel {
       });
       section.appendChild(
         this._wrapRow(spec, control, "region", this.state.region.values)
+      );
+    }
+    return section;
+  }
+
+  _surfaceSection() {
+    const section = this._section("加工面");
+    const surfaces = this.catalog.surfaces.list;
+    const current = this._item(surfaces, this.state.surface.id);
+    const selectorSpec = {
+      key: "__surface__",
+      label: "类型",
+      kind: "choice",
+      choices: surfaces.map((item) => ({
+        value: item.id,
+        label: item.label,
+        disabled: item.id === "model" && this.models.length === 0,
+      })),
+      help: current.description,
+    };
+    const selector = this._buildControl(selectorSpec, this.state.surface.id, (value) => {
+      this.state.surface.id = value;
+      this.state.surface.values = carryOver(
+        this.state.surface.values,
+        this._item(surfaces, value)
+      );
+      this.render();
+      this.onChange();
+    });
+    section.appendChild(this._wrapRow(selectorSpec, selector, null, this.state.surface.values));
+    for (const spec of current.parameters) {
+      const control = this._buildControl(spec, this.state.surface.values[spec.key], (value) => {
+        this.state.surface.values[spec.key] = value;
+        this.onChange();
+      });
+      section.appendChild(
+        this._wrapRow(spec, control, "surface", this.state.surface.values)
       );
     }
     return section;
@@ -210,8 +428,10 @@ export class ParameterPanel {
     const lines = [
       ["安全高度", fixed.safe_height_mm, "mm"],
       ["快移速度", fixed.rapid_feed_mm_per_min, "mm/min"],
+      ["分层上限", fixed.max_layers, "层"],
     ];
     for (const [label, value, unit] of lines) {
+      if (value === undefined || value === null) continue;
       const line = document.createElement("div");
       line.append(label + " ");
       const strong = document.createElement("b");
@@ -220,7 +440,8 @@ export class ParameterPanel {
       note.appendChild(line);
     }
     const hint = document.createElement("div");
-    hint.textContent = "边界内缩一个刀具半径；想改成可调参数，见 docs/extending.md";
+    hint.textContent = "安全高度按加工面最高点与毛坯顶面取高者算；"
+      + "边界内缩一个刀具足迹半径（球头刀为 0）；想改成可调参数，见 docs/extending.md";
     note.appendChild(hint);
     section.appendChild(note);
     return section;

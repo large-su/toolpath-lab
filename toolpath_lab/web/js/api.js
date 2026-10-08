@@ -49,3 +49,47 @@ export async function downloadGcode(payload) {
   URL.revokeObjectURL(url);
   return name;
 }
+
+// ---------------------------------------------------------------- 模型（STL）
+// 上传用 base64 塞进 JSON：后端只靠标准库解析，两行代码就够，脚本也好拼。
+
+function toBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunk = 0x8000;
+  let binary = "";
+  for (let start = 0; start < bytes.length; start += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(start, start + chunk));
+  }
+  return btoa(binary);
+}
+
+export async function fetchModels() {
+  const response = await fetch("/api/models");
+  if (!response.ok) throw new Error(await readError(response));
+  return response.json();
+}
+
+export async function uploadModel(file) {
+  const buffer = await file.arrayBuffer();
+  const response = await fetch("/api/models", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name: file.name, data_base64: toBase64(buffer) }),
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  return (await response.json()).model;
+}
+
+export async function fetchModelMesh(modelId) {
+  const response = await fetch("/api/models/" + encodeURIComponent(modelId));
+  if (!response.ok) throw new Error(await readError(response));
+  return (await response.json()).model;
+}
+
+export async function deleteModel(modelId) {
+  const response = await fetch("/api/models/" + encodeURIComponent(modelId), {
+    method: "DELETE",
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  return response.json();
+}

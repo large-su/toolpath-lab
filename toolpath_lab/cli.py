@@ -16,7 +16,10 @@ from toolpath_lab.server.app import create_server
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="toolpath-lab",
-        description="ToolpathLab - 刀路规划实验台 (tool + region + raster/contour toolpaths)",
+        description=(
+            "ToolpathLab - 刀路规划实验台 "
+            "(tool + region + surface/model + raster/contour toolpaths)"
+        ),
     )
     parser.add_argument("--host", default="127.0.0.1", help="绑定地址 (默认 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8770, help="监听端口 (默认 8770)")

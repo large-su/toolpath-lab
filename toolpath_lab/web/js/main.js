@@ -1,6 +1,9 @@
 // 应用装配：目录 -> 参数面板 -> 规划请求 -> 视口与播放。
 
-import { downloadGcode, fetchCatalog, requestPlan } from "./api.js";
+import {
+  deleteModel, downloadGcode, fetchCatalog, fetchModelMesh, fetchModels,
+  requestPlan, uploadModel,
+} from "./api.js";
 import { ParameterPanel } from "./panel.js";
 import { Playback } from "./playback.js";
 import { VIEW_BUTTONS, Viewport } from "./viewport.js";
@@ -30,6 +33,9 @@ let queued = false;
 let debounceTimer = 0;
 let scrubbing = false;
 let lastResult = null;
+// 视口里当前显示的模型网格（按 id 缓存，避免每次规划都重新拉一遍）。
+let shownModelId = "";
+let modelMeshes = new Map();
 
 // ------------------------------------------------------------------ 工具
 function seconds(value) {
@@ -80,13 +86,82 @@ async function boot() {
     catalog: catalog,
     onChange: scheduleRegenerate,
     onDisplayChange: (options) => viewport.setDisplayOptions(options),
+    onModelUpload: importModel,
+    onModelDelete: removeModel,
   });
   viewport.setDisplayOptions(panel.displayOptions());
   wireButtons();
+  await refreshModels();
   // 控制台入口：想在做实验时直接操作视口/参数，可以在浏览器 DevTools 里用这个对象。
   window.toolpathLab = { viewport, panel, playback, regenerate };
   await regenerate();
   requestAnimationFrame(animate);
+}
+
+// ------------------------------------------------------------------ 模型
+async function refreshModels(selectedId) {
+  try {
+    const payload = await fetchModels();
+    panel.setModels(payload.models, selectedId);
+  } catch (error) {
+    showBanner("读取模型列表失败：" + error.message);
+  }
+}
+
+async function importModel(file) {
+  showBanner("正在导入 " + file.name + "…", "info");
+  try {
+    const model = await uploadModel(file);
+    modelMeshes.clear();
+    shownModelId = "";
+    await refreshModels(model.id);
+    panel.useModelEverywhere();
+    const simplified = model.triangle_count > 40000 ? "（显示时已抽样）" : "";
+    showBanner(
+      "已导入 " + model.name + "：" + model.triangle_count + " 个三角形" + simplified
+      + "，区域与加工面已切到该模型", "info"
+    );
+    await regenerate();
+  } catch (error) {
+    showBanner("导入失败：" + error.message);
+  }
+}
+
+async function removeModel(modelId) {
+  try {
+    await deleteModel(modelId);
+    modelMeshes.delete(modelId);
+    if (shownModelId === modelId) {
+      shownModelId = "";
+      viewport.setModel(null);
+    }
+    await refreshModels("");
+    showBanner("已删除模型", "info");
+    await regenerate();
+  } catch (error) {
+    showBanner("删除失败：" + error.message);
+  }
+}
+
+/** 让视口显示当前选中的模型：只在切换模型时才去取网格。 */
+async function ensureModelShown(modelId) {
+  if (modelId === shownModelId) return;
+  shownModelId = modelId;
+  if (!modelId) {
+    viewport.setModel(null);
+    return;
+  }
+  try {
+    let mesh = modelMeshes.get(modelId);
+    if (!mesh) {
+      mesh = await fetchModelMesh(modelId);
+      modelMeshes.set(modelId, mesh);
+    }
+    viewport.setModel(mesh);
+  } catch (error) {
+    viewport.setModel(null);
+    showBanner("读取模型网格失败：" + error.message);
+  }
 }
 
 function buildViewToolbar() {
@@ -164,6 +239,7 @@ async function regenerate() {
   busy = true;
   dom.generate.disabled = true;
   try {
+    await ensureModelShown(panel.modelId());
     const result = await requestPlan(panel.payload());
     lastResult = result;
     viewport.setResult(result);
@@ -205,12 +281,19 @@ function statRow(label, value) {
 function renderStats(result) {
   const stats = result.toolpath.statistics;
   const region = result.region;
+  const surface = result.surface || { label: "平面", is_planar: true };
+  const stock = result.stock || { is_set: false };
   const size = region.id === "circle"
     ? "直径 " + (region.bounds_mm[0][1] - region.bounds_mm[0][0]).toFixed(0) + " mm"
     : (region.bounds_mm[0][1] - region.bounds_mm[0][0]).toFixed(0) + " × "
       + (region.bounds_mm[1][1] - region.bounds_mm[1][0]).toFixed(0) + " mm";
+  const stockSize = stock.is_set
+    ? stock.size_mm.map((value) => value.toFixed(0)).join(" × ") + " mm"
+    : "无";
   const rows = [
     ["区域", size],
+    ["加工面", surface.label + (surface.is_planar ? "" : "（曲面）")],
+    ["毛坯", stockSize],
     ["刀轨", String(stats.pass_count)],
     ["刀点", String(stats.point_count)],
     ["切削长度", stats.cut_length_mm.toFixed(1) + " mm"],

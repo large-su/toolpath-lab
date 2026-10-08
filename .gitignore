@@ -11,6 +11,7 @@ dist/
 exports/
 examples/toolpath_demo.nc
 examples/toolpath_demo.csv
+examples/model_surface_demo.nc
 
 # Electron 壳（package-lock.json 需要提交，保证 Electron 版本可复现）
 node_modules/

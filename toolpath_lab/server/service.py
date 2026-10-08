@@ -42,6 +42,9 @@ class PlanResult:
                     for point in boundary
                 ],
             },
+            "surface": request.surface.describe(),
+            "stock": request.stock.describe(),
+            "model": request.model.describe() if request.model is not None else None,
             "toolpath": self.toolpath.to_payload(),
             "timeline": None if self.timeline is None else self.timeline.to_payload(),
             "warnings": list(self.warnings),
@@ -61,6 +64,8 @@ def execute_plan(
         tool=request.tool,
         region=request.region,
         parameters=request.planner_parameters,
+        surface=request.surface,
+        stock=request.stock,
     )
     timeline = (
         build_timeline(outcome.toolpath, max_samples=max_samples) if with_timeline else None

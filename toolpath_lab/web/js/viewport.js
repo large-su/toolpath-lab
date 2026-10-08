@@ -14,6 +14,8 @@ const COLORS = {
   background: 0x071014,
   white: 0xffffff,
   workpiece: 0x5b6b7e,
+  model: 0x6d7f92,
+  stock: 0x9fb4c4,
   contour: 0x54d6c4,
   cut: 0xffa726,
   link: 0xf2c94c,
@@ -84,7 +86,8 @@ export class Viewport {
     this.container = container;
     this.appearance = { shadows: true, white: false, grid: true };
     this.display = {
-      showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true,
+      showWorkpiece: true, showStock: true, showPath: true, showRapid: true,
+      showTrace: true, showTool: true,
     };
     this.bounds = null;
     this.activeView = "fit";
@@ -136,12 +139,14 @@ export class Viewport {
 
     this.gridGroup = new THREE.Group();
     this.workpieceGroup = new THREE.Group();
+    this.modelGroup = new THREE.Group();
+    this.stockGroup = new THREE.Group();
     this.contourGroup = new THREE.Group();
     this.pathGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
     this.toolGroup = new THREE.Group();
     this.scene.add(
-      this.gridGroup, this.workpieceGroup,
+      this.gridGroup, this.workpieceGroup, this.modelGroup, this.stockGroup,
       this.contourGroup, this.pathGroup, this.traceGroup, this.toolGroup
     );
 
@@ -149,6 +154,11 @@ export class Viewport {
     this.toolMesh = null;
     this.traceLine = null;
     this.rapidLine = null;
+    // 导入模型的三角网格（存在时替代参数化工件块）与它的包围盒信息。
+    this.modelPayload = null;
+    this.modelBottom = 0;
+    // 毛坯（轴对齐长方体）是否已经画出来。
+    this.hasStock = false;
 
     this.resize();
     if (typeof ResizeObserver !== "undefined") {
@@ -186,23 +196,36 @@ export class Viewport {
     const [yMin, yMax] = region.bounds_mm[1];
     const span = Math.max(xMax - xMin, yMax - yMin);
 
+    // 有模型时，工件就是这个模型：不再画"按区域尺寸做出来的方块"，
+    // 否则刀路看上去会悬在一个和零件无关的块料上。
+    const useModel = Boolean(this.modelPayload);
     const thickness = this._thickness(span);
-    this.workpieceGroup.add(this._workpiece(region, thickness));
+    if (!useModel) {
+      this.workpieceGroup.add(this._workpiece(region, thickness));
+    }
     this.contourGroup.add(this._contour(region.boundary));
-    this._rebuildGrid(span, thickness);
+    this.setStock(payload.stock);
+    this._rebuildGrid(span, useModel ? -this.modelBottom : thickness);
 
     const groups = { cut: [], link: [], rapid: [] };
     for (const move of payload.toolpath.moves) {
       (groups[move.kind] || groups.cut).push(move.points);
     }
-    for (const kind of Object.keys(groups)) groups[kind] = liftPaths(groups[kind]);
+    // 曲面刀路本身带 Z，不能再统一压平，否则整条刀路会贴在 Z = 0 上。
+    const planar = Boolean(payload.surface && payload.surface.is_planar);
+    for (const kind of Object.keys(groups)) {
+      groups[kind] = planar ? liftPaths(groups[kind]) : groups[kind];
+    }
     this.pathGroup.add(this._line(groups.cut, COLORS.cut, 1));
     this.pathGroup.add(this._line(groups.link, COLORS.link, 1));
     this.rapidLine = this._line(groups.rapid, COLORS.rapid, 0.75, true);
     this.pathGroup.add(this.rapidLine);
 
     if (payload.timeline && payload.timeline.positions) {
-      const geometry = polylineGeometry([liftPaths([payload.timeline.positions])[0]]);
+      const trace = planar
+        ? liftPaths([payload.timeline.positions])[0]
+        : payload.timeline.positions;
+      const geometry = polylineGeometry([trace]);
       this.traceLine = new THREE.LineSegments(
         geometry,
         new THREE.LineBasicMaterial({ color: COLORS.trace, transparent: true, opacity: 0.95 })
@@ -213,9 +236,12 @@ export class Viewport {
       this.traceLine = null;
     }
 
-    this.bounds = new THREE.Box3().setFromObject(this.workpieceGroup);
+    this.bounds = new THREE.Box3().setFromObject(
+      useModel ? this.modelGroup : this.workpieceGroup
+    );
     const pathBounds = new THREE.Box3().setFromObject(this.pathGroup);
     if (!pathBounds.isEmpty()) this.bounds.union(pathBounds);
+    if (this.hasStock) this.bounds.union(new THREE.Box3().setFromObject(this.stockGroup));
     // 让刀具的上半截也落在取景范围内（长度直接来自响应，不依赖调用顺序）。
     const toolLength = Number((payload.tool && payload.tool.length_mm) || 0);
     if (toolLength > 0) {
@@ -226,9 +252,78 @@ export class Viewport {
     this._autoFrame();
   }
 
+  // ---------------------------------------------------------------- 毛坯
+  /** 画（或清除）毛坯：一个半透明的轴对齐长方体 + 棱线。 */
+  setStock(payload) {
+    this._clear(this.stockGroup);
+    this.hasStock = false;
+    const bounds = payload && payload.is_set ? payload.bounds_mm : null;
+    if (!bounds) {
+      this.stockGroup.visible = false;
+      return;
+    }
+    const [xMin, xMax] = bounds[0];
+    const [yMin, yMax] = bounds[1];
+    const [zMin, zMax] = bounds[2];
+    const geometry = new THREE.BoxGeometry(
+      Math.max(xMax - xMin, 1e-4), Math.max(yMax - yMin, 1e-4), Math.max(zMax - zMin, 1e-4)
+    );
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: COLORS.stock, transparent: true, opacity: 0.1, metalness: 0.2,
+        roughness: 0.8, depthWrite: false, side: THREE.DoubleSide,
+      })
+    );
+    mesh.position.set((xMin + xMax) / 2, (yMin + yMax) / 2, (zMin + zMax) / 2);
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geometry),
+      new THREE.LineBasicMaterial({ color: COLORS.stock, transparent: true, opacity: 0.5 })
+    );
+    edges.position.copy(mesh.position);
+    this.stockGroup.add(mesh, edges);
+    this.hasStock = true;
+    this.stockGroup.visible = this.display.showStock;
+  }
+
+  // ---------------------------------------------------------------- 模型
+  /** 显示（或清除）导入模型：payload 来自 GET /api/models/{id}。 */
+  setModel(payload) {
+    this._clear(this.modelGroup);
+    this.modelPayload = payload && payload.positions && payload.positions.length
+      ? payload
+      : null;
+    if (!this.modelPayload) {
+      this.modelGroup.visible = false;
+      this.modelBottom = 0;
+      return;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      "position", new THREE.Float32BufferAttribute(this.modelPayload.positions, 3)
+    );
+    // 三角汤（非索引）算出来的就是逐面法线，正是我们要的"机加工表面"观感。
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: COLORS.model, metalness: 0.62, roughness: 0.44, side: THREE.DoubleSide,
+      })
+    );
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.modelGroup.add(mesh);
+    this.modelGroup.visible = true;
+    // GridHelper.position.z 用的是"网格铺在哪一层"。
+    geometry.computeBoundingBox();
+    this.modelBottom = geometry.boundingBox.min.z;
+    this._autoFrame();
+  }
+
   // 只在"工件尺寸变了"或第一次出结果时重新取景：
   // 调一个切宽就把视角拉回默认，是很烦人的体验。
   _autoFrame() {
+    if (!this.bounds) return;
     const size = this.bounds.getSize(new THREE.Vector3());
     const diagonal = size.length();
     const changed = !this.fittedDiagonal
@@ -247,34 +342,27 @@ export class Viewport {
   setTool(tool) {
     this.tool = tool;
     this._clear(this.toolGroup);
-    const radius = Math.max(tool.radius_mm, 0.2);
-    const length = tool.length_mm;
-    const flute = Math.min(length * 0.65, radius * 6);
-    const holder = Math.max(length - flute, length * 0.2);
-
-    // 两段都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
-    // 黄色切削段对齐 UGNX 的刀具配色。
-    const cutting = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, flute, 64),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.tool, metalness: 0.5, roughness: 0.34,
-      })
-    );
-    const shank = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.holder, metalness: 0.92, roughness: 0.24,
-      })
-    );
-    for (const mesh of [cutting, shank]) {
+    // 刀具的形状由后端给出（tool.segments：每段一条半剖回转轮廓），
+    // 这里只负责旋成实体并配色——平底刀是一根带底的圆柱，
+    // 球头刀是"半球 + 圆柱"，两者共用 z = R 处的端面。
+    // 所以以后再加刀具类型（比如圆鼻刀）只需要改 Python 里的几何。
+    for (const segment of tool.segments || []) {
+      const points = (segment.profile_mm || [])
+        .map(([radius, height]) => new THREE.Vector2(Math.max(radius, 0), height));
+      if (points.length < 2) continue;
+      const isShank = segment.name === "shank";
+      const mesh = new THREE.Mesh(
+        new THREE.LatheGeometry(points, 96),
+        new THREE.MeshStandardMaterial(isShank
+          ? { color: COLORS.holder, metalness: 0.92, roughness: 0.24 }
+          : { color: COLORS.tool, metalness: 0.5, roughness: 0.34 })
+      );
+      // LatheGeometry 绕 Y 轴回转，转到 Z 轴向上后刀尖正好落在 (0, 0, 0)。
+      mesh.rotation.x = Math.PI / 2;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.toolGroup.add(mesh);
     }
-    cutting.rotation.x = Math.PI / 2;
-    cutting.position.z = flute / 2;
-    shank.rotation.x = Math.PI / 2;
-    shank.position.z = flute + holder / 2;
     this.toolMesh = this.toolGroup;
     this.toolGroup.visible = this.display.showTool;
   }
@@ -290,6 +378,8 @@ export class Viewport {
   setDisplayOptions(options) {
     this.display = Object.assign({}, this.display, options || {});
     this.workpieceGroup.visible = this.display.showWorkpiece;
+    this.modelGroup.visible = this.display.showWorkpiece && Boolean(this.modelPayload);
+    this.stockGroup.visible = this.display.showStock && this.hasStock;
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.toolGroup.visible = this.display.showTool;
@@ -307,7 +397,7 @@ export class Viewport {
     this.renderer.shadowMap.needsUpdate = true;
     this.keyLight.castShadow = shadows;
     this.gridGroup.visible = grid;
-    for (const group of [this.workpieceGroup, this.toolGroup]) {
+    for (const group of [this.workpieceGroup, this.modelGroup, this.toolGroup]) {
       group.traverse((object) => {
         if (object.isMesh) object.castShadow = shadows;
       });

@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Any, Iterable, Iterator, Mapping
 
@@ -222,3 +222,17 @@ def spec(
         choices=tuple(choices),
         visible_if=tuple((visible_if or {}).items()),
     )
+
+
+def field_values(instance: Any) -> dict[str, Any]:
+    """Dataclass 字段 → 参数字典（下划线开头的是内部字段，不对外发布）。
+
+    区域形状与加工面都把自己的"参数字段"直接发布成 ParameterSet 的值，
+    内部引用（例如导入模型对象）用下划线命名即可自动隐藏。
+    """
+
+    return {
+        item.name: getattr(instance, item.name)
+        for item in fields(instance)
+        if not item.name.startswith("_")
+    }

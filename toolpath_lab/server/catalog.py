@@ -9,13 +9,19 @@ from __future__ import annotations
 from typing import Any
 
 from toolpath_lab import __version__
+from toolpath_lab.core.mesh import DEFAULT_RESOLUTION_MM, model_library_payload
 from toolpath_lab.core.region import REGION_SHAPES, region_catalog
+from toolpath_lab.core.stock import STOCKS, stock_catalog
+from toolpath_lab.core.surface import SURFACES, surface_catalog
 from toolpath_lab.core.tool import tool_parameters
 from toolpath_lab.planning import RAPID_FEED_MM_PER_MIN, SAFE_HEIGHT_MM
+from toolpath_lab.planning.raster import MAX_LAYERS
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
 
 DEFAULT_REGION_ID = "square"
 DEFAULT_PLANNER_ID = "raster"
+DEFAULT_SURFACE_ID = "flat"
+DEFAULT_STOCK_ID = "none"
 
 
 def _defaults(registry: Any, item_id: str) -> dict[str, Any]:
@@ -34,8 +40,16 @@ def default_planner_parameters(planner_id: str = DEFAULT_PLANNER_ID) -> dict[str
     return _defaults(PLANNERS, planner_id)
 
 
-def catalog_payload() -> dict[str, Any]:
-    """能力、参数声明与默认值。"""
+def default_surface_parameters(surface_id: str = DEFAULT_SURFACE_ID) -> dict[str, Any]:
+    return _defaults(SURFACES, surface_id)
+
+
+def default_stock_parameters(stock_id: str = DEFAULT_STOCK_ID) -> dict[str, Any]:
+    return _defaults(STOCKS, stock_id)
+
+
+def catalog_payload(models: Any = None) -> dict[str, Any]:
+    """能力、参数声明、默认值与已导入的模型。"""
 
     return {
         "version": __version__,
@@ -48,14 +62,29 @@ def catalog_payload() -> dict[str, Any]:
             "default_id": DEFAULT_REGION_ID,
             "defaults": default_region_parameters(),
         },
+        "surfaces": {
+            "list": surface_catalog(),
+            "default_id": DEFAULT_SURFACE_ID,
+            "defaults": default_surface_parameters(),
+            "model_resolution_mm": DEFAULT_RESOLUTION_MM,
+        },
+        "stocks": {
+            "list": stock_catalog(),
+            "default_id": DEFAULT_STOCK_ID,
+            "defaults": default_stock_parameters(),
+        },
         "planners": {
             "list": planner_catalog(),
             "default_id": DEFAULT_PLANNER_ID,
             "defaults": default_planner_parameters(),
         },
+        "models": model_library_payload(models) if models is not None else {
+            "ok": True, "models": [], "default_id": "", "max_models": 0, "limits": {},
+        },
         # 这些量在主程序里是固定的，界面上只做展示；想变成参数就在 planning/base.py 里改。
         "fixed": {
             "safe_height_mm": SAFE_HEIGHT_MM,
             "rapid_feed_mm_per_min": RAPID_FEED_MM_PER_MIN,
+            "max_layers": MAX_LAYERS,
         },
     }

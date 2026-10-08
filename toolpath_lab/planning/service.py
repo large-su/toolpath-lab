@@ -7,6 +7,8 @@ from typing import Any, Mapping
 
 from toolpath_lab.core.path import Toolpath
 from toolpath_lab.core.region import RegionShape
+from toolpath_lab.core.stock import NoStock, Stock
+from toolpath_lab.core.surface import FlatSurface, Surface
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.base import Planner, PlanningContext
 from toolpath_lab.planning.registry import PLANNERS
@@ -32,11 +34,23 @@ def run_plan(
     tool: Tool,
     region: RegionShape,
     parameters: Mapping[str, Any] | None = None,
+    surface: Surface | None = None,
+    stock: Stock | None = None,
 ) -> PlanningOutcome:
-    """为一份刀具/区域/参数组合生成刀路。"""
+    """为一份刀具/区域/加工面/毛坯/参数组合生成刀路。
+
+    surface 缺省是平面加工面（Z = 0），stock 缺省是"不使用毛坯"，
+    因此老的调用方式完全不受影响。
+    """
 
     planner = get_planner(planner_id)
     validated = planner.parameters.coerce(parameters)
-    context = PlanningContext(tool=tool, region=region, parameters=validated)
+    context = PlanningContext(
+        tool=tool,
+        region=region,
+        parameters=validated,
+        surface=surface if surface is not None else FlatSurface(),
+        stock=stock if stock is not None else NoStock(),
+    )
     toolpath = planner.plan(context)
     return PlanningOutcome(toolpath=toolpath, warnings=tuple(context.warnings))

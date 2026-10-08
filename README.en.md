@@ -19,8 +19,12 @@ by parameters, and the parameter panel is generated from the backend's parameter
 
 ## Features
 
-- **Tool**: flat end mill with diameter and length. Its footprint radius on the machining plane
-  defines how far the toolpath is offset from the region contour.
+- **Tool**: flat and ball nose end mills with diameter and length. The footprint radius on the
+  machining plane defines how far the toolpath is offset from the region contour — a flat tool is
+  offset by its radius, a ball nose only touches the plane with its tip (offset 0), and the notes
+  report the residual height left between two passes.
+  The cutter solid is built from the rotary profile published in `tool.py`, so the hemisphere of a
+  ball nose comes for free.
 - **Region**: square (side) and circle (diameter), centred at the origin, machined on the XY plane.
 - **Toolpaths**: two raster modes
   - **zigzag** - every other pass runs in the opposite direction and consecutive passes are linked;
