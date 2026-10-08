@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 from toolpath_lab import __version__
 from toolpath_lab.core.path import Toolpath
 from toolpath_lab.planning import run_plan
@@ -30,16 +32,25 @@ class PlanResult:
     def to_payload(self) -> dict[str, Any]:
         request = self.request
         boundary = request.region.boundary()
+        planar = np.asarray(boundary, dtype=np.float64).reshape(-1, 2)
+        heights = np.asarray(
+            request.surface.height(planar[:, 0], planar[:, 1]), dtype=np.float64
+        ).reshape(planar.shape[0])
+        surface = request.surface.describe()
+        if not request.surface.is_xy_plane:
+            surface["mesh"] = request.surface.sample_grid(planar)
         return {
             "ok": True,
             "version": __version__,
             "request": request.to_payload(),
             "tool": request.tool.describe(),
+            "surface": surface,
             "region": {
                 **request.region.describe(),
                 "boundary": [
-                    [round(float(point[0]), 4), round(float(point[1]), 4), 0.0]
-                    for point in boundary
+                    [round(float(point[0]), 4), round(float(point[1]), 4),
+                     round(float(point[2]), 4)]
+                    for point in np.column_stack((planar, heights))
                 ],
             },
             "toolpath": self.toolpath.to_payload(),
@@ -61,6 +72,7 @@ def execute_plan(
         tool=request.tool,
         region=request.region,
         parameters=request.planner_parameters,
+        surface=request.surface,
     )
     timeline = (
         build_timeline(outcome.toolpath, max_samples=max_samples) if with_timeline else None

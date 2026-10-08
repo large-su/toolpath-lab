@@ -20,6 +20,7 @@ from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.parameters import ParameterSet
 from toolpath_lab.core.path import Move, MoveKind, Toolpath, retract_move
 from toolpath_lab.core.region import RegionShape
+from toolpath_lab.core.surface import FlatSurface, Surface
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.geometry2d import ensure_ccw
 
@@ -36,6 +37,7 @@ class PlanningContext:
     tool: Tool
     region: RegionShape
     parameters: Mapping[str, Any] = field(default_factory=dict)
+    surface: Surface = field(default_factory=FlatSurface)
     warnings: list[str] = field(default_factory=list)
 
     # -- 参数 --------------------------------------------------------------
@@ -48,13 +50,24 @@ class PlanningContext:
     def boundary(self) -> NDArray[np.float64]:
         """逆时针的区域轮廓，形状 (N, 2)。"""
 
-        return ensure_ccw(self.region.boundary())
+        polygon = ensure_ccw(self.region.boundary())
+        self.surface.ensure_covers(polygon)
+        return polygon
 
     def to_positions(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
         """把平面点 (N, 2) 抬成工件坐标下的 (N, 3)（加工面为 Z = 0）。"""
 
         planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
-        return np.column_stack((planar, np.zeros(planar.shape[0], dtype=np.float64)))
+        return np.column_stack((planar, self.surface_height(planar)))
+
+    def surface_height(self, points_xy: NDArray[np.float64]) -> NDArray[np.float64]:
+        """平面点 (N, 2) 在加工曲面上的高度 z = f(x, y)。"""
+
+        planar = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
+        heights = np.asarray(
+            self.surface.height(planar[:, 0], planar[:, 1]), dtype=np.float64
+        )
+        return heights.reshape(planar.shape[0])
 
     def warn(self, message: str) -> None:
         """记录一条不致命的提醒，会随响应返回并显示在界面上。"""
@@ -81,13 +94,16 @@ class PlanningContext:
         )
 
     def rapid_between(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> Move:
-        return retract_move(start, end, SAFE_HEIGHT_MM, RAPID_FEED_MM_PER_MIN)
+        start = np.asarray(start, dtype=np.float64).reshape(3)
+        end = np.asarray(end, dtype=np.float64).reshape(3)
+        safe_z = max(float(start[2]), float(end[2])) + SAFE_HEIGHT_MM
+        return retract_move(start, end, safe_z, RAPID_FEED_MM_PER_MIN)
 
     def approach_move_down(self, point: NDArray[np.float64]) -> Move:
         """从安全高度下刀到该点。"""
 
         target = np.asarray(point, dtype=np.float64).reshape(3)
-        start = np.array([target[0], target[1], SAFE_HEIGHT_MM], dtype=np.float64)
+        start = np.array([target[0], target[1], target[2] + SAFE_HEIGHT_MM], dtype=np.float64)
         return Move(MoveKind.RAPID, np.vstack([start, target]), RAPID_FEED_MM_PER_MIN,
                     label="下刀")
 
@@ -95,7 +111,7 @@ class PlanningContext:
         """从该点抬刀到安全高度。"""
 
         start = np.asarray(point, dtype=np.float64).reshape(3)
-        end = np.array([start[0], start[1], SAFE_HEIGHT_MM], dtype=np.float64)
+        end = np.array([start[0], start[1], start[2] + SAFE_HEIGHT_MM], dtype=np.float64)
         return Move(MoveKind.RAPID, np.vstack([start, end]), RAPID_FEED_MM_PER_MIN,
                     label="抬刀")
 

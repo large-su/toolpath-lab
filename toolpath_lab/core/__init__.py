@@ -23,6 +23,16 @@ from toolpath_lab.core.region import (
     region_catalog,
 )
 from toolpath_lab.core.registry import Registry
+from toolpath_lab.core.surface import (
+    SURFACES,
+    CylinderSurface,
+    DomeSurface,
+    FlatSurface,
+    InclineSurface,
+    Surface,
+    build_surface,
+    surface_catalog,
+)
 from toolpath_lab.core.tool import (
     TOOL_KIND_LABELS,
     TOOL_KINDS,
@@ -34,10 +44,15 @@ from toolpath_lab.core.tool import (
 __all__ = [
     "MOVE_KIND_LABELS",
     "REGION_SHAPES",
+    "SURFACES",
     "TOOL_KINDS",
     "TOOL_KIND_LABELS",
     "Choice",
     "CircleRegion",
+    "CylinderSurface",
+    "DomeSurface",
+    "FlatSurface",
+    "InclineSurface",
     "Move",
     "MoveKind",
     "ParameterError",
@@ -49,14 +64,17 @@ __all__ = [
     "RegistryError",
     "RegionShape",
     "SquareRegion",
+    "Surface",
     "Tool",
     "ToolKind",
     "Toolpath",
     "ToolpathLabError",
     "build_region",
+    "build_surface",
     "coerce_group",
     "region_catalog",
     "retract_move",
     "split_capability",
+    "surface_catalog",
     "tool_parameters",
 ]

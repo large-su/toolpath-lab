@@ -78,6 +78,30 @@ def polygon_bounds(polygon: NDArray[np.float64]) -> list[list[float]]:
         [float(polygon[:, 0].min()), float(polygon[:, 0].max())],
         [float(polygon[:, 1].min()), float(polygon[:, 1].max())],
     ]
+def points_in_polygon(
+    polygon: NDArray[np.float64], points: NDArray[np.float64]
+) -> NDArray[np.bool_]:
+    """偶奇规则的逐点包含判定，供曲面采样与三维裁剪使用。
+
+    与刀路用的扫描线求交遵循同一套偶奇规则，所以三维里画出来的加工范围和
+    策略实际切削的范围是同一条边界。落在边界上的点按"内部"处理。
+    """
+
+    poly = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    x = pts[:, 0]
+    y = pts[:, 1]
+    inside = np.zeros(x.shape[0], dtype=bool)
+    count = poly.shape[0]
+    for index in range(count):
+        x0, y0 = float(poly[index, 0]), float(poly[index, 1])
+        nxt = (index + 1) % count
+        x1, y1 = float(poly[nxt, 0]), float(poly[nxt, 1])
+        if abs(y1 - y0) <= 1e-12:
+            continue
+        crosses = ((y0 > y) != (y1 > y)) & (x < x0 + (x1 - x0) * (y - y0) / (y1 - y0))
+        inside ^= crosses
+    return inside
 
 
 @REGION_SHAPES.register
