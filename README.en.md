@@ -7,10 +7,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-ToolpathLab is a toolpath planning base: given a cutting tool and a machining region, it plans
-raster, contour and adaptive-contour toolpaths, shows the workpiece, the toolpath and the cutter in a
-3D window, plays the process back at the programmed feed rates, measures how much of the region the
-toolpath actually machines, and exports the result as G-code or a CSV point table.
+ToolpathLab is a 2.5-axis toolpath planning base: given a cutting tool and a machining region (seven
+regular shapes, or an outline imported from a DXF drawing), it plans raster, contour and
+adaptive-contour toolpaths, shows the workpiece, the toolpath, the cutter and the depth-coloured
+machined floor in a 3D window, plays the process back at the programmed feed rates, and reports
+coverage, 2.5D material removal, holder-collision checks and self-describing NC / CSV exports.
 
 The backend is plain Python (numpy is the only dependency), the front-end is native ES modules with a
 vendored three.js, and the desktop window is provided by Electron. Tools, regions and strategies are
@@ -293,6 +294,12 @@ the other, and zigzag alternates by itself.
 | Contour boundary | the first ring is always inset by one footprint radius (offsets are inward only) | `toolpath_lab/planning/contour.py` |
 | Layers | each layer is the same planar path moved down (vertical walls, flat floor, no islands) | `toolpath_lab/planning/stepdown.py` |
 | Path display | the machining plane is lifted 0.05 mm to avoid z-fighting; layered paths below it keep their real depth and the workpiece turns translucent | `toolpath_lab/web/js/viewport.js` |
+| Coverage / removal grid | 0.5 mm cells, at most 400 000 of them (grown for large regions); both share the one grid | `toolpath_lab/planning/coverage.py` |
+| Height-map display grid | reduced to at most 4096 cells (each takes the deepest cut in its block); only the 3D colouring reads it, no volume or ratio does | `toolpath_lab/planning/removal.py` |
+| Uncut output caps | at most 8 patches and 800 rectangles (the rest only count towards the total) | `toolpath_lab/planning/coverage.py` |
+| Playback sampling cap | at most 4000 timeline samples | `toolpath_lab/server/service.py` |
+| Collision tolerance | 0.01 mm: offset-polygon rounding is not a collision (an exact fit reports a margin of 0) | `toolpath_lab/planning/collision.py` |
+| Entries are not clipped | a ramp or helix runs its geometric length, may leave the region, and only reports its length and reach | `toolpath_lab/planning/entry.py` |
 
 The full recipe for adding a parameter (declare, read, test, changelog) is in
 [docs/extending.md](docs/extending.md) section 3.

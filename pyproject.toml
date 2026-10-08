@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "toolpath-lab"
 version = "0.0.1"
-description = "A deliberately small toolpath planning base: flat end mill + square/circle region + zigzag/one-way raster toolpaths, with a desktop 3D viewer and feed-rate playback."
+description = "2.5-axis toolpath planning base: three tool kinds with real head geometry (flutes, shanks, tapers), seven region shapes plus DXF outlines, raster/contour/adaptive strategies, coverage, 2.5D material removal and holder-collision checks, a three.js viewer and self-describing NC/CSV export."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "ToolpathLab contributors" }]
-keywords = ["cam", "toolpath", "milling", "raster", "zigzag", "robotics", "manufacturing"]
+keywords = ["cam", "toolpath", "milling", "raster", "zigzag", "contour", "dxf", "simulation", "robotics", "manufacturing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",

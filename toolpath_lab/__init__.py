@@ -7,6 +7,7 @@ The package is organised in strictly inward-pointing layers:
 - planning    toolpath strategies built on top of core
 - simulation  feed-rate based time parameterisation of a toolpath
 - export      the G-code and CSV writers
+- importers   drawing readers: a minimal DXF 2D outline importer
 - server      HTTP adapter (Python standard library) exposing the layers above
               to the web front-end
 - web         static three.js front-end served by the server

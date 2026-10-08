@@ -9,8 +9,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形状的加工区域，生成栅格刀路，
-在三维窗口中显示工件、刀路与刀具，并按进给速度播放整个加工过程。
+ToolpathLab 是一个 2.5D 刀路规划基座：给定一把刀具和一块加工区域（7 种规则形状，或从 DXF 图纸
+导入的轮廓），用栅格 / 环切 / 自适应环切生成刀路，在三维窗口里显示工件、刀路、刀具与**按切深
+着色的已加工地面**，按进给速度播放加工过程，并给出覆盖率、2.5D 材料切除、刀柄碰撞检查，以及
+自述式的 NC / CSV 导出。
 
 后端是纯 Python（只依赖 numpy），前端是原生 ES 模块加 three.js，桌面窗口由 Electron 提供。
 刀具与区域都用参数描述，参数面板根据后端的参数声明自动生成。
@@ -276,6 +278,12 @@ docs/          架构与扩展文档
 | 环切边界 | 第一环永远内缩一个刀具足迹半径（偏置几何只支持向内） | `toolpath_lab/planning/contour.py` |
 | 分层方式 | 每层是同一 XY 路径下移（竖直壁、平底、无岛屿，所以不需要避让） | `toolpath_lab/planning/stepdown.py` |
 | 刀路显示 | 加工面上的折线抬高 0.05 mm 避免 z-fighting；低于加工面的分层刀路保留真实深度，此时工件画成半透明 | `toolpath_lab/web/js/viewport.js` |
+| 覆盖率 / 材料切除网格 | 0.5 mm 一格、最多 40 万格（区域大时自动放大），两者共用同一套网格 | `toolpath_lab/planning/coverage.py` |
+| 高度图显示网格 | 降采样到 ≤ 4096 格（每格取块内最深值），只影响三维着色，不影响任何体积与比率 | `toolpath_lab/planning/removal.py` |
+| 未切除输出上限 | 最多 8 处连通块、800 个矩形（超出只计入总数） | `toolpath_lab/planning/coverage.py` |
+| 播放采样上限 | 时间轴最多 4000 个采样点 | `toolpath_lab/server/service.py` |
+| 碰撞检查容差 | 0.01 mm：偏置折线近似的噪声不算碰撞（正好贴合时余量按 0 报） | `toolpath_lab/planning/collision.py` |
+| 进刀段不裁剪 | 斜坡 / 螺旋按几何长度走，允许伸出区域，只报长度与伸出距离 | `toolpath_lab/planning/entry.py` |
 
 再加一个参数的完整做法（声明 → 读取 → 补测试 → 记 CHANGELOG）见 [docs/extending.md](docs/extending.md) §3。
 
