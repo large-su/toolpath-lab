@@ -169,7 +169,9 @@ input[type="checkbox"] {
 .layout {
   display: grid;
   grid-template-columns: 264px 1fr;
+  grid-template-rows: minmax(0, 1fr);
   height: calc(100% - 46px);
+  overflow: hidden;
 }
 
 .panel {
@@ -183,6 +185,11 @@ input[type="checkbox"] {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* 关键：画布尺寸由容器算出来，容器又不能反过来被画布撑大。
+     少了 min-height/overflow，画布会把 stage 顶高，ResizeObserver 再按新高度
+     重设画布……在 devicePixelRatio > 1 的屏幕上每轮放大 dpr 倍，最后溢出成空白。 */
+  min-height: 0;
+  overflow: hidden;
 }
 
 .viewport {
@@ -193,6 +200,8 @@ input[type="checkbox"] {
 }
 
 .viewport canvas {
+  position: absolute;
+  inset: 0;
   display: block;
 }
 
