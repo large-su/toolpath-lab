@@ -122,6 +122,9 @@ export class ParameterPanel {
       ["行距", "stepover_mm", "mm"],
       ["残留高度", "residual_height_mm", "mm"],
       ["推荐行距", "recommended_stepover_mm", "mm"],
+      ["工件材料", "material_label", ""],
+      ["推荐转速", "recommended_spindle_speed_rpm", "rpm"],
+      ["推荐进给", "recommended_feed_mm_per_min", "mm/min"],
     ];
     this._infoNodes = {};
     for (const [label, key, unit] of fields) {
@@ -143,7 +146,7 @@ export class ParameterPanel {
     }
     const hint = document.createElement("div");
     hint.className = "note";
-    hint.textContent = "残留高度 = 相邻刀轨间未切削的凸起高度；推荐行距按目标残留 0.02 mm 反推。";
+    hint.textContent = "残留高度 = 相邻刀轨间未切削的凸起高度；推荐行距按目标残留 0.02 mm 反推；推荐转速/进给按工件材料查表（n = 1000·Vc/(π·D)）。";
     section.appendChild(hint);
     return section;
   }

@@ -162,3 +162,56 @@ class ResidualHeightTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+class CuttingParameterTests(unittest.TestCase):
+    """切削参数推荐：按材料查表 + 转速/进给公式。"""
+
+    def test_spindle_speed_uses_the_standard_formula(self) -> None:
+        # D6 铝合金 Vc=250：n = 1000*250/(pi*6) ≈ 13263 rpm
+        tool = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, material="aluminum")
+        expected = round(1000.0 * 250.0 / (3.141592653589793 * 6.0), 0)
+        self.assertEqual(tool.recommended_spindle_speed_rpm(), expected)
+
+    def test_feed_multiplies_speed_by_flutes_and_feed_per_tooth(self) -> None:
+        # D6 铝 2 刃、fz=0.05：F = n*2*0.05
+        tool = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, material="aluminum")
+        n = tool.recommended_spindle_speed_rpm()
+        self.assertEqual(tool.recommended_feed_mm_per_min(), round(n * 2 * 0.05, 0))
+
+    def test_harder_material_gets_slower_speed(self) -> None:
+        aluminum = Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=30.0, material="aluminum")
+        titanium = Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=30.0, material="titanium")
+        self.assertGreater(
+            aluminum.recommended_spindle_speed_rpm(),
+            titanium.recommended_spindle_speed_rpm(),
+        )
+
+    def test_larger_diameter_gets_lower_speed(self) -> None:
+        small = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, material="steel")
+        large = Tool(ToolKind.FLAT, diameter_mm=20.0, length_mm=30.0, material="steel")
+        self.assertGreater(small.recommended_spindle_speed_rpm(), large.recommended_spindle_speed_rpm())
+
+    def test_flute_count_depends_on_kind_and_diameter(self) -> None:
+        self.assertEqual(
+            Tool(ToolKind.BALL, diameter_mm=6.0, length_mm=30.0).flute_count, 2
+        )
+        self.assertEqual(
+            Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0).flute_count, 2
+        )
+        self.assertEqual(
+            Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=30.0).flute_count, 4
+        )
+
+    def test_unknown_material_is_rejected(self) -> None:
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, material="wood")
+
+    def test_describe_exposes_cutting_parameters(self) -> None:
+        payload = Tool.from_parameters(
+            {"kind": "flat", "diameter_mm": 6.0, "length_mm": 30.0, "material": "steel"}
+        ).describe()
+        self.assertEqual(payload["material"], "steel")
+        self.assertEqual(payload["material_label"], "碳钢")
+        self.assertIn("recommended_spindle_speed_rpm", payload)
+        self.assertIn("recommended_feed_mm_per_min", payload)
+        self.assertIn("cutting_speed_m_per_min", payload)
+        self.assertIn("feed_per_tooth_mm", payload)

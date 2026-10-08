@@ -1,7 +1,9 @@
-"""刀具几何。
+"""刀具几何与切削参数。
 
 刀具不是装饰：栅格刀路的边界偏置量由"刀具在加工面上的足迹半径"决定，
-将来接入球头/圆鼻刀时，残留高度、刀轴姿态也都从这里出发。
+残留高度、刀轴姿态也都从这里出发。除几何外，本模块还提供**切削参数推荐**：
+按工件材料查表（切削线速度 Vc、每齿进给 fz），由刀具直径推算推荐主轴转速与进给，
+对应 UG 数控编程的"切削三要素"选择。
 
 ===========  ==================  =================  =======================
 类型         底面半径 Rf        圆角半径 Rc        足迹半径（用于偏置）
@@ -10,9 +12,6 @@ flat         R                   -                  R
 ball         -                   R                  0
 bull         R - Rc              Rc                 R - Rc
 ===========  ==================  =================  =======================
-
-三种刀具类型（平底刀 / 球头刀 / 圆鼻刀）均已开放：平底刀与球头刀为常见基准形态，
-圆鼻刀可通过"刀尖圆角半径 Rc"参数自由调节刀尖圆角，用于不同的加工残留高度控制。
 """
 
 from __future__ import annotations
@@ -49,6 +48,21 @@ TOOL_KINDS: tuple[Choice, ...] = (
 
 TOOL_KIND_LABELS: dict[str, str] = {choice.value: choice.label for choice in TOOL_KINDS}
 
+#: 工件材料 → 切削参数（硬质合金立铣刀的经验推荐值）。
+#: Vc 为切削线速度（m/min），fz 为每齿进给（mm/z）；数值按常见加工工况取保守中值。
+MATERIALS: dict[str, dict[str, Any]] = {
+    "aluminum": {"label": "铝合金", "cutting_speed_m_per_min": 250.0, "feed_per_tooth_mm": 0.05},
+    "steel": {"label": "碳钢", "cutting_speed_m_per_min": 80.0, "feed_per_tooth_mm": 0.03},
+    "stainless": {"label": "不锈钢", "cutting_speed_m_per_min": 45.0, "feed_per_tooth_mm": 0.02},
+    "titanium": {"label": "钛合金", "cutting_speed_m_per_min": 30.0, "feed_per_tooth_mm": 0.015},
+    "copper": {"label": "铜", "cutting_speed_m_per_min": 120.0, "feed_per_tooth_mm": 0.04},
+    "cast_iron": {"label": "铸铁", "cutting_speed_m_per_min": 60.0, "feed_per_tooth_mm": 0.03},
+}
+MATERIAL_CHOICES: tuple[Choice, ...] = tuple(
+    Choice(key, data["label"]) for key, data in MATERIALS.items()
+)
+DEFAULT_MATERIAL = "aluminum"
+
 
 def tool_parameters() -> ParameterSet:
     """刀具分组的参数声明（同时驱动界面与请求校验）。"""
@@ -57,6 +71,9 @@ def tool_parameters() -> ParameterSet:
         (
             spec("kind", "刀具类型", K.CHOICE, ToolKind.FLAT.value, group="刀具",
                  choices=TOOL_KINDS, help="平底刀 / 球头刀 / 圆鼻刀三种刀具类型"),
+            spec("material", "工件材料", K.CHOICE, DEFAULT_MATERIAL, group="刀具",
+                 choices=MATERIAL_CHOICES,
+                 help="用于推荐主轴转速与进给（硬质合金立铣刀经验值）"),
             spec("diameter_mm", "刀具直径 D", K.FLOAT, 6.0, minimum=1.0, maximum=100.0,
                  step=0.5, unit="mm", group="刀具"),
             spec("corner_mm", "刀尖圆角半径 Rc", K.FLOAT, 0.0, minimum=0.0, maximum=50.0,
@@ -79,6 +96,7 @@ class Tool:
     length_mm: float = 30.0
     corner_mm: float = 0.0
     stepover_mm: float = 1.0
+    material: str = DEFAULT_MATERIAL
 
     def __post_init__(self) -> None:
         if not isfinite(self.diameter_mm) or self.diameter_mm <= 0:
@@ -91,6 +109,8 @@ class Tool:
             raise ParameterError("刀具圆角半径必须小于刀具半径")
         if not isfinite(self.stepover_mm) or self.stepover_mm <= 0:
             raise ParameterError("行距必须是有限正数")
+        if self.material not in MATERIALS:
+            raise ParameterError(f"未知工件材料 {self.material!r}")
 
     @classmethod
     def from_parameters(cls, params: Mapping[str, Any]) -> "Tool":
@@ -102,6 +122,7 @@ class Tool:
             length_mm=float(params["length_mm"]),
             corner_mm=float(params.get("corner_mm", 0.0)),
             stepover_mm=float(params.get("stepover_mm", 1.0)),
+            material=str(params.get("material", DEFAULT_MATERIAL)),
         )
 
     @property
@@ -128,6 +149,45 @@ class Tool:
             return max(0.0, self.radius_mm - self.corner_mm)
         return self.radius_mm
 
+    # -- 切削参数推荐 -----------------------------------------------------
+    @property
+    def material_label(self) -> str:
+        return MATERIALS[self.material]["label"]
+
+    @property
+    def cutting_speed_m_per_min(self) -> float:
+        """该材料推荐的切削线速度 Vc（m/min）。"""
+
+        return float(MATERIALS[self.material]["cutting_speed_m_per_min"])
+
+    @property
+    def feed_per_tooth_mm(self) -> float:
+        """该材料推荐的每齿进给 fz（mm/z）。"""
+
+        return float(MATERIALS[self.material]["feed_per_tooth_mm"])
+
+    @property
+    def flute_count(self) -> int:
+        """经验齿数：球头刀取 2 刃；平底/圆鼻刀小径 2 刃、大径 4 刃。"""
+
+        if self.kind is ToolKind.BALL:
+            return 2
+        return 4 if self.diameter_mm >= 8.0 else 2
+
+    def recommended_spindle_speed_rpm(self) -> float:
+        """推荐主轴转速 n = 1000·Vc / (π·D)（rpm）。"""
+
+        return round(1000.0 * self.cutting_speed_m_per_min / (math.pi * self.diameter_mm), 0)
+
+    def recommended_feed_mm_per_min(self) -> float:
+        """推荐进给 F = n · z · fz（mm/min）。"""
+
+        return round(
+            self.recommended_spindle_speed_rpm() * self.flute_count * self.feed_per_tooth_mm,
+            0,
+        )
+
+    # -- 残留高度 ---------------------------------------------------------
     def residual_height_mm(self, stepover: float | None = None) -> float:
         """估算相邻刀轨之间的残留高度（加工表面质量的核心指标）。
 
@@ -193,4 +253,11 @@ class Tool:
             "stepover_mm": self.stepover_mm,
             "residual_height_mm": self.residual_height_mm(),
             "recommended_stepover_mm": self.recommended_stepover_mm(),
+            "material": self.material,
+            "material_label": self.material_label,
+            "cutting_speed_m_per_min": self.cutting_speed_m_per_min,
+            "feed_per_tooth_mm": self.feed_per_tooth_mm,
+            "flute_count": self.flute_count,
+            "recommended_spindle_speed_rpm": self.recommended_spindle_speed_rpm(),
+            "recommended_feed_mm_per_min": self.recommended_feed_mm_per_min(),
         }

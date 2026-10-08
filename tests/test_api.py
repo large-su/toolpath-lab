@@ -107,7 +107,7 @@ class CatalogTests(ApiTestCase):
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
         self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
-                         ["kind", "diameter_mm", "corner_mm", "length_mm", "stepover_mm"])
+                         ["kind", "material", "diameter_mm", "corner_mm", "length_mm", "stepover_mm"])
 
     def test_catalog_reports_the_fixed_settings(self) -> None:
         _, body, _ = self.get("/api/catalog")
