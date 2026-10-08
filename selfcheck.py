@@ -325,6 +325,59 @@ def check_http_api() -> tuple[bool, str]:
         steps += 1
         expect(status == 200 and "<html" in page.lower(), f"静态首页返回 {status}")
 
+        # A curved bottom is swept as its own profile, so the ridge between two passes can be stated
+        # before any grid: h = R - sqrt(R^2 - (s/2)^2) for a ball nose.
+        status, body = _request(base, "/api/plan", {
+            "tool": {"kind": "ball", "diameter_mm": 6.0},
+            "planner": {"parameters": {"stepover_mm": 1.0, "depth_mm": 2.0}},
+        })
+        steps += 1
+        if status != 200:
+            problems.append(f"球头轮廓仿真失败：{status} {body[:60]}")
+        else:
+            payload = json.loads(body)
+            removal = payload["removal"]
+            ridge = 3.0 - (9.0 - 0.25) ** 0.5  # 0.0419 mm
+            expect(removal["cusp_mm"] is not None and abs(removal["cusp_mm"] - ridge) < 1e-4,
+                   f"球头的理论残留高度不对：{removal['cusp_mm']}")
+            expect(removal["floor_ratio"] > 0.85,
+                   f"球头的弧面底面被误判成没到面：到面率 {removal['floor_ratio']}")
+            expect(any("h = R − √(R² − (s/2)²)" in note for note in payload["toolpath"]["notes"]),
+                   "球头的残留高度公式没有写进 notes")
+            # The playback scrubs through this floor: snapshots tagged with the move they follow.
+            checkpoints = removal["checkpoints"]
+            expect(len(checkpoints) >= 4, f"没有给播放用的进度快照：{len(checkpoints)}")
+            indices = [entry["move_index"] for entry in checkpoints]
+            expect(indices == sorted(set(indices)) and indices[-1] < len(payload["toolpath"]["moves"]),
+                   f"进度快照的移动下标不对：{indices}")
+            expect(all(entry["map"]["floor_mm"] == removal["height_map"]["floor_mm"]
+                       for entry in checkpoints),
+                   "进度快照没有用完整地面的色标")
+            expect(all(0.0 < entry["progress"] < 1.0 for entry in checkpoints),
+                   "进度快照的 progress 超出 (0, 1)")
+
+        # A blank whose top is not flat: planning stays 2.5D, but the stock's crown is real material.
+        status, body = _request(base, "/api/plan", {
+            "region": {"shape": "dome", "parameters": {"diameter_mm": 80.0, "dome_height_mm": 12.0}},
+            "planner": {"parameters": {"stepover_mm": 4.0, "depth_mm": 6.0, "stepdown_mm": 1.0}},
+        })
+        steps += 1
+        if status != 200:
+            problems.append(f"球冠区域规划失败：{status} {body[:60]}")
+        else:
+            payload = json.loads(body)
+            top_map = payload["region"]["top_map"]
+            sphere = (40.0 ** 2 + 12.0 ** 2) / (2.0 * 12.0)
+            cap = 3.141592653589793 * 144.0 * (3.0 * sphere - 12.0) / 3.0
+            analytic = 3.141592653589793 * 1600.0 * 6.0 + cap
+            removed = payload["removal"]["removed_volume_mm3"]
+            expect(payload["region"]["flat_top"] is False and top_map["cells"][0][0] is None,
+                   "球冠区域没有报出曲面（或区域外的格子不是空的）")
+            expect(abs(removed - analytic) < analytic * 0.02,
+                   f"球冠毛坯的切除体积不对：{removed:.0f} vs 解析 {analytic:.0f}（圆柱 + 球冠）")
+            expect(any("毛坯上表面不是平的" in note for note in payload["toolpath"]["notes"]),
+                   "球冠区域没有在 notes 里说明等高分层会先切空气")
+
         # DXF import: the drawing comes in, its outlines go back, nothing is stored.
         dxf = "\n".join([
             "0", "SECTION", "2", "ENTITIES", "0", "LWPOLYLINE", "70", "1",
@@ -339,6 +392,29 @@ def check_http_api() -> tuple[bool, str]:
             outlines = json.loads(body)["outlines"]
             expect(len(outlines) == 1 and outlines[0]["point_count"] == 4,
                    f"DXF 导入的轮廓不对：{outlines}")
+
+            # A circle is only read when the caller asks for a chord tolerance: 0 reports it instead.
+            circle = "\n".join([
+                "0", "SECTION", "2", "ENTITIES", "0", "CIRCLE", "8", "cut",
+                "10", "0", "20", "0", "40", "40", "0", "ENDSEC", "0", "EOF", "",
+            ])
+            status, body = _request(base, "/api/import/dxf",
+                                    {"text": circle, "arc_tolerance_mm": 0.05})
+            steps += 1
+            if status != 200:
+                problems.append(f"圆弧折线化失败：{status} {body[:60]}")
+            else:
+                payload = json.loads(body)
+                outline = payload["outlines"][0]
+                # 2*pi / (2*acos(1 - 0.05/40)) = 62.85 -> 63 points on the radius-40 circle.
+                expect(outline["closed"] and outline["point_count"] == 63
+                       and payload["skipped"] == [] and payload["approximated"] == ["CIRCLE"],
+                       f"圆弧折线化的结果不对：{outline['point_count']} 点，"
+                       f"跳过 {payload['skipped']}，近似 {payload['approximated']}")
+                expect(all(abs((x * x + y * y) ** 0.5 - 40.0) < 1e-3 for x, y in outline["points"]),
+                       "折线化的点不在半径 40 的圆上")
+                expect(payload["parameters"]["arc_tolerance_mm"] == 0.05,
+                       f"响应没有回显导入参数：{payload['parameters']}")
 
             # The closed loop an imported drawing makes possible: its outlines go straight into a
             # plan, and the exported NC summarises the outline instead of printing its points.

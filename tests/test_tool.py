@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import unittest
-from math import radians, tan
+from math import radians, sqrt, tan
+
+import numpy as np
 
 from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.region import build_region
@@ -228,6 +230,95 @@ class ToolParameterTests(unittest.TestCase):
     def test_out_of_range_diameter_is_rejected(self) -> None:
         with self.assertRaises(ParameterError):
             tool_parameters().coerce({"diameter_mm": 0.1})
+
+
+class ProfileTests(unittest.TestCase):
+    """The tool's own cross section: what the removal sweep follows and where ridges come from."""
+
+    def test_a_flat_mill_has_a_flat_bottom_out_to_its_radius(self) -> None:
+        flat = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0)
+        self.assertAlmostEqual(flat.reach_radius_mm, 3.0)
+        for distance in (0.0, 1.5, 3.0):
+            self.assertEqual(flat.profile_height_mm(distance), 0.0)
+        self.assertEqual(flat.profile_height_mm(3.01), float("inf"))
+
+    def test_a_ball_nose_profile_is_its_circle(self) -> None:
+        ball = Tool(ToolKind.BALL, diameter_mm=6.0, length_mm=30.0)  # R3
+        self.assertAlmostEqual(ball.reach_radius_mm, 3.0)
+        for distance in (0.0, 1.0, 1.5, 2.0, 2.9):
+            with self.subTest(distance=distance):
+                self.assertAlmostEqual(
+                    ball.profile_height_mm(distance), 3.0 - sqrt(9.0 - distance**2), places=9
+                )
+        # At the edge of the reach the sphere has risen all the way to the tool's radius.
+        self.assertAlmostEqual(ball.profile_height_mm(3.0), 3.0, places=9)
+        self.assertEqual(ball.profile_height_mm(3.5), float("inf"))
+
+    def test_a_bull_nose_is_flat_then_a_corner_torus(self) -> None:
+        bull = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=30.0, bull_corner_radius_mm=2.0)
+        self.assertAlmostEqual(bull.reach_radius_mm, 5.0)  # removal reaches the full radius
+        self.assertAlmostEqual(bull.footprint_radius_mm, 3.0)  # the flat bottom is R - Rc
+        for distance in (0.0, 1.5, 3.0):
+            self.assertEqual(bull.profile_height_mm(distance), 0.0)
+        for distance in (3.5, 4.0, 5.0):
+            with self.subTest(distance=distance):
+                self.assertAlmostEqual(
+                    bull.profile_height_mm(distance),
+                    2.0 - sqrt(4.0 - (distance - 3.0) ** 2),
+                    places=9,
+                )
+        self.assertEqual(bull.profile_height_mm(5.2), float("inf"))
+
+    def test_a_bull_nose_whose_corner_is_the_radius_is_a_ball(self) -> None:
+        ball = Tool(ToolKind.BALL, diameter_mm=10.0, length_mm=30.0)
+        full_bull = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=30.0, bull_corner_radius_mm=5.0)
+        for distance in (0.0, 1.0, 3.0, 5.0):
+            with self.subTest(distance=distance):
+                self.assertAlmostEqual(
+                    full_bull.profile_height_mm(distance),
+                    ball.profile_height_mm(distance),
+                    places=9,
+                )
+
+    def test_a_tapered_tool_keeps_the_flat_bottom_for_removal(self) -> None:
+        """Its flanks rise above the flat, so they are modelled for wall clearance only."""
+
+        taper = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, taper_angle_deg=15.0)
+        self.assertAlmostEqual(taper.reach_radius_mm, 3.0)
+        self.assertEqual(taper.profile_height_mm(2.0), 0.0)
+        self.assertEqual(taper.profile_height_mm(3.5), float("inf"))
+        # The flank is still what the boundary offset uses, which is a different question.
+        self.assertGreater(taper.wall_clearance_mm(2.0), 3.0)
+
+    def test_the_profile_reads_scalars_and_arrays_alike(self) -> None:
+        ball = Tool(ToolKind.BALL, diameter_mm=6.0, length_mm=30.0)
+        values = ball.profile_height_mm(np.array([0.0, 1.5, 5.0]))
+        self.assertEqual(values.shape, (3,))
+        self.assertAlmostEqual(float(values[0]), 0.0, places=9)
+        self.assertAlmostEqual(float(values[1]), 3.0 - sqrt(9.0 - 2.25), places=9)
+        self.assertEqual(float(values[2]), float("inf"))
+        # A scalar has to come back as a plain float: these numbers travel in the JSON payload.
+        self.assertIsInstance(ball.profile_height_mm(1.0), float)
+
+    def test_the_scallop_formula_between_two_passes(self) -> None:
+        ball = Tool(ToolKind.BALL, diameter_mm=6.0, length_mm=30.0)
+        # h = R - sqrt(R^2 - (s/2)^2), the classic number for parallel passes.
+        self.assertAlmostEqual(ball.cusp_height_mm(1.0), 3.0 - sqrt(9.0 - 0.25), places=9)
+        self.assertAlmostEqual(ball.cusp_height_mm(4.0), 3.0 - sqrt(9.0 - 4.0), places=9)
+        # Half a stepover equal to the radius means the two passes only meet at the top face.
+        self.assertAlmostEqual(ball.cusp_height_mm(6.0), 3.0, places=9)
+        self.assertEqual(ball.cusp_height_mm(7.0), float("inf"))
+
+    def test_a_flat_bottom_has_no_scallop_while_it_spans_the_stepover(self) -> None:
+        flat = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0)
+        self.assertEqual(flat.cusp_height_mm(4.0), 0.0)
+        self.assertEqual(flat.cusp_height_mm(6.0), 0.0)
+        self.assertEqual(flat.cusp_height_mm(6.01), float("inf"))
+
+    def test_a_bull_nose_scallops_only_past_its_flat_band(self) -> None:
+        bull = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=30.0, bull_corner_radius_mm=2.0)
+        self.assertEqual(bull.cusp_height_mm(6.0), 0.0)  # the 6 mm flat band spans it
+        self.assertAlmostEqual(bull.cusp_height_mm(8.0), 2.0 - sqrt(4.0 - 1.0), places=9)
 
 
 if __name__ == "__main__":

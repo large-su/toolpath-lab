@@ -34,15 +34,22 @@ export class Playback {
     if (timeline) {
       this.kindNames = Object.assign({ 0: "cut", 1: "link", 2: "rapid" }, timeline.kind_codes || {});
       this.kinds = decodeRuns(timeline.kind_runs, this.sampleCount, Uint8Array);
+      // Which move each sample belongs to: the material-removal snapshots are tagged with this index,
+      // so it is what links the playback position to the floor shown in the 3D view.
+      this.moveIndices = decodeRuns(timeline.move_runs, this.sampleCount, Int32Array);
     } else {
       this.kinds = null;
+      this.moveIndices = null;
     }
     this._notify();
   }
 
   state() {
     if (!this.timeline || this.sampleCount === 0) {
-      return { time: 0, duration: 0, progress: 0, index: 0, position: [0, 0, 0], playing: false };
+      return {
+        time: 0, duration: 0, progress: 0, index: 0, moveIndex: null,
+        position: [0, 0, 0], playing: false,
+      };
     }
     const times = this.timeline.times;
     const clamped = Math.min(Math.max(this.time, 0), this.duration);
@@ -69,6 +76,7 @@ export class Playback {
       duration: this.duration,
       progress: this.duration > 0 ? clamped / this.duration : 0,
       index,
+      moveIndex: this.moveIndices ? this.moveIndices[index] : null,
       position,
       playing: this.playing,
     };

@@ -182,6 +182,34 @@ export function heightMapGeometry(map, liftMm = PATH_LIFT_MM * 0.2) {
   return geometry;
 }
 
+// Which height map the 3D view should paint for a given playback position. The backend sends the
+// finished map plus a handful of progressive snapshots ("the floor once the tool had got this far"),
+// each tagged with the index of the last move it includes; the map for the playhead is the last
+// snapshot at or before it. Before the first snapshot nothing has been cut yet, so there is no map at
+// all -- the floor overlay is empty at the very start, which is the honest picture. `lastCutIndex` is
+// the index of the last material removing move: from there on the finished map is the answer, so the
+// overlay ends on the full resolution grid instead of the coarse snapshot grid. Exported for the same
+// Node check as heightMapGeometry: this is the whole playback linkage and it is pure.
+export function progressiveHeightMap(removal, moveIndex, lastCutIndex = null) {
+  if (!removal) return null;
+  const finished = removal.height_map || null;
+  const checkpoints = removal.checkpoints || [];
+  if (!checkpoints.length || moveIndex === null || moveIndex === undefined) return finished;
+  if (lastCutIndex !== null && moveIndex >= lastCutIndex) return finished;
+  let chosen = null;
+  for (const entry of checkpoints) {
+    if (entry.move_index <= moveIndex) chosen = entry;
+    else break;
+  }
+  return chosen ? chosen.map : null;  // before the first snapshot nothing has been cut
+}
+
+function heightMapKey(map) {
+  if (!map) return "none";
+  const first = map.cells && map.cells[0] ? map.cells[0][0] : null;
+  return `${map.rows}x${map.cols}:${map.floor_mm}:${first}`;
+}
+
 function polylineGeometry(polylines, dashed = false) {
   const positions = [];
   for (const points of polylines) {
@@ -204,7 +232,7 @@ export class Viewport {
     this.appearance = { shadows: true, white: false, grid: true };
     this.display = {
       showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true,
-      showUncut: true, showHeight: true,
+      showUncut: true, showHeight: true, showHeightProgress: false,
     };
     this.bounds = null;
     this.activeView = "fit";
@@ -325,6 +353,8 @@ export class Viewport {
     // the deeper layers would be hidden inside an opaque solid.
     const layered = lowestZ < -1e-6;
     this.workpieceGroup.add(this._workpiece(region, thickness, layered));
+    const topFace = this._topFace(region, layered);
+    if (topFace) this.workpieceGroup.add(topFace);
     this.contourGroup.add(this._contour(region.boundary));
     this._rebuildGrid(span, thickness);
 
@@ -344,16 +374,17 @@ export class Viewport {
     // that cut, so the terraces of a stepped plan are visible through the translucent workpiece (which
     // is exactly the case this overlay exists for: a single layer has no depth to show and the
     // backend sends no map at all). Basic material on purpose: this is a data overlay, not another
-    // solid for the lights and shadows to work on.
-    const heightMap = payload.removal && payload.removal.height_map;
-    if (heightMap && heightMap.cells && heightMap.floor_mm < -1e-6) {
-      this.heightGroup.add(
-        new THREE.Mesh(
-          heightMapGeometry(heightMap),
-          new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })
-        )
-      );
-    }
+    // solid for the lights and shadows to work on. With the progressive display on, this starts at the
+    // playhead's snapshot (see `_refreshHeightMap`).
+    this.removal = payload.removal || null;
+    this.playheadMove = null;
+    // Where the cutting stops: from that move on the floor is finished, so the progressive display can
+    // switch back to the full resolution map.
+    this.lastCutIndex = -1;
+    (payload.toolpath.moves || []).forEach((move, index) => {
+      if (move.kind === "cut") this.lastCutIndex = index;
+    });
+    this._refreshHeightMap();
 
     const groups = { link: [], rapid: [] };
     for (const move of payload.toolpath.moves) {
@@ -466,15 +497,21 @@ export class Viewport {
     this.toolGroup.visible = this.display.showTool;
   }
 
-  setPlayhead(position, traversedSegments) {
+  setPlayhead(position, traversedSegments, moveIndex = null) {
     this.toolGroup.position.set(position[0], position[1], position[2]);
     if (this.traceLine && traversedSegments !== this._lastTraversed) {
       this._lastTraversed = traversedSegments;
       this.traceLine.geometry.setDrawRange(0, Math.max(0, traversedSegments) * 2);
     }
+    // Playback linkage: the machined floor follows the playhead while the progressive display is on.
+    if (this.display.showHeightProgress && moveIndex !== this.playheadMove) {
+      this.playheadMove = moveIndex;
+      this._refreshHeightMap();
+    }
   }
 
   setDisplayOptions(options) {
+    const wasProgressive = this.display.showHeightProgress;
     this.display = Object.assign({}, this.display, options || {});
     this.workpieceGroup.visible = this.display.showWorkpiece;
     this.uncutGroup.visible = this.display.showUncut;
@@ -484,6 +521,32 @@ export class Viewport {
     this.toolGroup.visible = this.display.showTool;
     if (this.rapidLine) this.rapidLine.visible = this.display.showRapid;
     this.contourGroup.visible = this.display.showWorkpiece;
+    if (wasProgressive !== this.display.showHeightProgress) this._refreshHeightMap();
+  }
+
+  // Rebuild the machined floor from the map the playhead is at. Rebuilding a few hundred quads is
+  // cheap, but it must not happen on every animation frame, so the key of the current map is compared
+  // first: only a new checkpoint (or a changed toolpath) touches the geometry.
+  _refreshHeightMap() {
+    const map = this.display.showHeightProgress
+      ? progressiveHeightMap(
+          this.removal,
+          this.playheadMove === null ? null : this.playheadMove,
+          this.lastCutIndex === undefined ? null : this.lastCutIndex
+        )
+      : (this.removal && this.removal.height_map) || null;
+    const usable = map && map.cells && map.floor_mm < -1e-6;
+    const key = usable ? heightMapKey(map) : "none";
+    if (key === this._heightMapKey) return;
+    this._heightMapKey = key;
+    this._clear(this.heightGroup);
+    if (!usable) return;
+    this.heightGroup.add(
+      new THREE.Mesh(
+        heightMapGeometry(map),
+        new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })
+      )
+    );
   }
 
   setAppearance(options) {
@@ -569,6 +632,25 @@ export class Viewport {
       new THREE.MeshStandardMaterial({
         color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
         transparent: translucent, opacity: translucent ? 0.3 : 1,
+      })
+    );
+    mesh.receiveShadow = true;
+    return mesh;
+  }
+
+  // A blank whose top is not flat needs that top drawn: the extruded body stops at Z = 0, which for a
+  // domed blank is the rim plane the surface rises from. The mesh comes from the same grid builder as
+  // the machined floor, but with solid material (a standard material simply ignores the vertex colours
+  // the builder also emits) and the same translucency, so a layered path stays visible inside it.
+  // Returns null while the top is flat, which is every other region.
+  _topFace(region, translucent = false) {
+    const top = region.top_map;
+    if (!top || !top.cells) return null;
+    const mesh = new THREE.Mesh(
+      heightMapGeometry(top, 0),
+      new THREE.MeshStandardMaterial({
+        color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
+        transparent: translucent, opacity: translucent ? 0.3 : 1, side: THREE.DoubleSide,
       })
     );
     mesh.receiveShadow = true;

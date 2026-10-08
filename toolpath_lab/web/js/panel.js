@@ -8,6 +8,7 @@ const DISPLAY_OPTIONS = [
   { key: "showTrace", label: "已走轨迹", color: "var(--teal)" },
   { key: "showUncut", label: "未切除", color: "var(--danger)" },
   { key: "showHeight", label: "切深", color: "linear-gradient(90deg, #54d6c4, #ffa726)" },
+  { key: "showHeightProgress", label: "渐进切深", help: "「切深」地面按播放位置显示：拖动或播放时只显示到当前位置为止切掉的材料（起点为空，因为还没切）；关掉则始终显示整条刀路的结果" },
   { key: "showTool", label: "刀具" },
 ];
 
@@ -103,6 +104,8 @@ export class ParameterPanel {
       },
       display: { showWorkpiece: true, showPath: true, showRapid: true, showTrace: true,
                  showUncut: true, showHeight: true, showTool: true },
+      // Import options (the chord tolerance for arcs); empty when the catalogue predates them.
+      import: clone((this.catalog.import && this.catalog.import.defaults) || {}),
     };
     this.rows = [];
     this.render();
@@ -240,6 +243,15 @@ export class ParameterPanel {
       );
     }
     section.appendChild(this._importRow());
+    for (const spec of (this.catalog.import && this.catalog.import.parameters) || []) {
+      // The import's own parameters come from the same declaration the endpoint validates, so the
+      // tolerance the panel sends can never be one the backend would reject.
+      const control = this._buildControl(spec, this.state.import[spec.key], (value) => {
+        this.state.import[spec.key] = value;
+        this.onChange();
+      });
+      section.appendChild(this._wrapRow(spec, control, "import", this.state.import));
+    }
     if (this.state.region.id === IMPORTED_ID) {
       section.appendChild(this._outlineRow());
     }
@@ -306,7 +318,7 @@ export class ParameterPanel {
 
   async _importFile(file) {
     try {
-      const result = await this.importDxf(await readDrawingText(file));
+      const result = await this.importDxf(await readDrawingText(file), this.state.import);
       const outlines = (result && result.outlines) || [];
       if (!outlines.length) throw new Error("图纸里没有可用的闭合轮廓");
       this.state.region.outlines = outlines;
@@ -379,6 +391,7 @@ export class ParameterPanel {
       }
       const text = document.createElement("span");
       text.textContent = option.label;
+      if (option.help) text.title = option.help;
       row.appendChild(text);
       section.appendChild(row);
     }

@@ -11,6 +11,7 @@ from toolpath_lab.core.errors import ParameterError, RegistryError
 from toolpath_lab.core.region import (
     CURVE_SEGMENTS,
     REGION_SHAPES,
+    DomeRegion,
     DumbbellRegion,
     EllipseRegion,
     RectangleRegion,
@@ -27,7 +28,7 @@ class RegionCatalogTests(unittest.TestCase):
     def test_registered_shapes(self) -> None:
         self.assertEqual(
             sorted(REGION_SHAPES.ids()),
-            ["circle", "dumbbell", "ellipse", "rectangle", "square", "triangle", "u_shape"],
+            ["circle", "dome", "dumbbell", "ellipse", "rectangle", "square", "triangle", "u_shape"],
         )
 
     def test_catalog_publishes_labels_and_parameters(self) -> None:
@@ -294,6 +295,86 @@ class TriangleRegionTests(unittest.TestCase):
             with self.subTest(parameters=parameters):
                 with self.assertRaises(ParameterError):
                     build_region("triangle", parameters)
+
+
+class DomeRegionTests(unittest.TestCase):
+    """The first region whose top face is not flat: a disc with a spherical cap on it."""
+
+    def test_the_boundary_is_the_same_disc_as_the_circle(self) -> None:
+        """Planning stays 2.5D, so every planner must walk exactly what it walked before."""
+
+        dome = build_region("dome", {"diameter_mm": 80.0})
+        circle = build_region("circle", {"diameter_mm": 80.0})
+        self.assertTrue(np.allclose(dome.boundary(), circle.boundary()))
+
+    def test_the_sphere_runs_through_the_rim(self) -> None:
+        dome = DomeRegion(diameter_mm=80.0, dome_height_mm=12.0)
+        # Rc = (R^2 + h^2) / (2h)
+        self.assertAlmostEqual(dome.sphere_radius_mm, (40.0**2 + 12.0**2) / 24.0, places=9)
+        self.assertAlmostEqual(dome.top_height_mm(0.0, 0.0), 12.0, places=9)
+        self.assertAlmostEqual(dome.top_height_mm(40.0, 0.0), 0.0, places=9)
+        self.assertAlmostEqual(dome.top_height_mm(0.0, -40.0), 0.0, places=9)
+        # Outside the disc there is no material at all, which is how the top map marks it empty.
+        self.assertTrue(np.isnan(float(dome.top_height_mm(45.0, 0.0))))
+
+    def test_the_cap_surface_falls_off_towards_the_rim(self) -> None:
+        dome = DomeRegion(diameter_mm=80.0, dome_height_mm=12.0)
+        radii = [0.0, 10.0, 20.0, 30.0, 39.0]
+        heights = [float(dome.top_height_mm(r, 0.0)) for r in radii]
+        self.assertEqual(heights, sorted(heights, reverse=True))
+        for radius, height in zip(radii, heights):
+            # Every point satisfies the sphere equation, shifted so the rim sits on Z = 0.
+            self.assertAlmostEqual(
+                (height + (dome.sphere_radius_mm - 12.0)) ** 2 + radius**2,
+                dome.sphere_radius_mm**2,
+                places=6,
+            )
+
+    def test_the_cap_volume_matches_the_closed_form_and_the_integral(self) -> None:
+        dome = DomeRegion(diameter_mm=80.0, dome_height_mm=12.0)
+        # pi h^2 (3 Rc - h) / 3
+        self.assertAlmostEqual(
+            dome.cap_volume_mm3,
+            pi * 12.0**2 * (3.0 * dome.sphere_radius_mm - 12.0) / 3.0,
+            places=6,
+        )
+        # ... and the same volume integrated over the disc, as a cross-check of the surface itself.
+        radii = np.linspace(0.0, 40.0, 4001)
+        heights = np.maximum(
+            np.sqrt(dome.sphere_radius_mm**2 - radii**2) - (dome.sphere_radius_mm - 12.0), 0.0
+        )
+        self.assertAlmostEqual(
+            float(np.trapezoid(2.0 * pi * radii * heights, radii)), dome.cap_volume_mm3, delta=1.0
+        )
+
+    def test_the_payload_describes_the_curved_top(self) -> None:
+        payload = build_region("dome", {}).describe()
+        self.assertFalse(payload["flat_top"])
+        top_map = payload["top_map"]
+        self.assertEqual(top_map["rows"], top_map["cols"])
+        centre = top_map["cells"][top_map["rows"] // 2][top_map["cols"] // 2]
+        self.assertGreater(centre, 11.0)  # within half a cell of the 12 mm apex
+        self.assertLess(centre, 12.0)
+        # The corners of the bounding box are outside the disc, so they carry no material.
+        self.assertIsNone(top_map["cells"][0][0])
+        self.assertIsNone(top_map["cells"][-1][-1])
+
+    def test_a_flat_region_sends_no_top_map_at_all(self) -> None:
+        for shape in ("square", "circle", "u_shape"):
+            with self.subTest(shape=shape):
+                payload = build_region(shape, {}).describe()
+                self.assertTrue(payload["flat_top"])
+                self.assertIsNone(payload["top_map"])
+                # A flat top answers zero everywhere, except for a curved blank's NaN convention.
+                region = build_region(shape, {})
+                self.assertEqual(float(np.asarray(region.top_height_mm(1.0, 2.0))), 0.0)
+                self.assertEqual(shape in REGION_SHAPES.ids(), True)
+
+    def test_the_height_has_to_be_positive(self) -> None:
+        for parameters in ({"dome_height_mm": 0.0}, {"dome_height_mm": -1.0}, {"diameter_mm": 1.0}):
+            with self.subTest(parameters=parameters):
+                with self.assertRaises(ParameterError):
+                    build_region("dome", parameters)
 
 
 if __name__ == "__main__":

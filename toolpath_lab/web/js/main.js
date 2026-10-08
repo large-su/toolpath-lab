@@ -270,6 +270,10 @@ function renderStats(result) {
     const removal = result.removal;
     rows.push(["到面率", (removal.floor_ratio * 100).toFixed(1) + " %"]);
     rows.push(["切除体积", removal.removed_volume_mm3.toFixed(0) + " mm³"]);
+    if (removal.cusp_mm !== null && removal.cusp_mm !== undefined && removal.cusp_mm > 0) {
+      // The ridge a curved bottom leaves between two passes: h = profile(s/2), theory before any grid.
+      rows.push(["刀间残留", removal.cusp_mm.toFixed(3) + " mm（理论）"]);
+    }
     if (removal.remaining_volume_mm3 > 0) {
       rows.push(["剩余余量", removal.remaining_volume_mm3.toFixed(0) + " mm³"]);
     }
@@ -311,7 +315,7 @@ function animate(now) {
   previousTime = now;
   const state = playback.update(dt);
   if (state && playback.timeline) {
-    viewport.setPlayhead(state.position, state.index);
+    viewport.setPlayhead(state.position, state.index, state.moveIndex);
     if (playback.playing || scrubbing) renderPlaybar(state);
   }
   viewport.render();

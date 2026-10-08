@@ -20,6 +20,8 @@ from toolpath_lab.simulation import Timeline, build_timeline
 
 #: Upper bound on playback samples, which sets the size of the response.
 DEFAULT_MAX_SAMPLES = 4000
+#: Progressive floor snapshots the plan response carries for the playback (see `measure_removal`).
+DEFAULT_CHECKPOINTS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,9 +91,15 @@ def execute_plan(
     with_timeline: bool = True,
     with_coverage: bool = True,
     with_removal: bool = True,
+    with_checkpoints: bool = True,
     max_samples: int = DEFAULT_MAX_SAMPLES,
 ) -> PlanResult:
-    """Run one plan (the export endpoints turn the timeline off and take the path plus its facts)."""
+    """Run one plan (the export endpoints turn the timeline off and take the path plus its facts).
+
+    `with_checkpoints` adds the progressive floor snapshots the playback scrubs through. They only make
+    sense next to a timeline, so the export endpoints (which carry the path and its facts, not a
+    playback) ask for the plain map.
+    """
 
     outcome = run_plan(
         planner_id=request.planner_id,
@@ -107,8 +115,15 @@ def execute_plan(
         if with_coverage
         else None
     )
+    stepover = request.planner_parameters.get("stepover_mm")
     removal = (
-        measure_removal(outcome.toolpath, request.region, request.tool)
+        measure_removal(
+            outcome.toolpath,
+            request.region,
+            request.tool,
+            stepover_mm=float(stepover) if isinstance(stepover, (int, float)) else None,
+            checkpoints=DEFAULT_CHECKPOINTS if with_checkpoints else 0,
+        )
         if with_removal
         else None
     )

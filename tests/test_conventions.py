@@ -19,6 +19,7 @@ from pathlib import Path
 from toolpath_lab.planning import planner_catalog, run_plan
 from toolpath_lab.core.region import build_region, region_catalog
 from toolpath_lab.core.tool import Tool, ToolKind, tool_library
+from toolpath_lab.importers import IMPORT_PARAMETERS
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_ROOTS = ("toolpath_lab", "tests", "examples")
@@ -96,6 +97,14 @@ class UserFacingTextTests(unittest.TestCase):
             with self.subTest(item=entry["id"]):
                 self.assertGreater(_chinese_characters(entry["label"]), 0)
                 self.assertGreater(_chinese_characters(entry["description"]), 0)
+
+    def test_the_import_parameters_are_chinese_too(self) -> None:
+        """Import options are rendered in the panel, so their label and help are user facing text."""
+
+        for parameter in IMPORT_PARAMETERS.to_dicts():
+            with self.subTest(parameter=parameter["key"]):
+                self.assertGreater(_chinese_characters(parameter["label"]), 0)
+                self.assertGreater(_chinese_characters(parameter["help"]), 0)
 
     def test_notes_and_warnings_are_chinese(self) -> None:
         tool = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0)

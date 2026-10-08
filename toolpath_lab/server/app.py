@@ -14,18 +14,21 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from toolpath_lab import __version__
 from toolpath_lab.core.errors import ParameterError, PlanningError, RegistryError
 from toolpath_lab.export import toolpath_to_csv, toolpath_to_gcode
-from toolpath_lab.importers import parse_dxf
+from toolpath_lab.importers import IMPORT_PARAMETERS, parse_dxf
 from toolpath_lab.server.catalog import catalog_payload
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.server.service import execute_plan
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 MAX_BODY_BYTES = 4 * 1024 * 1024
+
+#: Keys of `IMPORT_PARAMETERS`: the import endpoint reads exactly these from JSON or the query string.
+_IMPORT_KEYS = frozenset(item.key for item in IMPORT_PARAMETERS)
 
 CONTENT_TYPES: dict[str, str] = {
     ".html": "text/html; charset=utf-8",
@@ -121,7 +124,9 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
 
     def _export_gcode(self, payload: Mapping[str, Any] | None) -> Response:
-        result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
+        result = execute_plan(
+            PlanRequest.from_payload(payload), with_timeline=False, with_checkpoints=False
+        )
         content = toolpath_to_gcode(
             result.toolpath,
             program_name="TOOLPATH_LAB",
@@ -135,7 +140,9 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         )
 
     def _export_csv(self, payload: Mapping[str, Any] | None) -> Response:
-        result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
+        result = execute_plan(
+            PlanRequest.from_payload(payload), with_timeline=False, with_checkpoints=False
+        )
         return text_response(
             toolpath_to_csv(
                 result.toolpath,

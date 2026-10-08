@@ -48,6 +48,8 @@ from enum import Enum
 from math import isfinite, radians, sqrt, tan
 from typing import Any, Mapping
 
+import numpy as np
+
 from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.parameters import (
     Choice,
@@ -73,6 +75,9 @@ TOOL_KINDS: tuple[Choice, ...] = (
 )
 
 TOOL_KIND_LABELS: dict[str, str] = {choice.value: choice.label for choice in TOOL_KINDS}
+
+#: Slack on the profile's reach test, so a tool exactly of radius R still cuts at its own edge.
+_REACH_EPS_MM = 1e-9
 
 #: Parameter keys of the tool group, in declaration order (the panel fills exactly these from a preset).
 TOOL_PARAMETER_KEYS: tuple[str, ...] = (
@@ -191,6 +196,58 @@ class Tool:
         """Flat contact radius on the machining plane: the flat nose of the cutter."""
 
         return max(0.0, self.radius_mm - self.corner_radius_mm)
+
+    @property
+    def reach_radius_mm(self) -> float:
+        """How far from its axis the *cutting* surface reaches: the window a removal sweep needs.
+
+        Planar coverage sweeps the flat contact (`footprint_radius_mm`), but material removal has to
+        account for the curved nose: a cut `d` deep takes material out to `sqrt(2*R*d - d^2)` from the
+        axis with a ball nose, and out along the corner torus of a bull nose, so both reach the full
+        radius R. A tapered tool's flanks rise *above* its flat bottom, so they add nothing to the
+        footprint of one layer.
+        """
+
+        if self.kind in (ToolKind.BALL, ToolKind.BULL):
+            return self.radius_mm
+        return self.footprint_radius_mm
+
+    def profile_height_mm(self, distance_mm: Any) -> Any:
+        """Height of the cutting surface **above the tip** at `distance_mm` from the tool axis.
+
+        This is the tool's own cross section, and it is what makes material removal a surface sweep
+        instead of a flat-bottomed disc: a ball nose sits `R - sqrt(R^2 - d^2)` higher at offset `d`, a
+        bull nose is flat out to `R - Rc` and then follows its corner torus, and flat or tapered tools
+        keep the flat bottom (a tapered flank is modelled for wall clearance, not for the floor it
+        leaves). `inf` means the tool does not reach that far, so `min` over a sweep reads naturally.
+
+        Accepts a scalar or an array (the sweep works block by block) and returns the same shape, as a
+        plain `float` for scalars so it can go straight into a payload.
+        """
+
+        distance = np.asarray(distance_mm, dtype=np.float64)
+        if self.kind is ToolKind.BALL:
+            radius = self.radius_mm
+            offset = radius - np.sqrt(np.maximum(radius * radius - distance * distance, 0.0))
+        elif self.kind is ToolKind.BULL and self.corner_radius_mm > 0.0:
+            corner = self.corner_radius_mm
+            beyond = np.maximum(distance - self.footprint_radius_mm, 0.0)
+            offset = corner - np.sqrt(np.maximum(corner * corner - beyond * beyond, 0.0))
+        else:
+            offset = np.zeros_like(distance)
+        offset = np.where(distance <= self.reach_radius_mm + _REACH_EPS_MM, offset, np.inf)
+        return float(offset) if np.ndim(offset) == 0 else offset
+
+    def cusp_height_mm(self, stepover_mm: float) -> float:
+        """Residual ridge left between two parallel passes a `stepover_mm` apart.
+
+        The middle between two passes is `stepover / 2` from both axes, so the ridge the later pass
+        leaves standing is exactly the profile height there: the classic scallop formula
+        `R - sqrt(R^2 - (s/2)^2)` for a ball nose, 0 while a flat or bull nose spans the stepover, and
+        `inf` when the passes do not overlap at all -- then the ridge is full height, not a scallop.
+        """
+
+        return float(self.profile_height_mm(max(stepover_mm, 0.0) / 2.0))
 
     def wall_clearance_mm(self, depth_mm: float) -> float:
         """Horizontal reach of the cutter over a cut `depth_mm` tall, measured from the tool axis.

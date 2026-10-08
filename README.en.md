@@ -7,11 +7,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-ToolpathLab is a 2.5-axis toolpath planning base: given a cutting tool and a machining region (seven
-regular shapes, or an outline imported from a DXF drawing), it plans raster, contour and
-adaptive-contour toolpaths, shows the workpiece, the toolpath, the cutter and the depth-coloured
-machined floor in a 3D window, plays the process back at the programmed feed rates, and reports
-coverage, 2.5D material removal, holder-collision checks and self-describing NC / CSV exports.
+ToolpathLab is a 2.5-axis toolpath planning base: given a cutting tool and a machining region (eight
+regular shapes - "球冠" (dome) being the one whose top face is a curved surface - or an outline imported
+from a DXF drawing), it plans raster, contour, spiral and adaptive-contour toolpaths, shows the
+workpiece, the toolpath, the cutter and the depth-coloured machined floor in a 3D window, plays the
+process back at the programmed feed rates (optionally letting the floor fill in progressively), and
+reports coverage, 2.5D material removal, holder-collision checks and self-describing NC / CSV exports.
 
 The backend is plain Python (numpy is the only dependency), the front-end is native ES modules with a
 vendored three.js, and the desktop window is provided by Electron. Tools, regions and strategies are
@@ -28,8 +29,9 @@ described by parameter declarations, and the parameter panel is generated from t
   bull nose - all of them parameters). The offset from the region contour uses how far the cutter
   reaches sideways over the whole cut, so a shaped tool keeps its full radius away from the wall at
   the deepest layer instead of gouging it. Coverage sweeps the flat contact on the floor: the full
-  radius for a flat mill, `R - Rc` for a bull nose, and a single point for a ball nose, whose real
-  surface is a scalloped envelope this model does not simulate.
+  radius for a flat mill, `R - Rc` for a bull nose, and a single point for a ball nose (coverage is a
+  *planar* question - did the tool pass over this cell - while how much material came off is answered by
+  the surface sweep below).
 - **Tool library**: the top of the tool section offers a preset selector with six common tools (flat
   D6 and D10, ball D6, bull D10 Rc2, a 15 degree taper, a small D3); picking one copies its values into
   the same parameter fields below. A preset is a shortcut, not a second configuration system: editing
@@ -53,17 +55,28 @@ described by parameter declarations, and the parameter panel is generated from t
   statistics grow a clearance row while the shank is engaged. Two deliberate exclusions: entries are
   not checked (a ramp or helix may leave the region on purpose, which the notes report) and points
   outside the region do not count (they are not in the pocket).
-- **Regions**: square, rectangle, circle, ellipse, U shape, dumbbell and triangle, all centred at the
-  origin and machined on the XY plane. Each one reduces to a single counter-clockwise boundary
+- **Regions**: square, rectangle, circle, ellipse, U shape, dumbbell, triangle and dome, all centred at
+  the origin and machined on the XY plane. Each one reduces to a single counter-clockwise boundary
   polygon, which is what the toolpath planners clip against and what the 3D workpiece is extruded
   from - so a new shape needs no change to any strategy or to the front-end. A region can also come
-  from a drawing, see the next bullet.
+  from a drawing, see the next bullet. **The dome is the one region whose top face is not flat** (a
+  round base with a spherical cap through its rim): the toolpath is still constant-Z 2.5D layers (so
+  the upper layers cut air above the crown, and the notes say so), but **removed volume, the height map
+  and the 3D view are all measured from that surface** - the workpiece's top is drawn from `top_map`,
+  and the extra crown really is material to remove (volume = cylinder + `pi h^2 (3Rc - h)/3`, pinned by
+  an analytic test).
 - **Drawing import**: pick a DXF file in the panel and the backend reads its closed outlines
-  (`LWPOLYLINE`, `POLYLINE` and end-to-end `LINE` loops; arcs and circles are reported as skipped
-  rather than guessed), then the outline you choose becomes the region. An imported outline is
-  deliberately *not* registered in the catalogue: the shape selector only grows an "imported outline"
-  entry once a file has actually been read, and the point list travels with the planning request. The
-  exported NC header states `imported - N points` instead of printing thousands of coordinates.
+  (`LWPOLYLINE`, `POLYLINE` and end-to-end `LINE` loops), then the outline you choose becomes the
+  region. **Arcs and circles are still not guessed by default** - they are reported as skipped - but
+  the "arc chord tolerance" in the region section (0 = report only) tessellates `ARC`, `CIRCLE` and
+  `ELLIPSE` so that every step's bulge stays within that tolerance, with the segment count derived from
+  the arc's own radius (`ceiling(sweep / (2*acos(1 - tolerance / radius)))`, capped at 2048 per curve);
+  the answer echoes the option and says what was tessellated into how many points. `SPLINE` stays
+  skipped either way, because NURBS weights and knots are a different order of complexity. An imported
+  outline is deliberately *not* registered in the catalogue: the shape selector only grows an "imported
+  outline" entry once a file has actually been read, and the point list travels with the planning
+  request. The exported NC header states `imported - N points` instead of printing thousands of
+  coordinates.
 - **Strategies**:
   - **raster** - parallel passes, `zigzag` (every other pass reversed, consecutive passes linked) or
     `one_way` (all passes in the same direction, retracting in between);
@@ -109,12 +122,30 @@ described by parameter declarations, and the parameter panel is generated from t
   (more than 2 % by default). **Material removal (2.5D height map)** - every cell records the Z it was
   cut down to, which yields the floor ratio (the share of the region that reached the floor, i.e.
   coverage in depth), the removed and remaining volumes and the area never touched at all; below 90 %
-  the response warns again and the statistics grow a row per figure. The same map is **sent with the
-  response in reduced form** (at most 4096 cells; each cell takes the deepest cut in its block, i.e.
-  how deep the tool reached there, and cells outside the region stay empty), and the 3D view paints it
-  as the machined floor, coloured from teal to orange by depth and placed at its real Z, so the
-  terraces of a stepped plan are visible ("切深" in the display toggles). Only that overlay is
-  reduced: coverage, floor ratio and the volumes always come from the 0.5 mm measurement grid.
+  the response warns again and the statistics grow a row per figure. What is swept is **the tool's own
+  cross section**, not a flat-bottomed disc: a ball nose sits `z + R - sqrt(R^2 - d^2)` higher at offset
+  `d` (so the grid really shows curved troughs), a bull nose is its `R - Rc` flat plus corner torus, and
+  flat or tapered tools keep the flat bottom (a tapered flank only matters for wall clearance). The
+  **residual height between two passes** therefore comes out of the model instead of being assumed: the
+  ridge half a stepover from both axes is the profile height there - the classic
+  `h = R - sqrt(R^2 - (s/2)^2)` for a ball nose - and it is written into the notes, sent with the
+  response and shown as the "刀间残留" row. A ridge taller than the depth of cut means the two passes
+  never clean the floor between them, and the response says to bring the stepover under `2R`. That ridge
+  is also **the tolerance the floor ratio counts with**, so the wavy floor a curved bottom always leaves
+  is not reported as unfinished (a flat bottom's ridge is 0, so its numbers are unchanged). The same map
+  is **sent with the response in reduced form** (at most 4096 cells; each cell takes the deepest cut in
+  its block, i.e. how deep the tool reached there, and cells outside the region stay empty), and the 3D
+  view paints it as the machined floor, coloured from teal to orange by depth and placed at its real Z,
+  so the terraces of a stepped plan and the troughs of a ball nose are visible ("切深" in the display
+  toggles). Only that overlay is reduced: coverage, floor ratio and the volumes always come from the
+  0.5 mm measurement grid. **Playback linkage (progressive depth)** - the same map also travels with
+  **eight snapshots of "the floor once the tool had got this far"** (each reduced to 1024 cells, on the
+  finished floor's colour scale, tagged with the last move it includes). Turning on "渐进切深" in the
+  display toggles makes the machined floor follow the playhead: scrubbing or playing paints only what
+  has been cut up to that moment (empty at the very start, because nothing has been cut yet, and back
+  on the full resolution grid from the last cutting move on). The snapshots are taken **during the one
+  sweep** (one block reduction each), so the linkage costs almost nothing, and the geometry is rebuilt
+  only on the frame where the snapshot changes rather than on every frame.
 - **Notes**: every plan explains its own choices in a collapsible "刀路说明" list (per-round stepover,
   coverage, ring count, cutting length and time for adaptive contouring; the corner slowdown and
   layer counts; the safe height and rapid feed actually used; the length of every ramp or helix entry,
@@ -143,6 +174,7 @@ The left side is the parameter panel; the right side holds the 3D view, statisti
   direction again flips to the opposite side.
 - **Appearance toggles** (top left): live shadows, white background, grid floor.
 - **Display toggles** (left panel): workpiece, toolpath, rapids, traversed path, uncut material, depth,
+  progressive depth,
   cutter. "Uncut" is the warning coloured overlay of what coverage found missing; "depth" is the
   machined floor, drawn inside the workpiece at its real Z and coloured by how deep the tool reached
   (the little gradient dot in front of it is that colour ramp).
@@ -218,7 +250,7 @@ print(outcome.toolpath.statistics())
 | `POST /api/plan` | Plan a toolpath; returns moves, statistics, coverage and the playback timeline |
 | `POST /api/export/gcode` | Export the NC program |
 | `POST /api/export/csv` | Export the CSV point table |
-| `POST /api/import/dxf` | Read the 2D outlines of a DXF drawing (raw DXF text or `{"text": "..."}`) |
+| `POST /api/import/dxf` | Read the 2D outlines of a DXF drawing (raw DXF text or `{"text": "..."}`, plus `arc_tolerance_mm` as JSON or a query argument) |
 
 `/api/plan` also takes an imported outline:
 `{"region": {"shape": "imported", "points": [[x, y], ...]}}`, where the points come from
@@ -310,7 +342,12 @@ the other, and zigzag alternates by itself.
 | Layers | each layer is the same planar path moved down (vertical walls, flat floor, no islands) | `toolpath_lab/planning/stepdown.py` |
 | Path display | the machining plane is lifted 0.05 mm to avoid z-fighting; layered paths below it keep their real depth and the workpiece turns translucent | `toolpath_lab/web/js/viewport.js` |
 | Coverage / removal grid | 0.5 mm cells, at most 400 000 of them (grown for large regions); both share the one grid | `toolpath_lab/planning/coverage.py` |
+| Removal tool model | swept as the tool's **cross section** (ball sphere, bull flat + corner torus, flat bottom for flat/tapered tools); a tapered flank only counts for wall clearance | `toolpath_lab/planning/removal.py` |
+| Floor-ratio tolerance | the theoretical ridge between two passes (ball: `R-sqrt(R^2-(s/2)^2)`), so a flat mill's ridge of 0 keeps its old numbers | `toolpath_lab/planning/removal.py` |
 | Height-map display grid | reduced to at most 4096 cells (each takes the deepest cut in its block); only the 3D colouring reads it, no volume or ratio does | `toolpath_lab/planning/removal.py` |
+| Playback snapshots | at most **8** per sweep (each reduced to **1024** cells and sharing the finished floor's colour scale); geometry is rebuilt only on the frame a snapshot changes | `toolpath_lab/planning/removal.py` |
+| Curved blank top | a region may carry `top_height_mm` (dome: `Rc = (R^2+h^2)/(2h)`); the 3D view draws it from a top grid of at most **32x32** cells, empty outside the region | `toolpath_lab/core/region.py` |
+| A curved blank is still 2.5D | layers are constant Z, there is no surface-following (upper layers cut air); the curve changes how much material there is and what is drawn, not the path | `toolpath_lab/planning/service.py` |
 | Uncut output caps | at most 8 patches and 800 rectangles (the rest only count towards the total) | `toolpath_lab/planning/coverage.py` |
 | Playback sampling cap | at most 4000 timeline samples | `toolpath_lab/server/service.py` |
 | Collision tolerance | 0.01 mm: offset-polygon rounding is not a collision (an exact fit reports a margin of 0) | `toolpath_lab/planning/collision.py` |

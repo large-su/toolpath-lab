@@ -7,6 +7,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from math import pi, sqrt
 
 from toolpath_lab.core.region import build_region
 from toolpath_lab.server.app import ToolpathLabHandler, create_server
@@ -111,7 +112,7 @@ class CatalogTests(ApiTestCase):
         )
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]),
-            ["circle", "dumbbell", "ellipse", "rectangle", "square", "triangle", "u_shape"],
+            ["circle", "dome", "dumbbell", "ellipse", "rectangle", "square", "triangle", "u_shape"],
         )
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
@@ -330,6 +331,110 @@ class PlanTests(ApiTestCase):
         self.assertEqual(status, 400)
         self.assertTrue(payload["error"])
 
+    def test_the_plan_reports_the_scallop_the_tool_leaves(self) -> None:
+        """A curved bottom leaves a wavy floor, so the ridge between passes travels with the answer."""
+
+        status, payload, _ = self.plan({
+            "tool": {"kind": "ball", "diameter_mm": 6.0},
+            "planner": {"parameters": {"stepover_mm": 1.0, "depth_mm": 2.0}},
+        })
+        self.assertEqual(status, 200)
+        removal = payload["removal"]
+        # h = R - sqrt(R^2 - (s/2)^2) with R = 3 and s = 1.
+        self.assertAlmostEqual(removal["cusp_mm"], 3.0 - sqrt(9.0 - 0.25), places=4)
+        self.assertAlmostEqual(removal["stepover_mm"], 1.0)
+        self.assertAlmostEqual(removal["floor_tolerance_mm"], removal["cusp_mm"], places=4)
+        # The waviness a curved bottom always leaves is not "not reaching the floor". What keeps the
+        # ratio below 1 is the strip and corners the tool cannot reach, exactly as planar coverage.
+        self.assertGreater(removal["floor_ratio"], 0.85)
+        self.assertLess(removal["floor_ratio"], 0.95)
+        note = next(item for item in payload["toolpath"]["notes"] if "残留高度" in item)
+        self.assertIn("h = R − √(R² − (s/2)²)", note)
+        self.assertIn("0.042", note)
+
+    def test_a_stepover_the_curved_tool_cannot_span_is_called_out(self) -> None:
+        """A D6 ball nose with 8 mm passes never overlaps: the ridge is full height, not a scallop."""
+
+        _, payload, _ = self.plan({
+            "tool": {"kind": "ball", "diameter_mm": 6.0},
+            "planner": {"parameters": {"stepover_mm": 8.0, "depth_mm": 2.0}},
+        })
+        self.assertIsNone(payload["removal"]["cusp_mm"])
+        self.assertEqual(payload["removal"]["stepover_mm"], 8.0)  # the stepover is echoed either way
+        note = next(item for item in payload["toolpath"]["notes"] if "完全没有重叠" in item)
+        self.assertIn("降到 6 mm 以下", note)
+
+    def test_a_flat_mill_reports_no_scallop(self) -> None:
+        """Flat bottoms keep their old numbers: a spanning stepover leaves a flat floor."""
+
+        _, payload, _ = self.plan({"planner": {"parameters": {"stepover_mm": 4.0, "depth_mm": 2.0}}})
+        self.assertEqual(payload["removal"]["cusp_mm"], 0.0)
+        self.assertEqual(payload["removal"]["floor_tolerance_mm"], 0.0)
+        self.assertGreater(payload["removal"]["floor_ratio"], 0.95)
+        self.assertFalse(any("残留高度" in item for item in payload["toolpath"]["notes"]))
+
+    def test_the_plan_carries_the_snapshots_the_playback_scrubs_through(self) -> None:
+        """The progressive floor maps travel with the response, tagged with the move they belong to."""
+
+        _, payload, _ = self.plan({
+            "planner": {"parameters": {"stepover_mm": 6.0, "depth_mm": 4.0, "stepdown_mm": 2.0}},
+        })
+        removal = payload["removal"]
+        checkpoints = removal["checkpoints"]
+        self.assertTrue(checkpoints)
+        self.assertLessEqual(len(checkpoints), 8)
+        indices = [entry["move_index"] for entry in checkpoints]
+        self.assertEqual(indices, sorted(set(indices)))
+        depths = []
+        for entry in checkpoints:
+            self.assertGreater(entry["progress"], 0.0)
+            self.assertLess(entry["progress"], 1.0)
+            # Each snapshot is a map over the same bounds, on the same colour scale, on purpose coarser
+            # (the animation does not need the full display grid).
+            self.assertEqual(entry["map"]["floor_mm"], removal["height_map"]["floor_mm"])
+            self.assertEqual(entry["map"]["origin_mm"], removal["height_map"]["origin_mm"])
+            self.assertLessEqual(entry["map"]["rows"], removal["height_map"]["rows"])
+            self.assertLessEqual(entry["map"]["cols"], removal["height_map"]["cols"])
+            cells = [value for row in entry["map"]["cells"] for value in row if value is not None]
+            depths.append(min(cells) if cells else 0.0)
+        # Material only ever comes off, so a snapshot can never be deeper than a later one.
+        for before, after in zip(depths, depths[1:]):
+            self.assertGreaterEqual(before + 1e-9, after)
+        # The playback's own numbering has to line up with the moves it can index.
+        self.assertLess(max(indices), len(payload["toolpath"]["moves"]))
+
+    def test_a_domed_blank_plans_and_reports_its_curved_top(self) -> None:
+        """The first region with a curved top: 2.5D planning, but volumes measured from the surface."""
+
+        status, payload, _ = self.plan({
+            "region": {"shape": "dome", "parameters": {"diameter_mm": 80.0, "dome_height_mm": 12.0}},
+            "planner": {"parameters": {"stepover_mm": 4.0, "depth_mm": 6.0, "stepdown_mm": 1.0}},
+        })
+        self.assertEqual(status, 200)
+        region = payload["region"]
+        self.assertEqual(region["id"], "dome")
+        self.assertFalse(region["flat_top"])
+        self.assertEqual(region["top_map"]["rows"], region["top_map"]["cols"])
+        self.assertGreater(region["top_map"]["cells"][region["top_map"]["rows"] // 2][0] or 0.0, 0.0)
+        # The crown is part of the stock: cylinder + spherical cap, the cap from Rc = (R^2 + h^2) / 2h.
+        sphere = (40.0**2 + 12.0**2) / (2.0 * 12.0)
+        analytic = pi * 40.0**2 * 6.0 + pi * 12.0**2 * (3.0 * sphere - 12.0) / 3.0
+        self.assertAlmostEqual(
+            payload["removal"]["removed_volume_mm3"], analytic, delta=analytic * 0.02
+        )
+        # And the notes say out loud what constant Z layers do on a curved blank.
+        self.assertTrue(
+            any("毛坯上表面不是平的" in note for note in payload["toolpath"]["notes"]),
+            payload["toolpath"]["notes"],
+        )
+        self.assertTrue(any("随形加工" in note for note in payload["toolpath"]["notes"]))
+
+    def test_a_flat_region_still_reports_a_flat_top(self) -> None:
+        _, payload, _ = self.plan({})
+        self.assertTrue(payload["region"]["flat_top"])
+        self.assertIsNone(payload["region"]["top_map"])
+        self.assertFalse(any("上表面不是平的" in note for note in payload["toolpath"]["notes"]))
+
     def test_the_plan_response_carries_the_material_removal(self) -> None:
         """The height map is part of the response: how deep the toolpath actually got."""
 
@@ -513,6 +618,71 @@ class ExportTests(ApiTestCase):
     def test_dxf_import_of_a_useless_file_is_a_bad_request(self) -> None:
         status, _, _ = self.post("/api/import/dxf", {"text": "not a drawing at all"})
         self.assertEqual(status, 400)
+
+    def test_the_import_can_tessellate_curves_when_asked(self) -> None:
+        """The chord tolerance is the caller's decision: 0 reports the circle, 0.05 reads it."""
+
+        dxf = "\n".join([
+            "0", "SECTION", "2", "ENTITIES", "0", "CIRCLE", "8", "cut",
+            "10", "0", "20", "0", "40", "40", "0", "ENDSEC", "0", "EOF", "",
+        ])
+        status, body, _ = self.post("/api/import/dxf", {"text": dxf, "arc_tolerance_mm": 0.05})
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["skipped"], [])
+        self.assertEqual(payload["approximated"], ["CIRCLE"])
+        self.assertEqual(payload["parameters"]["arc_tolerance_mm"], 0.05)
+        outline = payload["outlines"][0]
+        self.assertTrue(outline["closed"])
+        # 2*pi / (2*acos(1 - 0.05/40)) = 62.85 -> 63 points, all of them on the radius-40 circle.
+        self.assertEqual(outline["point_count"], 63)
+        for x, y in outline["points"]:
+            # The payload rounds to 4 decimals, so allow for that and nothing more.
+            self.assertAlmostEqual((x * x + y * y) ** 0.5, 40.0, delta=1e-3)
+        # The same tolerance is accepted from the query string, which is how raw text travels.
+        request = urllib.request.Request(
+            self.base + "/api/import/dxf?arc_tolerance_mm=0.05",
+            data=dxf.encode("utf-8"),
+            headers={"Content-Type": "text/plain; charset=utf-8"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = json.loads(response.read())
+        self.assertEqual(raw["outlines"][0]["point_count"], 63)
+        self.assertEqual(raw["skipped"], [])
+
+    def test_the_import_reads_options_nested_under_parameters(self) -> None:
+        """The panel sends `{"text": ..., "parameters": {...}}`; the flat form is for scripts."""
+
+        dxf = "\n".join([
+            "0", "SECTION", "2", "ENTITIES", "0", "CIRCLE", "8", "cut",
+            "10", "0", "20", "0", "40", "40", "0", "ENDSEC", "0", "EOF", "",
+        ])
+        status, body, _ = self.post(
+            "/api/import/dxf", {"text": dxf, "parameters": {"arc_tolerance_mm": 0.05}}
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["outlines"][0]["point_count"], 63)
+        self.assertEqual(payload["approximated"], ["CIRCLE"])
+        self.assertEqual(payload["parameters"]["arc_tolerance_mm"], 0.05)
+
+    def test_an_impossible_chord_tolerance_is_a_bad_request(self) -> None:
+        dxf = "0\nSECTION\n0\nENDSEC\n0\nEOF\n"
+        for tolerance in (-0.5, 9.0):
+            with self.subTest(tolerance=tolerance):
+                status, body, _ = self.post(
+                    "/api/import/dxf", {"text": dxf, "arc_tolerance_mm": tolerance}
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("arc_tolerance_mm", json.loads(body)["error"])
+
+    def test_the_catalog_publishes_the_import_parameters(self) -> None:
+        _, body, _ = self.get("/api/catalog")
+        section = json.loads(body)["import"]
+        keys = [item["key"] for item in section["parameters"]]
+        self.assertEqual(keys, ["arc_tolerance_mm"])
+        self.assertEqual(section["defaults"]["arc_tolerance_mm"], 0.0)
+        self.assertEqual(section["parameters"][0]["unit"], "mm")
 
     def test_other_formats_are_gone(self) -> None:
         for kind in ("json", "step", "dxf"):

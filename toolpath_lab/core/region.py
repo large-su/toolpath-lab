@@ -42,6 +42,10 @@ REGION_SHAPES: Registry[type["RegionShape"]] = Registry("region shape")
 #: exposing the discretisation as a parameter would add a knob with very little meaning.
 CURVE_SEGMENTS = 180
 
+#: Upper bound on the cells of the coarse stock-top grid that travels to the 3D view (curved blanks
+#: only); the square root of it caps the cells per axis.
+TOP_MAP_CELLS = 1024
+
 
 @dataclass(frozen=True, slots=True)
 class RegionShape:
@@ -56,6 +60,64 @@ class RegionShape:
         """Closed counter-clockwise boundary, shape (N, 2), without repeating the first point."""
 
         raise NotImplementedError
+
+    @property
+    def is_flat_top(self) -> bool:
+        """Whether the stock's top face is the machining plane (Z = 0) everywhere.
+
+        Every region this project has ever had is flat; a curved blank (see `DomeRegion`) overrides
+        this and the two places that care ask here: the removal measurement starts its height map from
+        `top_height_mm` instead of assuming zero, and the plan notes say that 2.5D layers cut air above
+        the curve before they reach it.
+        """
+
+        return True
+
+    def top_height_mm(self, x: Any, y: Any) -> Any:
+        """Z of the **stock's top face** at (x, y); NaN means "no material at this XY".
+
+        Flat regions answer zero for any point, which is what every number in this project was
+        computed with. A curved blank overrides it and the callers adapt: the removal sweep seeds its
+        grid with these heights (so volumes are measured against the real blank), and the viewport
+        draws the top face from `top_map`. Takes scalars or arrays and returns a plain float for a
+        scalar, so it can go straight into a payload.
+        """
+
+        values = np.asarray(x, dtype=np.float64) * 0.0 + np.asarray(y, dtype=np.float64) * 0.0
+        return float(values) if np.ndim(values) == 0 else values
+
+    def top_map(self, max_cells: int = TOP_MAP_CELLS) -> dict[str, Any] | None:
+        """Coarse grid of the stock's top face for the 3D view: None while the top is flat.
+
+        The grid has the same shape as the removal height map (cell centres plus `cell_size_mm`), so the
+        viewport draws it with the geometry builder it already has; cells without material are None.
+        """
+
+        if self.is_flat_top:
+            return None
+        polygon = self.boundary()
+        x_min, x_max = float(polygon[:, 0].min()), float(polygon[:, 0].max())
+        y_min, y_max = float(polygon[:, 1].min()), float(polygon[:, 1].max())
+        span_x, span_y = max(x_max - x_min, 1e-9), max(y_max - y_min, 1e-9)
+        count = max(2, min(int(max_cells**0.5), 64))
+        step_x, step_y = span_x / count, span_y / count
+        xs = x_min + (np.arange(count) + 0.5) * step_x
+        ys = y_min + (np.arange(count) + 0.5) * step_y
+        grid_x, grid_y = np.meshgrid(xs, ys)
+        heights = np.asarray(self.top_height_mm(grid_x, grid_y), dtype=np.float64)
+        cells = [
+            [None if not np.isfinite(value) else round(float(value), 4) for value in row]
+            for row in heights
+        ]
+        return {
+            "rows": count,
+            "cols": count,
+            "origin_mm": [round(x_min, 4), round(y_min, 4)],
+            "cell_size_mm": [round(step_x, 4), round(step_y, 4)],
+            # The height map's shape, so the viewport can draw this with the builder it already has.
+            "floor_mm": 0.0,
+            "cells": cells,
+        }
 
     def to_params(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
@@ -78,6 +140,9 @@ class RegionShape:
             "parameters": self.to_params(),
             "area_mm2": polygon_area(polygon),
             "bounds_mm": polygon_bounds(polygon),
+            # A flat top sends no map at all, so nothing about the old payloads changes.
+            "flat_top": self.is_flat_top,
+            "top_map": self.top_map(),
         }
 
 
@@ -375,6 +440,81 @@ class TriangleRegion(RegionShape):
             ],
             dtype=np.float64,
         )
+
+
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class DomeRegion(RegionShape):
+    """A round blank with a **spherical cap** on top: the first region whose top face is not flat.
+
+    The boundary is the same disc as `CircleRegion`, so every planner walks it unchanged -- and that is
+    the honest part of this shape: the toolpath stays 2.5D (constant Z layers), which on a curved blank
+    means the upper layers cut air until they reach the surface. What the curve changes is everything
+    measured *against* the blank: the removal sweep starts its height map on this surface instead of at
+    Z = 0, so the volumes and the height map describe the real part, and the 3D view draws it.
+    """
+
+    diameter_mm: float = 80.0
+    #: Height of the cap above the rim plane.
+    dome_height_mm: float = 12.0
+
+    id: ClassVar[str] = "dome"
+    label: ClassVar[str] = "球冠"
+    description: ClassVar[str] = "圆形毛坯 + 球冠上表面：2.5D 等高分层照旧，但切除仿真与三维显示按曲面起算"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("diameter_mm", "直径 D", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域", help="底面圆的直径，也是球冠的边缘"),
+            spec("dome_height_mm", "球冠高度 h", K.FLOAT, 12.0, minimum=0.5, maximum=200.0,
+                 step=0.5, unit="mm", group="区域",
+                 help="上表面是过一个圆边缘的球冠：中心比边缘高 h。h 越大越鼓，"
+                      "球面半径 Rc = (R² + h²) / (2h) 随参数一起算出"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.diameter_mm <= 0:
+            raise ParameterError("球冠的直径必须为正")
+        if self.dome_height_mm <= 0:
+            raise ParameterError("球冠高度必须为正（0 就不是球冠了）")
+
+    @property
+    def radius_mm(self) -> float:
+        return self.diameter_mm / 2.0
+
+    @property
+    def sphere_radius_mm(self) -> float:
+        """Radius of the sphere the cap is cut from: the one through the rim, centre h above it."""
+
+        radius = self.radius_mm
+        return (radius * radius + self.dome_height_mm**2) / (2.0 * self.dome_height_mm)
+
+    @property
+    def cap_volume_mm3(self) -> float:
+        """Volume of the cap above the rim plane: `pi h^2 (3 Rc - h) / 3`."""
+
+        height, sphere = self.dome_height_mm, self.sphere_radius_mm
+        return float(pi * height * height * (3.0 * sphere - height) / 3.0)
+
+    @property
+    def is_flat_top(self) -> bool:
+        return False
+
+    def top_height_mm(self, x: Any, y: Any) -> Any:
+        radial = np.sqrt(
+            np.asarray(x, dtype=np.float64) ** 2 + np.asarray(y, dtype=np.float64) ** 2
+        )
+        sphere = self.sphere_radius_mm
+        # The cap surface, clamped at the rim plane; outside the disc there is no material at all.
+        surface = np.sqrt(np.maximum(sphere * sphere - radial * radial, 0.0)) - (sphere - self.dome_height_mm)
+        surface = np.maximum(surface, 0.0)
+        values = np.where(radial <= self.radius_mm, surface, np.nan)
+        return float(values) if np.ndim(values) == 0 else values
+
+    def boundary(self) -> NDArray[np.float64]:
+        radius = self.radius_mm
+        angles = np.linspace(0.0, 2.0 * pi, CURVE_SEGMENTS, endpoint=False)
+        return np.column_stack((radius * np.cos(angles), radius * np.sin(angles)))
 
 
 @dataclass(frozen=True, slots=True)

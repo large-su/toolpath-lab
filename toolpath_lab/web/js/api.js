@@ -28,13 +28,17 @@ export async function requestPlan(payload) {
   return response.json();
 }
 
-// The drawing goes up as raw text (the import endpoint takes a file body, not JSON) and the outlines
-// come straight back: the server stores nothing, the caller picks the outline it wants to machine.
-export async function importDxf(text) {
+// The drawing goes up as raw text by default (the import endpoint takes a file body) and the outlines
+// come straight back: the server stores nothing, the caller picks the outline it wants to machine. With
+// import options (the chord tolerance for arcs) the body is JSON instead, because those travel as
+// fields next to the text -- the endpoint accepts both forms.
+export async function importDxf(text, parameters) {
+  const options = parameters || {};
+  const hasOptions = Object.keys(options).length > 0;
   const response = await fetch("/api/import/dxf", {
     method: "POST",
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
-    body: text,
+    headers: hasOptions ? JSON_HEADERS : { "Content-Type": "text/plain; charset=utf-8" },
+    body: hasOptions ? JSON.stringify({ text: text, parameters: options }) : text,
   });
   if (!response.ok) throw new Error(await readError(response));
   return response.json();
