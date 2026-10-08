@@ -257,6 +257,31 @@ def check_http_api() -> tuple[bool, str]:
             outlines = json.loads(body)["outlines"]
             expect(len(outlines) == 1 and outlines[0]["point_count"] == 4,
                    f"DXF 导入的轮廓不对：{outlines}")
+
+            # The closed loop an imported drawing makes possible: its outlines go straight into a
+            # plan, and the exported NC summarises the outline instead of printing its points.
+            imported = {"region": {"shape": "imported", "points": outlines[0]["points"]}}
+            status, body = _request(base, "/api/plan", imported)
+            steps += 1
+            if status != 200:
+                problems.append(f"导入轮廓的规划失败：{status} {body[:60]}")
+            else:
+                plan = json.loads(body)
+                expect(plan["region"]["id"] == "imported"
+                       and plan["region"]["label"] == "导入轮廓"
+                       and plan["region"]["parameters"]["point_count"] == 4,
+                       f"导入轮廓的区域描述不对：{plan['region']['parameters']}")
+                expect(len(plan["region"]["boundary"]) == 4, "导入轮廓的边界点数不对")
+                expect(plan["coverage"] is not None and plan["removal"] is not None,
+                       "导入轮廓没有给出覆盖率与材料切除")
+                expect(plan["toolpath"]["statistics"]["pass_count"] > 0, "导入轮廓没有生成刀轨")
+                expect(plan["request"]["region"]["parameters"]["points"] == outlines[0]["points"],
+                       "导入轮廓的点串没有原样回送给调用方")
+
+            status, nc = _request(base, "/api/export/gcode", imported)
+            steps += 1
+            expect(status == 200 and "region: imported - 4 points" in nc and "points=" not in nc,
+                   f"导出的 NC 头部没有概括导入轮廓：{status}")
     finally:
         server.shutdown()
         server.server_close()

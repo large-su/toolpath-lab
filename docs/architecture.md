@@ -17,8 +17,8 @@ planning ── simulation ┘
       web（原生 ES 模块 + three.js）
 ```
 
-依赖只有一个方向。`core` 不认识任何其它层，`planning` / `simulation` / `export` 只依赖 `core`，
-`server` 组装全部，`web` 只通过 HTTP 说话，`electron` 只负责窗口。由此得到三个好处：
+依赖只有一个方向。`core` 不认识任何其它层，`planning` / `simulation` / `export` / `importers`
+只依赖 `core`，`server` 组装全部，`web` 只通过 HTTP 说话，`electron` 只负责窗口。由此得到三个好处：
 
 - 刀路算法可以脱离界面单独跑（`examples/headless_plan.py`）；
 - 换传输层（CLI、gRPC、ROS 节点）不需要动算法；
@@ -32,7 +32,7 @@ planning ── simulation ┘
 | --- | --- |
 | `parameters.py` | `ParameterSpec` / `ParameterSet`：声明式参数（类型、范围、默认值、单位、中文标签、显隐条件、选项的 disabled），同时驱动界面、校验与文档 |
 | `tool.py` | 刀具：类型、直径、长度，以及由类型推出的**足迹半径**（刀路相对轮廓的偏置量） |
-| `region.py` | 区域形状：方形、矩形、圆形、椭圆、U 形、哑铃形、三角形，统一输出逆时针边界多边形（曲线用 180 段折线逼近） |
+| `region.py` | 区域形状：方形、矩形、圆形、椭圆、U 形、哑铃形、三角形，统一输出逆时针边界多边形（曲线用 180 段折线逼近）；另有**导入轮廓**（`region_from_points`），它刻意不注册进目录——几何来自图纸的点串而不是参数 |
 | `path.py` | `Move`（切削/连接/快移 + 进给）与 `Toolpath`（统计、载荷） |
 | `registry.py` | 通用能力注册表（区域形状、策略共用） |
 | `payload.py` | 请求字典 → 领域对象的拆解工具 |
@@ -73,16 +73,26 @@ planning ── simulation ┘
 总采样数（默认 4000），同时保留每段边界，所以播放不会跨段插值。载荷里 `times` / `positions`
 是逐采样数组，`kind_runs` / `move_runs` 是游程编码。
 
-### export / server / web / electron
+### export / importers / server / web / electron
 
 - `export/gcode.py`：G21 / G90 / G17 + G0 / G1 带 F 的最常见 ISO 子集；
 - `export/csv.py`：一个刀点一行的点表（纯 ASCII，`move_index,pass_index,kind,feed,…,x,y,z`）；
+- `importers/dxf.py`：最小的 DXF 2D 轮廓读取器（`LWPOLYLINE`、`POLYLINE` 与首尾相连的 `LINE`；
+  圆弧与圆**不猜**，如实列进 `skipped` 并给出中文提醒）。纯函数：吃文本、吐轮廓，读写文件留给
+  调用方；它只依赖 `core`，与 `export/` 对称。
 - `server`：标准库 `ThreadingHTTPServer`。`schema.py` 是唯一的请求校验入口，`service.py` 组装响应，
   `catalog.py` 生成能力目录，`app.py` 只做路由与错误码映射（400 参数错误 / 422 几何不可行 / 404 / 405）；
   静态文件只从 `web/` 提供并做了路径穿越防护；
+  - `/api/import/dxf` 是无状态的：请求体是原始 DXF 文本（或 `{"text": "..."}`），返回轮廓的点串、
+    是否闭合、层名与跳过项，**不落任何盘**；调用方再把选中的点串发给 `/api/plan`。
+  - `schema.py` 里**唯一**一条不走参数系统的分支是 `region.shape == "imported"`：点串交给
+    `region_from_points`（`ParameterSpec` 没有列表类型），规范化后的点串再回显进 `request`。
+    因为点串可能很长，`ImportedOutlineRegion` 在响应里只报 `point_count`，导出头部走
+    `header_text()` 写成 `imported - N points`——点串在响应里已经出现两次（请求回显 + 边界多边形）。
 - `web`：`panel.js` 依据目录生成控件（显示开关也在里面），`viewport.js` 负责 three.js 场景与相机
   （工件按区域边界多边形挤出，未切除区域按后端给的矩形叠一层半透明警示色，所以新增形状不用改前端），
-  `playback.js` 是纯逻辑的时间插值器，`main.js` 负责串联；
+  `playback.js` 是纯逻辑的时间插值器，`main.js` 负责串联；导入轮廓是唯一一处界面自己加的下拉项
+  （导入成功后才有，见 `panel.js` 的 `IMPORTED_ID`）；
 - `electron/main.mjs`：挑一个空闲端口 → 拉起 `python -m toolpath_lab` → 轮询 `/api/health` →
   装进原生窗口；关窗时结束后端。前端是普通静态文件，所以不需要打包器。
 
@@ -146,7 +156,8 @@ planning ── simulation ┘
 
 - 想加**参数**：在对应能力的 `ParameterSet` 里加一行 `spec(...)`，界面与校验自动跟上；
   所有策略都用得到的动作参数并进 `MOTION_PARAMETERS`，只有单个策略需要的写在它自己的 set 里；
-- 想加**形状**：写一个 `boundary()` 返回逆时针多边形；
+- 想加**形状**：写一个 `boundary()` 返回逆时针多边形；进接口与导出头部的描述默认由
+  `to_params()` 生成，若它不适合直接打印（例如一串点），覆写 `header_text()` 给一句简短的写法；
 - 想加**策略**：继承 `Planner` 并注册，见 extending.md；
 - 想加**曲面 / 三维区域**：给区域加高度场、给 `Move` 加刀轴字段，再在策略里逐点采样；
 - 想加**导出格式**：在 `export/` 写一个纯函数，在 `server/app.py` 加一个分支。

@@ -22,7 +22,7 @@ shape (the U) yields several intervals, so one row can carry several independent
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from math import pi
+from math import isfinite, pi
 from typing import Any, ClassVar, Mapping
 
 import numpy as np
@@ -59,6 +59,15 @@ class RegionShape:
 
     def to_params(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
+
+    def header_text(self) -> str:
+        """One line describing the region in a self-describing export header.
+
+        A shape whose description is not a handful of numbers overrides this: an imported outline
+        states how many points it has instead of printing the whole list into the file.
+        """
+
+        return f"{self.id} - {_format_parameters(self.to_params())}"
 
     def describe(self) -> dict[str, Any]:
         polygon = self.boundary()
@@ -383,6 +392,14 @@ class ImportedOutlineRegion(RegionShape):
     label: ClassVar[str] = "导入轮廓"
     description: ClassVar[str] = "从图纸导入的闭合轮廓（点串随请求给出）"
 
+    def to_params(self) -> dict[str, Any]:
+        """Just the point count: the list itself is already in the boundary of the same response."""
+
+        return {"point_count": len(self.points)}
+
+    def header_text(self) -> str:
+        return f"{self.id} - {len(self.points)} points"
+
     def boundary(self) -> NDArray[np.float64]:
         polygon = np.asarray(self.points, dtype=np.float64).reshape(-1, 2)
         if polygon.shape[0] < 3:
@@ -392,6 +409,10 @@ class ImportedOutlineRegion(RegionShape):
         if _signed_polygon_area(polygon) < 0.0:
             polygon = polygon[::-1]
         return np.ascontiguousarray(polygon)
+
+
+def _format_parameters(parameters: Mapping[str, Any]) -> str:
+    return ", ".join(f"{key}={value}" for key, value in parameters.items())
 
 
 def _signed_polygon_area(polygon: NDArray[np.float64]) -> float:
@@ -406,14 +427,24 @@ def region_from_points(points) -> RegionShape:
     parameter system: the DXF importer hands over a point list, and a ParameterSpec cannot describe
     one. Everything else (tool, strategy, all their parameters) still goes through the declarations,
     and the region still has to satisfy the same boundary contract.
+
+    Points are pairs, because a region is planar: a third coordinate is refused here rather than
+    silently dropped, since the boundary is built by reshaping the list to (N, 2) and a "flattened"
+    list could otherwise pass this check and only fail later, deeper inside planning. That also means
+    the boundary a plan response carries has to lose its trailing Z before it can be sent back.
     """
 
     cleaned: list[tuple[float, float]] = []
     for point in points:
         values = list(point)
-        if len(values) < 2:
-            raise ParameterError("导入轮廓的点必须是 [x, y]")
-        cleaned.append((float(values[0]), float(values[1])))
+        if len(values) != 2:
+            raise ParameterError("导入轮廓的点必须是 [x, y]（2.5D 区域是平面，不要带 Z）")
+        x, y = float(values[0]), float(values[1])
+        # JSON can carry NaN and infinity, and every other number in the project is checked against
+        # that (ParameterSpec._coerce_number); a non-finite point would poison the whole plan.
+        if not (isfinite(x) and isfinite(y)):
+            raise ParameterError("导入轮廓的点坐标必须是有限值")
+        cleaned.append((x, y))
     if len(cleaned) < 3:
         raise ParameterError("导入的轮廓至少需要 3 个点")
     first, last = cleaned[0], cleaned[-1]

@@ -32,7 +32,14 @@ described by parameter declarations, and the parameter panel is generated from t
 - **Regions**: square, rectangle, circle, ellipse, U shape, dumbbell and triangle, all centred at the
   origin and machined on the XY plane. Each one reduces to a single counter-clockwise boundary
   polygon, which is what the toolpath planners clip against and what the 3D workpiece is extruded
-  from - so a new shape needs no change to any strategy or to the front-end.
+  from - so a new shape needs no change to any strategy or to the front-end. A region can also come
+  from a drawing, see the next bullet.
+- **Drawing import**: pick a DXF file in the panel and the backend reads its closed outlines
+  (`LWPOLYLINE`, `POLYLINE` and end-to-end `LINE` loops; arcs and circles are reported as skipped
+  rather than guessed), then the outline you choose becomes the region. An imported outline is
+  deliberately *not* registered in the catalogue: the shape selector only grows an "imported outline"
+  entry once a file has actually been read, and the point list travels with the planning request. The
+  exported NC header states `imported - N points` instead of printing thousands of coordinates.
 - **Strategies**:
   - **raster** - parallel passes, `zigzag` (every other pass reversed, consecutive passes linked) or
     `one_way` (all passes in the same direction, retracting in between);
@@ -98,7 +105,9 @@ The left side is the parameter panel; the right side holds the 3D view, statisti
 ![Top view](docs/images/screenshot-top.png)
 
 The parameter panel is generated from `/api/catalog`: adding a region shape or a toolpath strategy
-makes its controls appear in the interface without touching the front-end.
+makes its controls appear in the interface without touching the front-end. The single exception is
+the imported outline: its geometry is a point list rather than parameters, so it is deliberately kept
+out of the catalogue and the panel only adds that entry once a drawing has actually been read.
 
 ## Requirements
 
@@ -161,6 +170,12 @@ print(outcome.toolpath.statistics())
 | `POST /api/export/gcode` | Export the NC program |
 | `POST /api/export/csv` | Export the CSV point table |
 | `POST /api/import/dxf` | Read the 2D outlines of a DXF drawing (raw DXF text or `{"text": "..."}`) |
+
+`/api/plan` also takes an imported outline:
+`{"region": {"shape": "imported", "points": [[x, y], ...]}}`, where the points come from
+`/api/import/dxf`. Fewer than three points, a point that is not `[x, y]`, or a non-finite coordinate
+is a `400`. Such a region is absent from `/api/catalog`: it is the one region whose geometry is not
+built through the parameter system.
 
 ```bash
 curl http://127.0.0.1:8770/api/catalog

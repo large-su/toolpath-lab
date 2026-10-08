@@ -28,6 +28,18 @@ export async function requestPlan(payload) {
   return response.json();
 }
 
+// The drawing goes up as raw text (the import endpoint takes a file body, not JSON) and the outlines
+// come straight back: the server stores nothing, the caller picks the outline it wants to machine.
+export async function importDxf(text) {
+  const response = await fetch("/api/import/dxf", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+    body: text,
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  return response.json();
+}
+
 // Export: the backend always answers with Content-Disposition, so it owns the file name and type.
 const FALLBACK_NAMES = { gcode: "toolpath.nc", csv: "toolpath.csv" };
 

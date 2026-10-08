@@ -7,7 +7,12 @@ import unittest
 import numpy as np
 
 from toolpath_lab.core.errors import ParameterError
-from toolpath_lab.core.region import ImportedOutlineRegion, region_catalog, region_from_points
+from toolpath_lab.core.region import (
+    ImportedOutlineRegion,
+    build_region,
+    region_catalog,
+    region_from_points,
+)
 from toolpath_lab.core.tool import Tool, ToolKind
 from toolpath_lab.planning import measure_coverage, run_plan
 
@@ -44,10 +49,45 @@ class ConstructionTests(unittest.TestCase):
         with self.assertRaises(ParameterError):
             region_from_points([(0.0, 0.0), (1.0, 1.0), (2.0,)])
 
+    def test_a_three_dimensional_point_is_rejected_instead_of_flattened(self) -> None:
+        """A plan response carries its boundary as [x, y, 0]; sending that back has to say so."""
+
+        for point in ((2.0, 3.0, 0.0), (2.0, 3.0, 5.0)):
+            with self.subTest(point=point):
+                with self.assertRaises(ParameterError):
+                    region_from_points([(0.0, 0.0), (10.0, 0.0), point])
+
+    def test_a_non_finite_coordinate_is_rejected(self) -> None:
+        """JSON can carry NaN and infinity; the parameter layer refuses them, so this must too."""
+
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ParameterError):
+                    region_from_points([(0.0, 0.0), (10.0, 0.0), (5.0, bad)])
+
     def test_it_is_not_offered_in_the_catalogue(self) -> None:
         """The UI must never offer a shape whose points it cannot supply."""
 
         self.assertNotIn("imported", [entry["id"] for entry in region_catalog()])
+
+
+class DescriptionTests(unittest.TestCase):
+    """What an imported outline tells a caller: a count, never the whole point list."""
+
+    def test_the_description_counts_the_points_instead_of_dumping_them(self) -> None:
+        described = region_from_points(CLOCKWISE).describe()
+        self.assertEqual(described["id"], "imported")
+        self.assertEqual(described["parameters"], {"point_count": 4})
+        self.assertAlmostEqual(described["area_mm2"], 60 * 40, places=6)
+
+    def test_the_export_header_states_the_point_count(self) -> None:
+        self.assertEqual(region_from_points(CLOCKWISE).header_text(), "imported - 4 points")
+
+    def test_a_registered_shape_keeps_its_parameters_in_the_header(self) -> None:
+        # The other half of the rule: only an imported outline is summarised.
+        self.assertEqual(
+            build_region("square", {"side_mm": 50.0}).header_text(), "square - side_mm=50.0"
+        )
 
 
 class PlanningTests(unittest.TestCase):

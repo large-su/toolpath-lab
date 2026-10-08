@@ -1,6 +1,6 @@
 // App assembly: catalog -> parameter panel -> planning request -> viewport and playback.
 
-import { downloadExport, fetchCatalog, requestPlan } from "./api.js";
+import { downloadExport, fetchCatalog, importDxf, requestPlan } from "./api.js";
 import { ParameterPanel } from "./panel.js";
 import { Playback } from "./playback.js";
 import { VIEW_BUTTONS, Viewport } from "./viewport.js";
@@ -81,6 +81,9 @@ async function boot() {
     catalog: catalog,
     onChange: scheduleRegenerate,
     onDisplayChange: (options) => viewport.setDisplayOptions(options),
+    // The import is stateless: the drawing text goes up, the outlines come back to the panel.
+    importDxf: importDxf,
+    notice: showBanner,
   });
   viewport.setDisplayOptions(panel.displayOptions());
   wireButtons();
@@ -206,9 +209,16 @@ function statRow(label, value) {
 
 // The region size comes from the parameters the shape declares, so a new shape needs no change here.
 function regionSummary(region) {
+  const values = region.parameters || {};
+  if (region.id === "imported") {
+    // An imported outline is not in the catalogue: report how many points it is made of.
+    const count = values.point_count !== undefined
+      ? values.point_count
+      : (region.boundary || []).length;
+    return (region.label || "导入轮廓") + " · " + count + " 个点";
+  }
   const shapes = (catalog && catalog.regions && catalog.regions.shapes) || [];
   const shape = shapes.find((item) => item.id === region.id);
-  const values = region.parameters || {};
   const parts = ((shape && shape.parameters) || [])
     .filter((item) => values[item.key] !== undefined)
     .map((item) => item.label + " " + values[item.key] + (item.unit ? " " + item.unit : ""));

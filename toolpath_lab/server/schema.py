@@ -7,11 +7,16 @@ deals with transport details and every endpoint shares the same defaults, valida
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.payload import coerce_group, split_capability
-from toolpath_lab.core.region import RegionShape, build_region
+from toolpath_lab.core.region import (
+    ImportedOutlineRegion,
+    RegionShape,
+    build_region,
+    region_from_points,
+)
 from toolpath_lab.core.tool import Tool, tool_parameters
 from toolpath_lab.planning.registry import PLANNERS
 from toolpath_lab.server.catalog import DEFAULT_PLANNER_ID, DEFAULT_REGION_ID
@@ -46,7 +51,11 @@ class PlanRequest:
             default_id=DEFAULT_REGION_ID,
             label="region",
         )
-        region = build_region(region_id, region_parameters)
+        if region_id == ImportedOutlineRegion.id:
+            region, region_parameters = _imported_region(region_parameters)
+        else:
+            region = build_region(region_id, region_parameters)
+            region_parameters = region.parameters.coerce(region_parameters)
 
         planner_id, planner_parameters = split_capability(
             coerce_group(payload, "planner"),
@@ -62,7 +71,7 @@ class PlanRequest:
             planner_id=planner_id,
             tool_parameters=tool_values,
             region_id=region_id,
-            region_parameters=region.parameters.coerce(region_parameters),
+            region_parameters=region_parameters,
             planner_parameters=planner_class.parameters.coerce(planner_parameters),
         )
 
@@ -81,9 +90,34 @@ class PlanRequest:
         planner_label = PLANNERS.get(self.planner_id).label
         return [
             f"tool: {self.tool.kind.value} D{self.tool.diameter_mm:g} mm L{self.tool.length_mm:g} mm",
-            f"region: {self.region_id} - {_format(self.region_parameters)}",
+            f"region: {self.region.header_text()}",
             f"strategy: {self.planner_id} ({planner_label}) - {_format(self.planner_parameters)}",
         ]
+
+
+def _imported_region(
+    parameters: Mapping[str, Any],
+) -> tuple[RegionShape, dict[str, Any]]:
+    """Build the region of an ``shape: "imported"`` request out of its point list.
+
+    The point list is the second thing in the project that cannot travel through the parameter
+    system (a ParameterSpec has no list kind) -- `region_from_points` in core/region.py owns that
+    contract and is the only place the geometry is built. What is echoed back is normalised to the
+    points that were actually planned (closing point dropped), so the UI can resend the request.
+    """
+
+    points = parameters.get("points")
+    if points is None:
+        raise ParameterError(
+            "导入轮廓缺少 points：请先 POST /api/import/dxf 取得轮廓，再把点串随请求发来"
+        )
+    if isinstance(points, (str, bytes)) or not isinstance(points, Sequence):
+        raise ParameterError("导入轮廓的 points 必须是 [x, y] 点串组成的数组")
+    try:
+        region = region_from_points(points)
+    except (TypeError, ValueError) as error:
+        raise ParameterError(f"导入轮廓的点串无法解析：{error}") from error
+    return region, {"points": [[x, y] for x, y in region.points]}
 
 
 def _format(parameters: Mapping[str, Any]) -> str:

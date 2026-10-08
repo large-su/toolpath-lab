@@ -10,6 +10,10 @@ import urllib.request
 
 from toolpath_lab.server.app import ToolpathLabHandler, create_server
 
+#: A 60 x 40 outline as a drawing hands it over: counter-clockwise, with the first point repeated at
+#: the end, so the region layer has to drop that closing point. Used by the imported-outline tests.
+IMPORTED_POINTS = [[0.0, 0.0], [60.0, 0.0], [60.0, 40.0], [0.0, 40.0], [0.0, 0.0]]
+
 
 class ApiTestCase(unittest.TestCase):
     @classmethod
@@ -187,6 +191,101 @@ class PlanTests(ApiTestCase):
     def test_unknown_region_shape_is_a_bad_request(self) -> None:
         status, payload, _ = self.plan({"region": {"shape": "hexagon"}})
         self.assertEqual(status, 400)
+
+    def test_an_imported_outline_is_planned_from_the_request_points(self) -> None:
+        """`shape: "imported"` turns the point list from /api/import/dxf into a normal plan."""
+
+        status, payload, _ = self.plan(
+            {"region": {"shape": "imported", "points": IMPORTED_POINTS}}
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["request"]["region"]["shape"], "imported")
+        # The points are echoed back normalised (the closing point of the drawing is dropped), so the
+        # UI can resend exactly the request it made.
+        self.assertEqual(
+            payload["request"]["region"]["parameters"]["points"],
+            [[0.0, 0.0], [60.0, 0.0], [60.0, 40.0], [0.0, 40.0]],
+        )
+        self.assertEqual(payload["region"]["id"], "imported")
+        self.assertEqual(payload["region"]["parameters"]["point_count"], 4)
+        self.assertEqual(len(payload["region"]["boundary"]), 4)
+        self.assertIsNotNone(payload["coverage"])
+        self.assertIsNotNone(payload["removal"])
+        self.assertGreater(payload["toolpath"]["statistics"]["pass_count"], 0)
+
+    def test_an_imported_outline_plans_like_the_same_shape_built_from_parameters(self) -> None:
+        """Cross check: the 60 x 40 outline gives the same path as the 60 x 40 rectangle region."""
+
+        _, imported, _ = self.plan(
+            {
+                "region": {"shape": "imported", "points": IMPORTED_POINTS},
+                "planner": {"id": "raster", "parameters": {"stepover_mm": 6.0}},
+            }
+        )
+        _, rectangle, _ = self.plan(
+            {
+                "region": {"shape": "rectangle", "parameters": {"width_mm": 60.0, "height_mm": 40.0}},
+                "planner": {"id": "raster", "parameters": {"stepover_mm": 6.0}},
+            }
+        )
+        self.assertEqual(
+            imported["toolpath"]["statistics"]["point_count"],
+            rectangle["toolpath"]["statistics"]["point_count"],
+        )
+        self.assertAlmostEqual(
+            imported["toolpath"]["statistics"]["cut_length_mm"],
+            rectangle["toolpath"]["statistics"]["cut_length_mm"],
+            places=6,
+        )
+
+    def test_the_export_header_summarises_an_imported_outline(self) -> None:
+        status, body, _ = self.post(
+            "/api/export/gcode", {"region": {"shape": "imported", "points": IMPORTED_POINTS}}
+        )
+        self.assertEqual(status, 200)
+        text = body.decode("utf-8")
+        self.assertIn("region: imported - 4 points", text)
+        # A drawing can hold thousands of points; the header states the count instead of the list.
+        self.assertNotIn("points=", text)
+
+    def test_an_imported_outline_needs_its_points(self) -> None:
+        status, payload, _ = self.plan({"region": {"shape": "imported"}})
+        self.assertEqual(status, 400)
+        self.assertIn("points", payload["error"])
+
+    def test_the_nested_parameter_form_is_accepted_too(self) -> None:
+        # The UI sends {"shape": "imported", "parameters": {"points": [...]}}; the flat form and the
+        # nested one both have to work, because everything else in the payload is nested.
+        status, payload, _ = self.plan(
+            {"region": {"shape": "imported", "parameters": {"points": IMPORTED_POINTS}}}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["region"]["parameters"]["point_count"], 4)
+
+    def test_a_degenerate_outline_is_not_a_server_error(self) -> None:
+        # Three collinear points are a legal point list but have no area to machine: infeasible
+        # geometry (422) is a decision, an internal error would be a bug.
+        status, _, _ = self.plan(
+            {"region": {"shape": "imported", "points": [[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]]}}
+        )
+        self.assertEqual(status, 422)
+
+    def test_a_short_or_malformed_point_list_is_a_bad_request(self) -> None:
+        cases = (
+            [[0.0, 0.0], [40.0, 0.0]],  # fewer than three points
+            [[0.0, 0.0], [40.0, 0.0], [20.0]],  # a point without two coordinates
+            [[0.0, 0.0], [60.0, 0.0], [60.0, 40.0, 0.0]],  # the response's own [x, y, z] boundary
+            [[0.0, 0.0], [40.0, 0.0], [20.0, float("nan")]],  # JSON carries NaN, a plan must not
+            "0,0 40,0 20,30",  # a string is not a point list
+        )
+        for points in cases:
+            with self.subTest(points=points):
+                status, payload, _ = self.plan(
+                    {"region": {"shape": "imported", "points": points}}
+                )
+                self.assertEqual(status, 400)
+                self.assertTrue(payload["error"])
 
     def test_invalid_value_is_a_bad_request(self) -> None:
         status, payload, _ = self.plan({"tool": {"diameter_mm": -3}})
