@@ -74,6 +74,17 @@ TOOL_KINDS: tuple[Choice, ...] = (
 
 TOOL_KIND_LABELS: dict[str, str] = {choice.value: choice.label for choice in TOOL_KINDS}
 
+#: Parameter keys of the tool group, in declaration order (the panel fills exactly these from a preset).
+TOOL_PARAMETER_KEYS: tuple[str, ...] = (
+    "kind",
+    "diameter_mm",
+    "length_mm",
+    "corner_radius_mm",
+    "taper_angle_deg",
+    "flute_length_mm",
+    "shank_diameter_mm",
+)
+
 
 def tool_parameters() -> ParameterSet:
     """Parameter declarations for the tool group (drives both the UI and request validation)."""
@@ -259,3 +270,96 @@ class Tool:
             "flank_radius_mm": self.flank_radius_mm,
             "shank_radius_mm": self.shank_radius_mm,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ToolPreset:
+    """A named tool the panel offers as a starting point.
+
+    A preset is a **shortcut, not a second configuration system** (CONTRIBUTING: user facing switches
+    live in a ParameterSet): picking one copies its values into the very fields the user edits by hand,
+    so the request that reaches the API is the same in both cases and nothing has to be read back out
+    of the preset later. That is also why the values carry every tool parameter key -- the panel fills
+    the whole group from them.
+    """
+
+    id: str
+    label: str
+    description: str
+    values: Mapping[str, Any]
+
+    def describe(self) -> dict[str, Any]:
+        """JSON form published in the catalogue."""
+
+        return {
+            "id": self.id,
+            "label": self.label,
+            "description": self.description,
+            "values": dict(self.values),
+        }
+
+
+#: The tool library. Every entry has to be a *valid* tool that plans (tests build each one and run a
+#: plan with it), because a preset that the API rejects would be a broken button in the panel.
+TOOL_LIBRARY: tuple[ToolPreset, ...] = (
+    ToolPreset(
+        id="flat_d6",
+        label="平底 D6（通用）",
+        description="默认的通用平底刀：面铣与型腔都用它，刀刃与刀柄取自动值",
+        values={
+            "kind": "flat", "diameter_mm": 6.0, "length_mm": 30.0, "corner_radius_mm": 0.0,
+            "taper_angle_deg": 0.0, "flute_length_mm": 0.0, "shank_diameter_mm": 0.0,
+        },
+    ),
+    ToolPreset(
+        id="flat_d10",
+        label="平底 D10（面铣）",
+        description="大刀面铣：切宽可以开大，同样的区域刀轨数明显更少",
+        values={
+            "kind": "flat", "diameter_mm": 10.0, "length_mm": 40.0, "corner_radius_mm": 0.0,
+            "taper_angle_deg": 0.0, "flute_length_mm": 0.0, "shank_diameter_mm": 0.0,
+        },
+    ),
+    ToolPreset(
+        id="ball_d6",
+        label="球头 D6（精加工）",
+        description="球头刀：平面足迹是一个点，覆盖率天然很低，用来对比刀路与残留",
+        values={
+            "kind": "ball", "diameter_mm": 6.0, "length_mm": 30.0, "corner_radius_mm": 0.0,
+            "taper_angle_deg": 0.0, "flute_length_mm": 12.0, "shank_diameter_mm": 0.0,
+        },
+    ),
+    ToolPreset(
+        id="bull_d10",
+        label="圆鼻 D10 Rc2",
+        description="圆鼻刀：底平带 R2 圆角，粗精之间，贴壁间隙按整段切深的外伸半径算",
+        values={
+            "kind": "bull", "diameter_mm": 10.0, "length_mm": 40.0, "corner_radius_mm": 2.0,
+            "taper_angle_deg": 0.0, "flute_length_mm": 0.0, "shank_diameter_mm": 0.0,
+        },
+    ),
+    ToolPreset(
+        id="taper_d6_15",
+        label="锥度 15°（D6）",
+        description="锥度刀：刀刃 8 mm、刀柄比锥面顶端细（缩颈），深腔里靠贴壁间隙让出锥面",
+        values={
+            "kind": "flat", "diameter_mm": 6.0, "length_mm": 30.0, "corner_radius_mm": 0.0,
+            "taper_angle_deg": 15.0, "flute_length_mm": 8.0, "shank_diameter_mm": 8.0,
+        },
+    ),
+    ToolPreset(
+        id="micro_d3",
+        label="细小 D3（清角）",
+        description="小刀清角：刀柄比刀刃粗，切深超过 6 mm 刀刃后刀柄会顶到壁（碰撞检查会报）",
+        values={
+            "kind": "flat", "diameter_mm": 3.0, "length_mm": 25.0, "corner_radius_mm": 0.0,
+            "taper_angle_deg": 0.0, "flute_length_mm": 6.0, "shank_diameter_mm": 4.0,
+        },
+    ),
+)
+
+
+def tool_library() -> list[dict[str, Any]]:
+    """The tool library in the same JSON shape the rest of the catalogue uses."""
+
+    return [preset.describe() for preset in TOOL_LIBRARY]

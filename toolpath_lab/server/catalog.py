@@ -11,7 +11,7 @@ from typing import Any
 
 from toolpath_lab import __version__
 from toolpath_lab.core.region import REGION_SHAPES, region_catalog
-from toolpath_lab.core.tool import tool_parameters
+from toolpath_lab.core.tool import tool_library, tool_parameters
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
 
 DEFAULT_REGION_ID = "square"
@@ -42,6 +42,9 @@ def catalog_payload() -> dict[str, Any]:
         "tool": {
             "parameters": tool_parameters().to_dicts(),
             "defaults": default_tool_parameters(),
+            # Named tools the panel offers as a starting point; picking one only fills the same
+            # parameter fields, so nothing about a request depends on the library.
+            "library": tool_library(),
         },
         "regions": {
             "shapes": region_catalog(),

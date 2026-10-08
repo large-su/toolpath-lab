@@ -142,6 +142,24 @@ class CatalogTests(ApiTestCase):
         self.assertEqual([item["value"] for item in kinds], ["flat", "ball", "bull"])
         self.assertEqual([item["disabled"] for item in kinds], [False, False, False])
 
+    def test_the_catalog_publishes_the_tool_library(self) -> None:
+        """The panel fills its tool fields from here, so every entry has to be a working request."""
+
+        _, body, _ = self.get("/api/catalog")
+        library = json.loads(body)["tool"]["library"]
+        self.assertGreaterEqual(len(library), 4)
+        parameter_keys = {item["key"] for item in json.loads(body)["tool"]["parameters"]}
+        for entry in library:
+            with self.subTest(tool=entry["id"]):
+                self.assertEqual(set(entry["values"]), parameter_keys)
+                status, payload, _ = self.plan({"tool": entry["values"]})
+                self.assertEqual(status, 200, payload.get("error"))
+                self.assertEqual(payload["tool"]["kind"], entry["values"]["kind"])
+                self.assertGreater(payload["toolpath"]["statistics"]["pass_count"], 0)
+        # Picking a preset is a shortcut, not a new request shape: no library key travels with a plan.
+        _, planned, _ = self.plan({"tool": library[0]["values"]})
+        self.assertNotIn("library", planned["request"]["tool"])
+
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.get("/api/nope")

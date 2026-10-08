@@ -6,7 +6,17 @@ import unittest
 from math import radians, tan
 
 from toolpath_lab.core.errors import ParameterError
-from toolpath_lab.core.tool import TOOL_KINDS, Tool, ToolKind, tool_parameters
+from toolpath_lab.core.region import build_region
+from toolpath_lab.core.tool import (
+    TOOL_KINDS,
+    TOOL_LIBRARY,
+    TOOL_PARAMETER_KEYS,
+    Tool,
+    ToolKind,
+    tool_library,
+    tool_parameters,
+)
+from toolpath_lab.planning import run_plan
 
 
 class ToolGeometryTests(unittest.TestCase):
@@ -89,6 +99,67 @@ class TaperTests(unittest.TestCase):
         self.assertEqual(tool_parameters().spec("taper_angle_deg").maximum, 45.0)
         with self.assertRaises(ParameterError):
             tool_parameters().coerce({"taper_angle_deg": 60.0})
+
+
+class ToolLibraryTests(unittest.TestCase):
+    """The named tools the panel offers: shortcuts that have to be plan-able tools themselves."""
+
+    def test_every_entry_fills_the_whole_tool_group(self) -> None:
+        keys = {item.key for item in tool_parameters()}
+        self.assertEqual(set(TOOL_PARAMETER_KEYS), keys)
+        for preset in TOOL_LIBRARY:
+            with self.subTest(preset=preset.id):
+                self.assertEqual(set(preset.values), keys)
+
+    def test_ids_are_unique_and_machine_friendly(self) -> None:
+        ids = [preset.id for preset in TOOL_LIBRARY]
+        self.assertEqual(len(ids), len(set(ids)))
+        for preset_id in ids:
+            self.assertTrue(preset_id.isidentifier(), preset_id)
+
+    def test_every_entry_builds_a_valid_tool(self) -> None:
+        for preset in TOOL_LIBRARY:
+            with self.subTest(preset=preset.id):
+                tool = Tool.from_parameters(preset.values)
+                self.assertGreater(tool.diameter_mm, 0.0)
+                self.assertGreater(tool.flute_mm, 0.0)
+                self.assertLessEqual(tool.flute_mm, tool.length_mm)
+
+    def test_every_entry_plans(self) -> None:
+        """A preset the API rejects would be a broken button, so each one has to run a plan."""
+
+        for preset in TOOL_LIBRARY:
+            with self.subTest(preset=preset.id):
+                outcome = run_plan(
+                    planner_id="raster",
+                    tool=Tool.from_parameters(preset.values),
+                    region=build_region("square", {}),
+                    parameters={"stepover_mm": 6.0},
+                )
+                self.assertGreater(outcome.toolpath.pass_count, 0)
+                self.assertGreater(outcome.toolpath.cut_length_mm, 0.0)
+
+    def test_the_library_says_what_each_tool_is_for(self) -> None:
+        for preset in TOOL_LIBRARY:
+            with self.subTest(preset=preset.id):
+                self.assertTrue(preset.label.strip())
+                self.assertTrue(preset.description.strip())
+                described = preset.describe()
+                self.assertEqual(sorted(described), ["description", "id", "label", "values"])
+                self.assertIsNot(described["values"], preset.values)  # a copy, not the library itself
+
+    def test_the_tapered_and_the_necked_entries_really_are(self) -> None:
+        """The two entries that exercise the newer geometry have to keep exercising it."""
+
+        tapered = Tool.from_parameters(
+            next(item for item in TOOL_LIBRARY if item.id == "taper_d6_15").values
+        )
+        self.assertGreater(tapered.flank_radius_mm, tapered.radius_mm)
+        self.assertLess(tapered.shank_radius_mm, tapered.flank_radius_mm)  # necked under the cone
+        micro = Tool.from_parameters(
+            next(item for item in TOOL_LIBRARY if item.id == "micro_d3").values
+        )
+        self.assertGreater(micro.shank_radius_mm, micro.radius_mm)  # a fat shank warns in deep cuts
 
 
 class ToolParameterTests(unittest.TestCase):

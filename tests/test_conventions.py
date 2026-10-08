@@ -18,7 +18,7 @@ from pathlib import Path
 
 from toolpath_lab.planning import planner_catalog, run_plan
 from toolpath_lab.core.region import build_region, region_catalog
-from toolpath_lab.core.tool import Tool, ToolKind
+from toolpath_lab.core.tool import Tool, ToolKind, tool_library
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_ROOTS = ("toolpath_lab", "tests", "examples")
@@ -86,6 +86,16 @@ class UserFacingTextTests(unittest.TestCase):
                             self.assertGreater(_chinese_characters(choice["label"]), 0)
                     if parameter.get("help"):
                         self.assertGreater(_chinese_characters(parameter["help"]), 0)
+
+    def test_the_tool_library_is_chinese_too(self) -> None:
+        """A named tool is user facing text like any other catalogue entry."""
+
+        entries = tool_library()
+        self.assertTrue(entries)
+        for entry in entries:
+            with self.subTest(item=entry["id"]):
+                self.assertGreater(_chinese_characters(entry["label"]), 0)
+                self.assertGreater(_chinese_characters(entry["description"]), 0)
 
     def test_notes_and_warnings_are_chinese(self) -> None:
         tool = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0)

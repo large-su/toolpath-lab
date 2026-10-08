@@ -30,6 +30,11 @@ described by parameter declarations, and the parameter panel is generated from t
   the deepest layer instead of gouging it. Coverage sweeps the flat contact on the floor: the full
   radius for a flat mill, `R - Rc` for a bull nose, and a single point for a ball nose, whose real
   surface is a scalloped envelope this model does not simulate.
+- **Tool library**: the top of the tool section offers a preset selector with six common tools (flat
+  D6 and D10, ball D6, bull D10 Rc2, a 15 degree taper, a small D3); picking one copies its values into
+  the same parameter fields below. A preset is a shortcut, not a second configuration system: editing
+  any value returns the selector to "custom", and the request that reaches the API is identical either
+  way (a test asserts that no library field travels with a plan).
 - **Tapered tools** (`taper_angle_deg`, half-angle, 0 = straight by default): the flanks open by
   `tan(angle)` of radius per millimetre of height, and the diameter parameter is then the diameter **at
   the tip**. The taper feeds into the wall clearance, which grows with the cut depth -- so a tapered
@@ -124,6 +129,8 @@ The left side is the parameter panel; the right side holds the 3D view, statisti
 | Middle wheel | Zoom |
 | Right drag | Pan |
 
+- **Tool** (top of the parameter panel): a preset selector plus the parameters; picking a preset fills
+  them, and editing any value returns the selector to "custom".
 - **View toolbar** (top centre): fit / front / back / left / right / top / bottom; clicking the active
   direction again flips to the opposite side.
 - **Appearance toggles** (top left): live shadows, white background, grid floor.

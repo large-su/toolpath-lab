@@ -23,6 +23,12 @@ const IMPORTED_SHAPE = {
   parameters: [],
 };
 
+// The tool library lives in the backend catalogue (core/tool.py); the panel only needs to know which
+// entry means "the fields below no longer match a preset".
+const CUSTOM_TOOL_ID = "custom";
+const CUSTOM_TOOL_LABEL = "自定义";
+const CUSTOM_TOOL_HELP = "当前刀具参数不完全是库里某一项；改动任一数值都会回到这里";
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -133,7 +139,7 @@ export class ParameterPanel {
   render() {
     this.rows = [];
     this.root.replaceChildren(
-      this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
+      this._toolSection(),
       this._regionSection(),
       this._plannerSection(),
       this._displaySection()
@@ -150,17 +156,48 @@ export class ParameterPanel {
     return section;
   }
 
-  _capabilitySection(title, specs, values, capability) {
-    const section = this._section(title);
-    for (const spec of specs) {
-      const control = this._buildControl(spec, values[spec.key], (value) => {
-        values[spec.key] = value;
+  _toolSection() {
+    const section = this._section("刀具");
+    const library = (this.catalog.tool && this.catalog.tool.library) || [];
+    const current = library.find((item) => item.id === this.toolPresetId());
+    if (library.length) {
+      // The library is a shortcut, not a parameter: picking an entry copies its values into the very
+      // fields below, and the selector shows "custom" again as soon as one of them is edited.
+      const selectorSpec = {
+        key: "__tool_preset__",
+        label: "预设",
+        kind: "choice",
+        choices: [
+          ...library.map((item) => ({ value: item.id, label: item.label })),
+          { value: CUSTOM_TOOL_ID, label: CUSTOM_TOOL_LABEL },
+        ],
+        help: current ? current.description : CUSTOM_TOOL_HELP,
+      };
+      const selector = this._buildControl(selectorSpec, this.toolPresetId(), (value) => {
+        const preset = library.find((item) => item.id === value);
+        if (preset) this.state.tool = clone(preset.values);
+        this.render();
+        this.onChange();
+      });
+      section.appendChild(this._wrapRow(selectorSpec, selector, null, this.state.tool));
+    }
+    for (const spec of this.catalog.tool.parameters) {
+      const control = this._buildControl(spec, this.state.tool[spec.key], (value) => {
+        this.state.tool[spec.key] = value;
         this.refreshVisibility();
         this.onChange();
       });
-      section.appendChild(this._wrapRow(spec, control, capability, values));
+      section.appendChild(this._wrapRow(spec, control, "tool", this.state.tool));
     }
     return section;
+  }
+
+  toolPresetId() {
+    const library = (this.catalog.tool && this.catalog.tool.library) || [];
+    const match = library.find((item) => Object.keys(item.values).every(
+      (key) => String(this.state.tool[key]) === String(item.values[key])
+    ));
+    return match ? match.id : CUSTOM_TOOL_ID;
   }
 
   _regionSection() {
