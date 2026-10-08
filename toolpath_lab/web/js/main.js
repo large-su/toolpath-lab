@@ -35,7 +35,6 @@ let busy = false;
 let queued = false;
 let debounceTimer = 0;
 let scrubbing = false;
-let lastResult = null;
 
 // ------------------------------------------------------------------ 工具
 function seconds(value) {
@@ -160,9 +159,7 @@ function wireMaterialToolbar() {
 
 function updateMaterialResolutionLabel(effectiveResolution) {
   const selected = Number(dom.materialResolution.value);
-  if (lastResult && lastResult.tool.kind !== "flat") {
-    dom.materialResolutionValue.textContent = "仅支持平底刀";
-  } else if (effectiveResolution && effectiveResolution > selected * 1.05) {
+  if (effectiveResolution && effectiveResolution > selected * 1.05) {
     dom.materialResolutionValue.textContent = selected.toFixed(1)
       + " mm (实际 " + effectiveResolution.toFixed(1) + ")";
   } else {
@@ -201,11 +198,11 @@ async function regenerate() {
   dom.generate.disabled = true;
   try {
     const result = await requestPlan(panel.payload());
-    lastResult = result;
     viewport.setResult(result);
     viewport.setTool(result.tool);
-    const simulationAvailable = result.tool.kind === "flat"
-      && Boolean(result.timeline && result.timeline.positions && result.timeline.positions.length);
+    const simulationAvailable = Boolean(
+      result.timeline && result.timeline.positions && result.timeline.positions.length
+    );
     dom.materialEnabled.disabled = !simulationAvailable;
     dom.materialResolution.disabled = !simulationAvailable;
     dom.materialAllowance.disabled = !simulationAvailable;
@@ -296,7 +293,7 @@ function animate(now) {
   previousTime = now;
   const state = playback.update(dt);
   if (state && playback.timeline) {
-    viewport.setPlayhead(state.position, state.index);
+    viewport.setPlayhead(state.position, state.rotaryAxes, state.index);
     if (playback.playing || scrubbing) renderPlaybar(state);
   }
   viewport.render();

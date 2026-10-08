@@ -62,6 +62,10 @@ class RasterPlanner(Planner):
                  step=5.0, unit="°", group="刀路", help="扫描线的行进方向；切宽方向与之垂直"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
+              spec("tilt_a_deg", "A 轴倾角", K.FLOAT, 0.0, minimum=-45.0,
+                  maximum=45.0, step=1.0, unit="deg", group="五轴"),
+              spec("tilt_b_deg", "B 轴倾角", K.FLOAT, 0.0, minimum=-45.0,
+                  maximum=45.0, step=1.0, unit="deg", group="五轴"),
             spec(
                 "SAFE_HEIGHT_MM",
                 "安全高度 H",
@@ -83,6 +87,8 @@ class RasterPlanner(Planner):
         stepover = self.require_positive(
             float(context.parameters["stepover_mm"]), "切宽 stepover_mm"
         )
+        a_angle = float(context.parameters["tilt_a_deg"])
+        b_angle = float(context.parameters["tilt_b_deg"])
         offset = context.tool.footprint_radius_mm
         self._warn_if_stepover_too_large(context, stepover)
         if offset > 0.0:
@@ -134,11 +140,27 @@ class RasterPlanner(Planner):
             previous = positions[-1]
 
         moves.append(context.retract_move_up(previous))
+        moves = [
+            Move(
+                move.kind,
+                move.points,
+                move.feed_mm_per_min,
+                pass_index=move.pass_index,
+                label=move.label,
+                rotary_axes=np.tile([a_angle, b_angle], (move.points.shape[0], 1)),
+            )
+            for move in moves
+        ]
+        context.warn(
+            "本策略输出固定 A/B 姿态，不进行机床运动学反解或刀柄/夹具碰撞检查；"
+            "上机前需确认 TCP/倾斜工作平面、轴方向与行程"
+        )
         return Toolpath(
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
-            notes=self._notes(context, mode, stepover, len(passes)),
+            notes=self._notes(context, mode, stepover, len(passes))
+            + (f"固定姿态：A{a_angle:g}° B{b_angle:g}°",),
         )
 
     # -- 内部步骤 ----------------------------------------------------------

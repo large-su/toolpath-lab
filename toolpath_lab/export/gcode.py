@@ -45,9 +45,12 @@ def toolpath_to_gcode(
             if move.feed_mm_per_min != last_feed:
                 last_feed = move.feed_mm_per_min
                 last_kind = None
-        for point in move.points:
+        for point_index, point in enumerate(move.points):
             x, y, z = (float(value) for value in point)
             coordinates = f"X{number.format(x)} Y{number.format(y)} Z{number.format(z)}"
+            if move.rotary_axes is not None:
+                a, b = (float(value) for value in move.rotary_axes[point_index])
+                coordinates += f" A{number.format(a)} B{number.format(b)}"
             if move.kind is MoveKind.RAPID:
                 if last_kind is not MoveKind.RAPID:
                     lines.append("(rapid)")

@@ -48,6 +48,7 @@ class Move:
     feed_mm_per_min: float
     pass_index: int = -1
     label: str = ""
+    rotary_axes: NDArray[np.float64] | None = None
 
     def __post_init__(self) -> None:
         points = np.array(self.points, dtype=np.float64, copy=True).reshape(-1, 3)
@@ -55,10 +56,20 @@ class Move:
             raise ParameterError("一段运动至少需要两个点")
         if not np.all(np.isfinite(points)):
             raise ParameterError("运动段的坐标必须都是有限值")
+        rotary_axes = self.rotary_axes
+        if rotary_axes is not None:
+            rotary_axes = np.array(rotary_axes, dtype=np.float64, copy=True).reshape(-1, 2)
+            if rotary_axes.shape[0] != points.shape[0]:
+                raise ParameterError("旋转轴姿态点数必须与坐标点数一致")
+            if not np.all(np.isfinite(rotary_axes)):
+                raise ParameterError("旋转轴角度必须都是有限值")
         if not isfinite(self.feed_mm_per_min) or self.feed_mm_per_min <= 0:
             raise ParameterError("运动段的进给速度必须是有限正数")
         points.setflags(write=False)
+        if rotary_axes is not None:
+            rotary_axes.setflags(write=False)
         object.__setattr__(self, "points", points)
+        object.__setattr__(self, "rotary_axes", rotary_axes)
 
     @property
     def length_mm(self) -> float:
@@ -77,7 +88,7 @@ class Move:
         return self.length_mm / self.feed_mm_per_min * 60.0
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "kind": self.kind.value,
             "kind_label": MOVE_KIND_LABELS[self.kind.value],
             "feed_mm_per_min": self.feed_mm_per_min,
@@ -86,6 +97,11 @@ class Move:
             "length_mm": self.length_mm,
             "points": [[round(float(value), 4) for value in row] for row in self.points],
         }
+        if self.rotary_axes is not None:
+            payload["rotary_axes"] = [
+                [round(float(value), 4) for value in row] for row in self.rotary_axes
+            ]
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

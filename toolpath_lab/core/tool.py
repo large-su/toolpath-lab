@@ -58,7 +58,7 @@ def tool_parameters() -> ParameterSet:
             spec("diameter_mm", "刀具直径 D", K.FLOAT, 6.0, minimum=1.0, maximum=100.0,
                  step=0.5, unit="mm", group="刀具"),
             spec("length_mm", "刀具长度 L", K.FLOAT, 30.0, minimum=2.0, maximum=300.0,
-                 step=1.0, unit="mm", group="刀具", help="参与三维显示，也是将来做碰撞检查的输入"),
+                  step=1.0, unit="mm", group="刀具", help="用于三维显示和刀刃接触仿真；未检查刀柄与夹具碰撞"),
               spec("corner_radius_mm", "圆角半径 Rc", K.FLOAT, 0.5, minimum=0.1, maximum=50.0,
                   step=0.1, unit="mm", group="刀具", help="不得大于刀具半径 D/2",
                   visible_if={"kind": ToolKind.BULL.value}),

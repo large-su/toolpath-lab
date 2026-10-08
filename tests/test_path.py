@@ -47,6 +47,26 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(payload["kind_label"], "切削进给")
         self.assertEqual(payload["points"][1][0], 1.2346)
 
+    def test_rotary_axes_match_points_and_are_immutable(self) -> None:
+        move = Move(
+            MoveKind.CUT,
+            np.array([[0, 0, 0], [1, 0, 0]]),
+            600.0,
+            rotary_axes=np.array([[10, 20], [10, 20]]),
+        )
+        self.assertEqual(move.to_payload()["rotary_axes"], [[10.0, 20.0], [10.0, 20.0]])
+        with self.assertRaises(ValueError):
+            move.rotary_axes[0][0] = 0.0
+
+    def test_rotary_axes_require_one_pose_per_point(self) -> None:
+        with self.assertRaises(ParameterError):
+            Move(
+                MoveKind.CUT,
+                np.array([[0, 0, 0], [1, 0, 0]]),
+                600.0,
+                rotary_axes=np.array([[0, 0]]),
+            )
+
 
 class ToolpathTests(unittest.TestCase):
     def setUp(self) -> None:

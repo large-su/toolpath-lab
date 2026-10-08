@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from toolpath_lab.core.path import MoveKind
+from toolpath_lab.core.path import Move, MoveKind, Toolpath
 from toolpath_lab.core.region import build_region
 from toolpath_lab.core.tool import Tool, ToolKind
 from toolpath_lab.export import toolpath_to_gcode
@@ -56,6 +56,19 @@ class TimelineTests(unittest.TestCase):
         self.assertGreater(middle.progress, 0.4)
         self.assertIn(middle.kind, {"cut", "link", "rapid"})
 
+    def test_timeline_preserves_and_interpolates_rotary_pose(self) -> None:
+        move = Move(
+            MoveKind.CUT,
+            [[0, 0, 0], [10, 0, 0]],
+            600.0,
+            rotary_axes=[[10, 20], [30, 40]],
+        )
+        timeline = build_timeline(Toolpath(moves=(move,)))
+        state = timeline.state_at(timeline.duration_s / 2)
+        self.assertAlmostEqual(float(state.rotary_axes[0]), 20.0)
+        self.assertAlmostEqual(float(state.rotary_axes[1]), 30.0)
+        self.assertEqual(timeline.to_payload()["rotary_axes"][0], [10.0, 20.0])
+
     def test_kind_runs_cover_every_sample(self) -> None:
         timeline = build_timeline(_toolpath())
         payload = timeline.to_payload()
@@ -101,6 +114,16 @@ class GcodeTests(unittest.TestCase):
 
     def test_notes_are_written_as_comments(self) -> None:
         self.assertTrue(any("往复" in line or "单向" in line for line in self.lines))
+
+    def test_gcode_includes_rotary_axis_words(self) -> None:
+        move = Move(
+            MoveKind.CUT,
+            [[0, 0, 0], [1, 0, 0]],
+            600.0,
+            rotary_axes=[[12.5, -7.0], [12.5, -7.0]],
+        )
+        gcode = toolpath_to_gcode(Toolpath(moves=(move,)))
+        self.assertIn("G1 X1.000 Y0.000 Z0.000 A12.500 B-7.000", gcode)
 
 
 if __name__ == "__main__":

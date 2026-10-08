@@ -33,6 +33,7 @@ class TimelineState:
 
     time_s: float
     position: NDArray[np.float64]
+    rotary_axes: NDArray[np.float64]
     kind: str
     move_index: int
     progress: float
@@ -44,6 +45,7 @@ class Timeline:
 
     times_s: NDArray[np.float64]
     positions: NDArray[np.float64]
+    rotary_axes: NDArray[np.float64]
     kind_codes: NDArray[np.int64]
     move_indices: NDArray[np.int64]
     duration_s: float
@@ -73,9 +75,13 @@ class Timeline:
         t1 = float(self.times_s[nxt])
         ratio = 0.0 if t1 <= t0 else (query - t0) / (t1 - t0)
         position = self.positions[index] + ratio * (self.positions[nxt] - self.positions[index])
+        rotary_axes = self.rotary_axes[index] + ratio * (
+            self.rotary_axes[nxt] - self.rotary_axes[index]
+        )
         return TimelineState(
             time_s=query,
             position=position,
+            rotary_axes=rotary_axes,
             kind=KIND_CODE_LABELS[int(self.kind_codes[index])],
             move_index=int(self.move_indices[index]),
             progress=float(query / duration),
@@ -91,6 +97,10 @@ class Timeline:
             "positions": [
                 [round(float(value), position_decimals) for value in row]
                 for row in self.positions
+            ],
+            "rotary_axes": [
+                [round(float(value), position_decimals) for value in row]
+                for row in self.rotary_axes
             ],
             "kind_runs": self._runs(self.kind_codes),
             "move_runs": self._runs(self.move_indices),
@@ -112,6 +122,22 @@ def _resample_move(move: Move, samples: int) -> NDArray[np.float64]:
     )
 
 
+def _resample_rotary_axes(move: Move, samples: int) -> NDArray[np.float64]:
+    """用与 XYZ 相同的弧长参数重采样 A/B 角度。"""
+
+    if move.rotary_axes is None:
+        return np.zeros((samples, 2), dtype=np.float64)
+    points = move.points
+    cumulative = cumulative_lengths(points)
+    total = float(cumulative[-1])
+    if samples <= 2 or total <= 1e-9:
+        return move.rotary_axes[[0, -1]]
+    targets = np.linspace(0.0, total, samples)
+    return np.column_stack(
+        [np.interp(targets, cumulative, move.rotary_axes[:, axis]) for axis in range(2)]
+    )
+
+
 def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
     """把一条刀路变成采样时间历史。"""
 
@@ -127,12 +153,14 @@ def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
 
     times: list[NDArray[np.float64]] = []
     positions: list[NDArray[np.float64]] = []
+    rotary_axes: list[NDArray[np.float64]] = []
     kind_codes: list[NDArray[np.int64]] = []
     move_indices: list[NDArray[np.int64]] = []
     clock = 0.0
 
     for index, move in enumerate(toolpath.moves):
         sampled = _resample_move(move, int(shares[index]))
+        sampled_rotary_axes = _resample_rotary_axes(move, int(shares[index]))
         steps = np.linalg.norm(np.diff(sampled, axis=0), axis=1)
         local = np.concatenate(([0.0], np.cumsum(steps))) / move.feed_mm_per_min * 60.0
         local_times = clock + local
@@ -140,15 +168,18 @@ def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
         if positions and index > 0:
             # 上一段的终点与本段起点重合，去掉重复采样。
             sampled = sampled[1:]
+            sampled_rotary_axes = sampled_rotary_axes[1:]
             local_times = local_times[1:]
         times.append(local_times)
         positions.append(sampled)
+        rotary_axes.append(sampled_rotary_axes)
         kind_codes.append(np.full(local_times.shape[0], KIND_CODES[move.kind.value], dtype=np.int64))
         move_indices.append(np.full(local_times.shape[0], index, dtype=np.int64))
 
     return Timeline(
         times_s=np.concatenate(times),
         positions=np.vstack(positions),
+        rotary_axes=np.vstack(rotary_axes),
         kind_codes=np.concatenate(kind_codes),
         move_indices=np.concatenate(move_indices),
         duration_s=clock,

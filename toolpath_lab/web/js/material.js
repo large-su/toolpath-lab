@@ -1,8 +1,89 @@
 const MAX_GRID_CELLS = 30000;
 
+function toolAxis(rotaryAxes) {
+  const a = rotaryAxes[0] * Math.PI / 180;
+  const b = rotaryAxes[1] * Math.PI / 180;
+  return [Math.sin(b) * Math.cos(a), -Math.sin(a), Math.cos(b) * Math.cos(a)];
+}
+
+function cutterProfileSegments(toolKind, radius, cornerRadius, length, resolution) {
+  if (toolKind === "flat") return [[0, length, radius]];
+
+  const segments = [];
+  if (toolKind === "ball") {
+    const transitionLength = Math.min(radius, length);
+    const count = Math.max(4, Math.ceil(transitionLength / Math.max(resolution * 0.5, 0.05)));
+    for (let index = 0; index < count; index += 1) {
+      const start = transitionLength * index / count;
+      const end = transitionLength * (index + 1) / count;
+      const sliceRadius = Math.sqrt(Math.max(0, 2 * radius * end - end ** 2));
+      if (sliceRadius > 1e-9) segments.push([start, end, sliceRadius]);
+    }
+    if (length > radius) segments.push([radius, length, radius]);
+    return segments;
+  }
+
+  if (toolKind === "bull") {
+    if (!Number.isFinite(cornerRadius) || cornerRadius <= 0 || cornerRadius > radius) {
+      throw new Error("Bull-nose corner radius must be positive and no larger than the tool radius.");
+    }
+    const transitionLength = Math.min(cornerRadius, length);
+    const count = Math.max(4, Math.ceil(transitionLength / Math.max(resolution * 0.25, 0.025)));
+    const flatRadius = radius - cornerRadius;
+    for (let index = 0; index < count; index += 1) {
+      const start = transitionLength * index / count;
+      const end = transitionLength * (index + 1) / count;
+      const sliceRadius = flatRadius + Math.sqrt(
+        Math.max(0, 2 * cornerRadius * end - end ** 2)
+      );
+      if (sliceRadius > 1e-9) segments.push([start, end, sliceRadius]);
+    }
+    if (length > cornerRadius) segments.push([cornerRadius, length, radius]);
+    return segments;
+  }
+
+  throw new Error(`Unsupported cutter type: ${toolKind}`);
+}
+
+function verticalCylinderInterval(x, y, position, axis, radius, length) {
+  const dx = x - position[0];
+  const dy = y - position[1];
+  const projection = axis[0] * dx + axis[1] * dy;
+  const a = Math.max(0, 1 - axis[2] ** 2);
+  const b = -2 * projection * axis[2];
+  const c = dx ** 2 + dy ** 2 - projection ** 2 - radius ** 2;
+  let radialLow = -Infinity;
+  let radialHigh = Infinity;
+  if (a <= 1e-12) {
+    if (c > 1e-9) return null;
+  } else {
+    const discriminant = b ** 2 - 4 * a * c;
+    if (discriminant < 0) return null;
+    const root = Math.sqrt(Math.max(0, discriminant));
+    radialLow = (-b - root) / (2 * a);
+    radialHigh = (-b + root) / (2 * a);
+  }
+
+  let axialLow = -Infinity;
+  let axialHigh = Infinity;
+  if (Math.abs(axis[2]) <= 1e-12) {
+    if (projection < 0 || projection > length) return null;
+  } else {
+    const axialStart = -projection / axis[2];
+    const axialEnd = (length - projection) / axis[2];
+    axialLow = Math.min(axialStart, axialEnd);
+    axialHigh = Math.max(axialStart, axialEnd);
+  }
+
+  const low = Math.max(radialLow, axialLow);
+  const high = Math.min(radialHigh, axialHigh);
+  return low <= high ? [position[2] + low, position[2] + high] : null;
+}
+
 export class MaterialSimulation {
   constructor({
-    boundary, bounds, radiusMm, bottomZMm, timeline,
+    boundary, bounds, radiusMm, fluteLengthMm, toolKind = "flat", cornerRadiusMm = null,
+    bottomZMm, timeline,
     resolutionMm = 0.5, topZMm = 0.0,
   }) {
     if (!Array.isArray(boundary) || boundary.length < 3) {
@@ -10,6 +91,12 @@ export class MaterialSimulation {
     }
     if (!Number.isFinite(radiusMm) || radiusMm <= 0) {
       throw new Error("Material simulation requires a positive flat-tool radius.");
+    }
+    if (!Number.isFinite(fluteLengthMm) || fluteLengthMm <= 0) {
+      throw new Error("Material simulation requires a positive flute length.");
+    }
+    if (!["flat", "ball", "bull"].includes(toolKind)) {
+      throw new Error(`Unsupported cutter type: ${toolKind}`);
     }
     if (!Number.isFinite(resolutionMm) || resolutionMm <= 0) {
       throw new Error("Material simulation grid resolution must be positive.");
@@ -20,10 +107,14 @@ export class MaterialSimulation {
 
     this.boundary = boundary.map((point) => [Number(point[0]), Number(point[1])]);
     this.radiusMm = radiusMm;
+    this.fluteLengthMm = fluteLengthMm;
+    this.toolKind = toolKind;
+    this.cornerRadiusMm = cornerRadiusMm;
     this.topZMm = topZMm;
     this.bottomZMm = bottomZMm;
     this.timeline = timeline;
     this.positions = timeline.positions;
+    this.rotaryAxes = timeline.rotary_axes || timeline.positions.map(() => [0, 0]);
     this.kinds = this._decodeKinds(timeline);
     this.cursor = -1;
 
@@ -43,6 +134,10 @@ export class MaterialSimulation {
     this.cellX = spanX / (this.columns - 1);
     this.cellY = spanY / (this.rows - 1);
     this.resolutionMm = Math.max(this.cellX, this.cellY);
+    this.profileSegments = cutterProfileSegments(
+      this.toolKind, this.radiusMm, this.cornerRadiusMm,
+      this.fluteLengthMm, this.resolutionMm
+    );
     this.heights = new Float32Array(this.columns * this.rows);
     this.inside = new Uint8Array(this.columns * this.rows);
     this._createGrid();
@@ -117,74 +212,61 @@ export class MaterialSimulation {
     for (let index = this.cursor + 1; index <= target; index += 1) {
       if (this.kinds[index] === this.rapidCode) continue;
       const current = this.positions[index];
+      const currentAxes = this.rotaryAxes[index];
       if (index === 0) {
-        changed = this._cutAt(current) || changed;
+        changed = this._cutAt(current, currentAxes) || changed;
       } else {
-        changed = this._cutSegment(this.positions[index - 1], current) || changed;
+        changed = this._cutSegment(
+          this.positions[index - 1], current,
+          this.rotaryAxes[index - 1], currentAxes
+        ) || changed;
       }
     }
     this.cursor = target;
     return changed;
   }
 
-  _cutSegment(start, end) {
-    const dx = end[0] - start[0];
-    const dy = end[1] - start[1];
-    const lengthSquared = dx * dx + dy * dy;
-    const columnStart = Math.max(
-      0,
-      Math.floor((Math.min(start[0], end[0]) - this.radiusMm - this.xMin) / this.cellX)
+  _cutSegment(start, end, startAxes, endAxes) {
+    const distance = Math.hypot(end[0] - start[0], end[1] - start[1], end[2] - start[2]);
+    const angleChange = Math.max(
+      Math.abs(endAxes[0] - startAxes[0]), Math.abs(endAxes[1] - startAxes[1])
     );
-    const columnEnd = Math.min(
-      this.columns - 1,
-      Math.ceil((Math.max(start[0], end[0]) + this.radiusMm - this.xMin) / this.cellX)
+    const steps = Math.max(
+      1,
+      Math.ceil(distance / Math.max(this.resolutionMm * 0.5, 1e-6)),
+      Math.ceil(angleChange)
     );
-    const rowStart = Math.max(
-      0,
-      Math.floor((Math.min(start[1], end[1]) - this.radiusMm - this.yMin) / this.cellY)
-    );
-    const rowEnd = Math.min(
-      this.rows - 1,
-      Math.ceil((Math.max(start[1], end[1]) + this.radiusMm - this.yMin) / this.cellY)
-    );
-    const radiusSquared = this.radiusMm ** 2;
     let changed = false;
-    for (let row = rowStart; row <= rowEnd; row += 1) {
-      const y = this.yMin + row * this.cellY;
-      for (let column = columnStart; column <= columnEnd; column += 1) {
-        const index = row * this.columns + column;
-        if (!this.inside[index]) continue;
-        const x = this.xMin + column * this.cellX;
-        const ratio = lengthSquared > 1e-12
-          ? Math.max(0, Math.min(1, ((x - start[0]) * dx + (y - start[1]) * dy) / lengthSquared))
-          : 1;
-        const nearestX = start[0] + ratio * dx;
-        const nearestY = start[1] + ratio * dy;
-        if ((x - nearestX) ** 2 + (y - nearestY) ** 2 > radiusSquared + 1e-8) continue;
-        const cutZ = Math.max(
-          start[2] + ratio * (end[2] - start[2]),
-          this.bottomZMm
-        );
-        if (cutZ >= this.heights[index]) continue;
-        this.heights[index] = cutZ;
-        changed = true;
-      }
+    for (let index = 1; index <= steps; index += 1) {
+      const ratio = index / steps;
+      const position = start.map((value, axis) => value + (end[axis] - value) * ratio);
+      const rotaryAxes = startAxes.map(
+        (value, axis) => value + (endAxes[axis] - value) * ratio
+      );
+      changed = this._cutAt(position, rotaryAxes) || changed;
     }
     return changed;
   }
 
-  _cutAt(position) {
-    const cutZ = Math.max(position[2], this.bottomZMm);
-    if (cutZ >= this.topZMm) return false;
-    const columnStart = Math.max(0, Math.floor((position[0] - this.radiusMm - this.xMin) / this.cellX));
+  _cutAt(position, rotaryAxes) {
+    const axis = toolAxis(rotaryAxes);
+    const endX = position[0] + axis[0] * this.fluteLengthMm;
+    const endY = position[1] + axis[1] * this.fluteLengthMm;
+    const columnStart = Math.max(
+      0,
+      Math.floor((Math.min(position[0], endX) - this.radiusMm - this.xMin) / this.cellX)
+    );
     const columnEnd = Math.min(
       this.columns - 1,
-      Math.ceil((position[0] + this.radiusMm - this.xMin) / this.cellX)
+      Math.ceil((Math.max(position[0], endX) + this.radiusMm - this.xMin) / this.cellX)
     );
-    const rowStart = Math.max(0, Math.floor((position[1] - this.radiusMm - this.yMin) / this.cellY));
+    const rowStart = Math.max(
+      0,
+      Math.floor((Math.min(position[1], endY) - this.radiusMm - this.yMin) / this.cellY)
+    );
     const rowEnd = Math.min(
       this.rows - 1,
-      Math.ceil((position[1] + this.radiusMm - this.yMin) / this.cellY)
+      Math.ceil((Math.max(position[1], endY) + this.radiusMm - this.yMin) / this.cellY)
     );
     let changed = false;
     for (let row = rowStart; row <= rowEnd; row += 1) {
@@ -193,10 +275,23 @@ export class MaterialSimulation {
         const index = row * this.columns + column;
         if (!this.inside[index]) continue;
         const x = this.xMin + column * this.cellX;
-        if ((x - position[0]) ** 2 + (y - position[1]) ** 2 > this.radiusMm ** 2) continue;
-        if (this.heights[index] <= cutZ) continue;
-        this.heights[index] = cutZ;
-        changed = true;
+        for (let segmentIndex = this.profileSegments.length - 1; segmentIndex >= 0; segmentIndex -= 1) {
+          const [axialStart, axialEnd, segmentRadius] = this.profileSegments[segmentIndex];
+          const segmentPosition = [
+            position[0] + axis[0] * axialStart,
+            position[1] + axis[1] * axialStart,
+            position[2] + axis[2] * axialStart,
+          ];
+          const interval = verticalCylinderInterval(
+            x, y, segmentPosition, axis, segmentRadius, axialEnd - axialStart
+          );
+          if (!interval) continue;
+          const [toolLow, toolHigh] = interval;
+          const height = this.heights[index];
+          if (toolLow >= height || toolHigh < height) continue;
+          this.heights[index] = Math.max(toolLow, this.bottomZMm);
+          changed = true;
+        }
       }
     }
     return changed;

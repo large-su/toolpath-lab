@@ -50,11 +50,32 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("stepover_mm", keys)
         self.assertIn("direction_deg", keys)
         self.assertIn("feed_mm_per_min", keys)
+        self.assertIn("tilt_a_deg", keys)
+        self.assertIn("tilt_b_deg", keys)
         self.assertIn("SAFE_HEIGHT_MM", keys)
         self.assertIn("RAPID_FEED_MM_PER_MIN", keys)
         self.assertEqual(entry["label"], "栅格刀路")
         stepover = next(item for item in entry["parameters"] if item["key"] == "stepover_mm")
         self.assertEqual(stepover["default"], 3.0)
+
+    def test_raster_and_spiral_keep_fixed_ab_pose_on_every_move(self) -> None:
+        for planner_id in ("raster", "spiral"):
+            with self.subTest(planner_id=planner_id):
+                outcome = run_plan(
+                    planner_id=planner_id,
+                    tool=_tool(),
+                    region=build_region("square", {"side_mm": 80.0}),
+                    parameters={"tilt_a_deg": 23.0, "tilt_b_deg": -11.0},
+                )
+                for move in outcome.toolpath.moves:
+                    self.assertIsNotNone(move.rotary_axes)
+                    self.assertTrue(
+                        np.allclose(
+                            move.rotary_axes,
+                            [[23.0, -11.0]] * len(move.points),
+                        )
+                    )
+                self.assertTrue(any("机床运动学反解" in warning for warning in outcome.warnings))
 
 
 class PassLayoutTests(unittest.TestCase):
@@ -190,6 +211,18 @@ class CircleRegionTests(unittest.TestCase):
 
 
 class SafetyTests(unittest.TestCase):
+    def test_contour_keeps_fixed_ab_orientation_on_all_moves(self) -> None:
+        outcome = run_plan(
+            planner_id="contour",
+            tool=_tool(),
+            region=build_region("square", {"side_mm": 40.0}),
+            parameters={"tilt_a_deg": 12.5, "tilt_b_deg": -7.0},
+        )
+        for move in outcome.toolpath.moves:
+            self.assertIsNotNone(move.rotary_axes)
+            self.assertTrue(np.allclose(move.rotary_axes, [[12.5, -7.0]] * len(move.points)))
+        self.assertTrue(any("运动学反解" in warning for warning in outcome.warnings))
+
     def test_rapid_moves_use_the_fixed_safe_height(self) -> None:
         rapid = [m for m in _plan({"mode": "one_way"}).toolpath.moves
                  if m.kind is MoveKind.RAPID]

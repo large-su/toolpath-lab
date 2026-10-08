@@ -22,7 +22,7 @@
 
 from __future__ import annotations
 
-from math import atan2, ceil, cos, pi, sin
+from math import atan2, ceil, cos, isfinite, pi, sin
 from typing import Any, ClassVar
 
 import numpy as np
@@ -167,6 +167,10 @@ class ContourPlanner(Planner):
                  step=0.1, unit="mm", group="刀路"),
             spec("feed_mm_per_min", "进给速度 F", K.FLOAT, 600.0, minimum=10.0,
                  maximum=10000.0, step=50.0, unit="mm/min", group="刀路"),
+              spec("tilt_a_deg", "A 轴倾角", K.FLOAT, 0.0, minimum=-45.0,
+                  maximum=45.0, step=1.0, unit="deg", group="五轴"),
+              spec("tilt_b_deg", "B 轴倾角", K.FLOAT, 0.0, minimum=-45.0,
+                  maximum=45.0, step=1.0, unit="deg", group="五轴"),
             spec(
                 "SAFE_HEIGHT_MM",
                 "安全高度 H",
@@ -190,6 +194,10 @@ class ContourPlanner(Planner):
         sample_step = self.require_positive(
             float(context.parameters["sample_step_mm"]), "采样步长 sample_step_mm"
         )
+        a_angle = float(context.parameters.get("tilt_a_deg", 0.0))
+        b_angle = float(context.parameters.get("tilt_b_deg", 0.0))
+        if not isfinite(a_angle) or not isfinite(b_angle):
+            raise ValueError("A/B 轴倾角必须是有限数值")
         boundary = context.boundary
         radius = context.tool.footprint_radius_mm
         if radius > 0.0:
@@ -216,6 +224,18 @@ class ContourPlanner(Planner):
 
         moves: list[Move] = []
         previous: np.ndarray | None = None
+
+        def with_fixed_orientation(move: Move) -> Move:
+            orientation = np.tile([a_angle, b_angle], (move.points.shape[0], 1))
+            return Move(
+                move.kind,
+                move.points,
+                move.feed_mm_per_min,
+                pass_index=move.pass_index,
+                label=move.label,
+                rotary_axes=orientation,
+            )
+
         for index, ring in enumerate(rings):
             sampled = resample_ring(ring, sample_step)
             closed = np.vstack([sampled, sampled[:1]])
@@ -223,25 +243,32 @@ class ContourPlanner(Planner):
                 closed = closed[::-1]
             positions = context.to_positions(closed)
             if previous is None:
-                moves.append(context.approach_move_down(positions[0]))
+                moves.append(with_fixed_orientation(context.approach_move_down(positions[0])))
             else:
-                moves.append(context.link_move(previous, positions[0]))
+                moves.append(with_fixed_orientation(context.link_move(previous, positions[0])))
             moves.append(
-                Move(
+                with_fixed_orientation(Move(
                     MoveKind.CUT,
                     positions,
                     context.feed_mm_per_min,
                     pass_index=index,
                     label=f"第 {index + 1} 环",
-                )
+                ))
             )
             previous = positions[-1]
-        moves.append(context.retract_move_up(previous))
+        moves.append(with_fixed_orientation(context.retract_move_up(previous)))
+        context.warn(
+            "本策略输出固定 A/B 姿态，不进行机床运动学反解或刀柄/夹具碰撞检查；"
+            "材料仿真检查刀具刃部与毛坯表面接触。上机前需确认 TCP/倾斜工作平面、轴方向与行程"
+        )
         return Toolpath(
             moves=tuple(moves),
             planner=self.id,
             planner_label=self.label,
-            notes=(f"环切：共 {len(rings)} 环，切宽 {stepover:g} mm",),
+            notes=(
+                f"环切：共 {len(rings)} 环，切宽 {stepover:g} mm",
+                f"固定姿态：A{a_angle:g}° B{b_angle:g}°",
+            ),
         )
 
 

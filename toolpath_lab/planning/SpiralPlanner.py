@@ -5,7 +5,7 @@ from typing import ClassVar
 import numpy as np
 
 from toolpath_lab.core.parameters import ParameterKind as K, ParameterSet, spec
-from toolpath_lab.core.path import Toolpath
+from toolpath_lab.core.path import Move, Toolpath
 from toolpath_lab.planning.base import Planner, PlanningContext
 from toolpath_lab.planning.registry import PLANNERS
 
@@ -51,6 +51,28 @@ class SpiralPlanner(Planner):
                 group="刀路",
             ),
             spec(
+                "tilt_a_deg",
+                "A 轴倾角",
+                K.FLOAT,
+                0.0,
+                minimum=-45.0,
+                maximum=45.0,
+                step=1.0,
+                unit="deg",
+                group="五轴",
+            ),
+            spec(
+                "tilt_b_deg",
+                "B 轴倾角",
+                K.FLOAT,
+                0.0,
+                minimum=-45.0,
+                maximum=45.0,
+                step=1.0,
+                unit="deg",
+                group="五轴",
+            ),
+            spec(
                 "SAFE_HEIGHT_MM",
                 "安全高度 H",
                 K.FLOAT,
@@ -70,6 +92,8 @@ class SpiralPlanner(Planner):
         stepover = self.require_positive(
             float(context.parameters["stepover_mm"]), "切宽 stepover_mm"
         )
+        a_angle = float(context.parameters["tilt_a_deg"])
+        b_angle = float(context.parameters["tilt_b_deg"])
 
         boundary = context.boundary
         if boundary.shape[0] < 3:
@@ -118,6 +142,21 @@ class SpiralPlanner(Planner):
             raise ValueError("螺旋刀路为空")
 
         moves.append(context.retract_move_up(previous))
+        moves = [
+            Move(
+                move.kind,
+                move.points,
+                move.feed_mm_per_min,
+                pass_index=move.pass_index,
+                label=move.label,
+                rotary_axes=np.tile([a_angle, b_angle], (move.points.shape[0], 1)),
+            )
+            for move in moves
+        ]
+        context.warn(
+            "本策略输出固定 A/B 姿态，不进行机床运动学反解或刀柄/夹具碰撞检查；"
+            "上机前需确认 TCP/倾斜工作平面、轴方向与行程"
+        )
 
         return Toolpath(
             moves=tuple(moves),
@@ -126,5 +165,6 @@ class SpiralPlanner(Planner):
             notes=(
                 f"螺旋走刀：共 {len(rings)} 圈，切宽 {stepover:g} mm",
                 f"起始半径 {start_radius:g} mm，刀具半径 {tool_radius:g} mm",
+                f"固定姿态：A{a_angle:g}° B{b_angle:g}°",
             ),
         )

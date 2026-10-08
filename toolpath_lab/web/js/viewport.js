@@ -257,13 +257,16 @@ export class Viewport {
     this._clear(this.workpieceGroup);
     this.materialSimulation = null;
     this.materialSurface = null;
-    if (this.materialOptions.enabled && payload.tool && payload.tool.kind === "flat"
+    if (this.materialOptions.enabled && payload.tool
       && payload.timeline?.positions?.length) {
       const topZMm = this.materialOptions.stockAllowanceMm;
       this.materialSimulation = new MaterialSimulation({
       boundary: payload.region.boundary,
       bounds: payload.region.bounds_mm,
       radiusMm: payload.tool.radius_mm,
+      fluteLengthMm: Math.min(payload.tool.length_mm * 0.65, payload.tool.radius_mm * 6),
+      toolKind: payload.tool.kind,
+      cornerRadiusMm: payload.tool.corner_radius_mm,
       bottomZMm: -thickness,
       timeline: payload.timeline,
       resolutionMm: this.materialOptions.resolutionMm,
@@ -361,8 +364,15 @@ export class Viewport {
     this.toolGroup.visible = this.display.showTool;
   }
 
-  setPlayhead(position, traversedSegments) {
+  setPlayhead(position, rotaryAxes, traversedSegments) {
     this.toolGroup.position.set(position[0], position[1], position[2]);
+    const [aAngle, bAngle] = rotaryAxes || [0, 0];
+    this.toolGroup.rotation.set(
+      THREE.MathUtils.degToRad(aAngle),
+      THREE.MathUtils.degToRad(bAngle),
+      0,
+      "XYZ"
+    );
     if (this.materialSimulation && this.materialSurface
       && this.materialSimulation.update(traversedSegments)) {
       const attribute = this.materialSurface.geometry.getAttribute("position");
