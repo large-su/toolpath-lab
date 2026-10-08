@@ -39,6 +39,10 @@ _EPS = 1e-9
 #: Below this floor ratio the plan is reported as not having reached the floor everywhere.
 WARN_FLOOR_RATIO = 0.9
 
+#: Upper bound on the cells of the grid that travels to the 3D view. The measurement grid keeps its
+#: own resolution (it is what the volumes are summed from); the display grid is block reduced from it.
+MAX_HEIGHT_CELLS = 4096
+
 
 def removal_warnings(removal: "Removal") -> list[str]:
     """Warnings for a plan whose floor is not finished (they go into the response banner)."""
@@ -66,10 +70,70 @@ class Removal:
     floor_ratio: float
     region_area_mm2: float
     heights_mm: NDArray[np.float64]
+    inside_mask: NDArray[np.bool_]
     bounds_mm: tuple[float, float, float, float]
 
+    def height_map(self, max_cells: int = MAX_HEIGHT_CELLS) -> dict[str, Any]:
+        """The coarse grid the 3D view colours by depth (not part of `describe` when there is none).
+
+        The measurement grid is reduced in blocks until it fits `max_cells`, and a displayed cell
+        takes the **deepest** cut recorded anywhere in its block -- how deep the tool reached there.
+        That is what "colour by depth of cut" asks for, and it degrades gracefully: a coarse cell
+        holding one
+        machined strip shows the strip's depth instead of averaging it away against the material
+        beside it (with the opposite rule, a region whose strips are thinner than a display cell
+        would go blank while the volumes say a lot of material was removed). The price is that a
+        coarse cell may show floor depth next to material the tool missed; which cells were missed
+        *entirely* is the uncut overlay's answer, computed at the full measurement resolution.
+        `floor_mm` and `measured_cell_mm` say how fine the picture is. Cells with nothing inside the
+        region are `None`, so what the view paints is the region and not its bounding box; the cells
+        tile the region bounds exactly, because the block edges are placed on the bounds rather than
+        on the measurement grid (a padded last block would otherwise stick out by up to one cell).
+        """
+
+        rows, cols = self.heights_mm.shape
+        # Grow the factor until the reduced grid really fits: the two axes have to share one factor
+        # (the aspect is part of the picture), and a long thin region would otherwise blow the cap.
+        factor = 1
+        while -(-rows // factor) * -(-cols // factor) > max_cells:
+            factor += 1
+        out_rows, out_cols = -(-rows // factor), -(-cols // factor)
+
+        x_min, x_max, y_min, y_max = self.bounds_mm
+        span_x, span_y = x_max - x_min, y_max - y_min
+        step_x, step_y = span_x / out_cols, span_y / out_rows
+        xs = x_min + (np.arange(cols) + 0.5) * (span_x / cols)
+        ys = y_min + (np.arange(rows) + 0.5) * (span_y / rows)
+        column_edges = np.searchsorted(xs, x_min + np.arange(out_cols + 1) * step_x, side="left")
+        row_edges = np.searchsorted(ys, y_min + np.arange(out_rows + 1) * step_y, side="left")
+
+        # Outside cells become +inf so they can never win the minimum; a block with no inside cell
+        # stays +inf, which is what marks it empty below (no NaN warnings involved).
+        filled = np.where(self.inside_mask, self.heights_mm, np.inf)
+        reduced = np.minimum.reduceat(filled, row_edges[:-1], axis=0)
+        reduced = np.minimum.reduceat(reduced, column_edges[:-1], axis=1)
+
+        cells = [
+            [None if value == np.inf else round(float(value), 4) for value in row]
+            for row in reduced
+        ]
+        return {
+            "rows": out_rows,
+            "cols": out_cols,
+            "origin_mm": [round(x_min, 4), round(y_min, 4)],
+            "cell_size_mm": [round(step_x, 4), round(step_y, 4)],
+            "floor_mm": round(self.floor_mm, 4),
+            "measured_cell_mm": round(self.cell_mm, 4),
+            "cells": cells,
+        }
+
     def describe(self) -> dict[str, Any]:
-        """Compact JSON form (the height map itself is only used in 3D, not in the payload)."""
+        """Compact JSON form.
+
+        The height map goes out reduced (see `height_map`) because the 3D view is the only reader
+        that needs it; it is `None` when nothing was removed, since a single pass on the top face has
+        no depth to colour.
+        """
 
         return {
             "cell_mm": round(self.cell_mm, 4),
@@ -80,6 +144,7 @@ class Removal:
             "uncut_area_mm2": round(self.uncut_area_mm2, 4),
             "floor_ratio": round(self.floor_ratio, 6),
             "bounds_mm": [round(value, 4) for value in self.bounds_mm],
+            "height_map": self.height_map() if self.floor_mm < -_EPS else None,
         }
 
 
@@ -202,5 +267,6 @@ def measure_removal(
         floor_ratio=(at_floor / inside_heights.size) if inside_heights.size else 0.0,
         region_area_mm2=region_area,
         heights_mm=heights,
+        inside_mask=inside,
         bounds_mm=(float(x_min), float(x_max), float(y_min), float(y_max)),
     )

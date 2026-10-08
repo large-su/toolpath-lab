@@ -132,6 +132,53 @@ export function uncutGeometry(rects) {
   return geometry;
 }
 
+// Depth ramp of the height map: the top face (nothing was removed) is the cool end and the deepest
+// floor the warm end, so the terraces of a stepped plan read as a gradient. The stops are built once
+// because a plan can carry a few thousand cells. Exported so the mapping can be checked in Node.
+const DEPTH_STOPS = [0x2f4d5c, 0x54d6c4, 0xffa726].map((hex) => new THREE.Color(hex));
+
+export function depthColor(zMm, floorMm, target = new THREE.Color()) {
+  // `floorMm` is the deepest Z reached (negative) and z is the material height of one cell, so
+  // z / floorMm runs from 0 at the top face to 1 at the floor.
+  const floor = Math.min(floorMm, 0);
+  const ratio = floor < -1e-6 ? Math.min(Math.max(zMm / floor, 0), 1) : 0;
+  const scaled = ratio * (DEPTH_STOPS.length - 1);
+  const index = Math.min(Math.floor(scaled), DEPTH_STOPS.length - 2);
+  return target.copy(DEPTH_STOPS[index]).lerp(DEPTH_STOPS[index + 1], scaled - index);
+}
+
+// Height map overlay: one quad per grid cell of the (already reduced) 3D height map, each at the Z of
+// the deepest cut recorded for that cell, so a stepped plan shows its terraces at their real depth.
+// Cells that are null lie outside the region and are skipped, which is what keeps the overlay off the
+// bounding box corners of a circle. Exported for the same Node check as uncutGeometry.
+export function heightMapGeometry(map, liftMm = PATH_LIFT_MM * 0.2) {
+  const positions = [];
+  const colors = [];
+  const [stepX, stepY] = map.cell_size_mm;
+  const [originX, originY] = map.origin_mm;
+  const color = new THREE.Color();
+  map.cells.forEach((row, rowIndex) => {
+    row.forEach((z, columnIndex) => {
+      if (z === null || z === undefined) return;
+      const left = originX + columnIndex * stepX;
+      const bottom = originY + rowIndex * stepY;
+      const right = left + stepX;
+      const top = bottom + stepY;
+      const height = z + liftMm;
+      positions.push(left, bottom, height, right, bottom, height, right, top, height);
+      positions.push(left, bottom, height, right, top, height, left, top, height);
+      depthColor(z, map.floor_mm, color);
+      for (let corner = 0; corner < 6; corner += 1) {
+        colors.push(color.r, color.g, color.b);
+      }
+    });
+  });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  return geometry;
+}
+
 function polylineGeometry(polylines, dashed = false) {
   const positions = [];
   for (const points of polylines) {
@@ -154,7 +201,7 @@ export class Viewport {
     this.appearance = { shadows: true, white: false, grid: true };
     this.display = {
       showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true,
-      showUncut: true,
+      showUncut: true, showHeight: true,
     };
     this.bounds = null;
     this.activeView = "fit";
@@ -207,12 +254,13 @@ export class Viewport {
     this.gridGroup = new THREE.Group();
     this.workpieceGroup = new THREE.Group();
     this.uncutGroup = new THREE.Group();
+    this.heightGroup = new THREE.Group();
     this.contourGroup = new THREE.Group();
     this.pathGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
     this.toolGroup = new THREE.Group();
     this.scene.add(
-      this.gridGroup, this.workpieceGroup, this.uncutGroup,
+      this.gridGroup, this.workpieceGroup, this.uncutGroup, this.heightGroup,
       this.contourGroup, this.pathGroup, this.traceGroup, this.toolGroup
     );
 
@@ -249,6 +297,7 @@ export class Viewport {
   setResult(payload) {
     this._clear(this.workpieceGroup);
     this._clear(this.uncutGroup);
+    this._clear(this.heightGroup);
     this._clear(this.contourGroup);
     this._clear(this.pathGroup);
     this._clear(this.traceGroup);
@@ -286,6 +335,21 @@ export class Viewport {
         })
       );
       this.uncutGroup.add(mesh);
+    }
+
+    // The machined floor, coloured by how deep the tool reached each cell. The quads sit at the Z of
+    // that cut, so the terraces of a stepped plan are visible through the translucent workpiece (which
+    // is exactly the case this overlay exists for: a single layer has no depth to show and the
+    // backend sends no map at all). Basic material on purpose: this is a data overlay, not another
+    // solid for the lights and shadows to work on.
+    const heightMap = payload.removal && payload.removal.height_map;
+    if (heightMap && heightMap.cells && heightMap.floor_mm < -1e-6) {
+      this.heightGroup.add(
+        new THREE.Mesh(
+          heightMapGeometry(heightMap),
+          new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })
+        )
+      );
     }
 
     const groups = { link: [], rapid: [] };
@@ -400,6 +464,7 @@ export class Viewport {
     this.display = Object.assign({}, this.display, options || {});
     this.workpieceGroup.visible = this.display.showWorkpiece;
     this.uncutGroup.visible = this.display.showUncut;
+    this.heightGroup.visible = this.display.showHeight;
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.toolGroup.visible = this.display.showTool;

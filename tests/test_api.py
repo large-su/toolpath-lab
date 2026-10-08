@@ -320,6 +320,27 @@ class PlanTests(ApiTestCase):
         self.assertGreater(removal["removed_volume_mm3"], 0.0)
         self.assertGreaterEqual(removal["floor_ratio"], 0.9)
         self.assertLess(removal["remaining_volume_mm3"], removal["region_area_mm2"] * 2.0 * 0.1)
+        # The 3D view colours the machined floor from this grid, so it travels with the response --
+        # reduced, and anchored on the floor the removal measured.
+        height_map = removal["height_map"]
+        self.assertIsNotNone(height_map)
+        self.assertEqual(height_map["floor_mm"], -2.0)
+        self.assertGreater(height_map["rows"], 0)
+        self.assertGreater(height_map["cols"], 0)
+        self.assertLessEqual(height_map["rows"] * height_map["cols"], 4096)
+        self.assertEqual(len(height_map["cells"]), height_map["rows"])
+        self.assertEqual(len(height_map["cells"][0]), height_map["cols"])
+        values = [value for row in height_map["cells"] for value in row if value is not None]
+        self.assertTrue(values)
+        self.assertEqual(max(values), 0.0)  # the top face is still there somewhere
+        self.assertLessEqual(min(values), -1.9)  # and the middle reached the floor
+
+    def test_a_plan_without_depth_carries_no_height_map(self) -> None:
+        # A single pass on the top face has no depth to colour: the response stays small instead of
+        # sending a grid of zeroes with every default request.
+        _, payload, _ = self.plan({})
+        self.assertIsNotNone(payload["removal"])
+        self.assertIsNone(payload["removal"]["height_map"])
 
     def test_the_plan_response_carries_the_coverage_analysis(self) -> None:
         _, payload, _ = self.plan({})

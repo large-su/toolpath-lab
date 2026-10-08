@@ -238,6 +238,20 @@ def check_http_api() -> tuple[bool, str]:
             )
             expect(any("分层" in note for note in layered["toolpath"]["notes"]),
                    "分层应在 notes 里说明")
+            # The depth map the 3D view colours: present once there is depth, bounded in size, and
+            # anchored on the floor the removal measured.
+            height_map = layered["removal"]["height_map"]
+            if height_map is None:
+                problems.append("分层的响应缺少高度图")
+            else:
+                values = [value for row in height_map["cells"] for value in row
+                          if value is not None]
+                expect(height_map["rows"] * height_map["cols"] <= 4096,
+                       f"高度图没有守住格子上限：{height_map['rows']} x {height_map['cols']}")
+                expect(height_map["floor_mm"] == -5.0 and min(values) == -5.0,
+                       f"高度图的地面不对：floor {height_map['floor_mm']} min {min(values)}")
+            expect(single["removal"]["height_map"] is None,
+                   "没有切深的规划不应带高度图")
 
         status, page = _request(base, "/index.html")
         steps += 1

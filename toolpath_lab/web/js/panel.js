@@ -7,6 +7,7 @@ const DISPLAY_OPTIONS = [
   { key: "showRapid", label: "快移", color: "var(--cyan)" },
   { key: "showTrace", label: "已走轨迹", color: "var(--teal)" },
   { key: "showUncut", label: "未切除", color: "var(--danger)" },
+  { key: "showHeight", label: "切深", color: "linear-gradient(90deg, #54d6c4, #ffa726)" },
   { key: "showTool", label: "刀具" },
 ];
 
@@ -95,7 +96,7 @@ export class ParameterPanel {
         values: clone(this.catalog.planners.defaults),
       },
       display: { showWorkpiece: true, showPath: true, showRapid: true, showTrace: true,
-                 showUncut: true, showTool: true },
+                 showUncut: true, showHeight: true, showTool: true },
     };
     this.rows = [];
     this.render();

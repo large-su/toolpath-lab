@@ -66,14 +66,23 @@ described by parameter declarations, and the parameter panel is generated from t
   Cutting and link moves follow their layer while retract points keep the absolute safe height, so
   `safe_height_mm` keeps meaning "above the top surface". Off by default.
 - **3D view**: workpiece solid, region contour, toolpath (cut / link / rapid colour coded, cutting
-  segments further split by feed so slowed corners are visible), cutter solid, traversed path and live
-  shadows; the workpiece turns translucent when a layered toolpath cuts below the top face.
+  segments further split by feed so slowed corners are visible), cutter solid, traversed path, the
+  machined floor coloured by depth (see Analysis) and live shadows; the workpiece turns translucent
+  when a layered toolpath cuts below the top face.
 - **Playback**: time is parameterised by each move's own feed rate, with play / pause, scrubbing, and
   cutting length plus estimated machining time.
 - **Analysis**: **coverage** - a grid compares the area the tool swept against the area of the region
   and reports the coverage ratio, the uncut area and where the uncut patches are, drawn as a warning
   coloured overlay in the 3D view; a response also carries a warning when a noticeable part is left
-  (more than 2 % by default).
+  (more than 2 % by default). **Material removal (2.5D height map)** - every cell records the Z it was
+  cut down to, which yields the floor ratio (the share of the region that reached the floor, i.e.
+  coverage in depth), the removed and remaining volumes and the area never touched at all; below 90 %
+  the response warns again and the statistics grow a row per figure. The same map is **sent with the
+  response in reduced form** (at most 4096 cells; each cell takes the deepest cut in its block, i.e.
+  how deep the tool reached there, and cells outside the region stay empty), and the 3D view paints it
+  as the machined floor, coloured from teal to orange by depth and placed at its real Z, so the
+  terraces of a stepped plan are visible ("切深" in the display toggles). Only that overlay is
+  reduced: coverage, floor ratio and the volumes always come from the 0.5 mm measurement grid.
 - **Notes**: every plan explains its own choices in a collapsible "刀路说明" list (per-round stepover,
   coverage, ring count, cutting length and time for adaptive contouring; the corner slowdown and
   layer counts; the safe height and rapid feed actually used).
@@ -97,7 +106,10 @@ The left side is the parameter panel; the right side holds the 3D view, statisti
 - **View toolbar** (top centre): fit / front / back / left / right / top / bottom; clicking the active
   direction again flips to the opposite side.
 - **Appearance toggles** (top left): live shadows, white background, grid floor.
-- **Display toggles** (left panel): workpiece, toolpath, rapids, traversed path, uncut material, cutter.
+- **Display toggles** (left panel): workpiece, toolpath, rapids, traversed path, uncut material, depth,
+  cutter. "Uncut" is the warning coloured overlay of what coverage found missing; "depth" is the
+  machined floor, drawn inside the workpiece at its real Z and coloured by how deep the tool reached
+  (the little gradient dot in front of it is that colour ramp).
 - **Playback bar** (bottom): play / pause (space bar works too), rewind, scrub, current time.
 - **Statistics** (top right): region size, pass count, point count, cutting length, machining time,
   coverage and uncut area; the collapsible notes sit underneath.
