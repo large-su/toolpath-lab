@@ -734,15 +734,12 @@ def create_server(host: str = "127.0.0.1", port: int = 8770,
 
     repository = ProjectRepository(data_dir or default_data_dir())
     workspace = Workspace(repository=repository)
-    # 启动时恢复最近一次打开的工程（如果有）
-    try:
-        items = repository.index()
-        if items:
-            latest = str(items[0].get("id"))
-            if latest and repository.exists(latest):
-                workspace.open(latest)
-    except Exception:  # pragma: no cover - 恢复失败不影响启动
-        traceback.print_exc()
+    # 启动**不**自动打开上次的工程：每次打开都是一个干净的空工作空间，模型由用户
+    # 手动导入（历史工程都还在 ``/api/projects`` 里，顶栏「工程」可随时手动打开）。
+    #
+    # 自动恢复的真正问题不在"界面不空白"，而在**写操作会落到看不见的旧工程上**：
+    # 界面明明没有模型，点一下"生成毛坯 / 导出 NC"改的却是上一次那个工程。
+    # 现在没有工程时这些接口一律回 400「请先导入 STEP 模型」，与空界面一致。
     server = ThreadingHTTPServer((host, port), ToolpathLabHandler)
     server.daemon_threads = True
     server.workspace = workspace  # type: ignore[attr-defined]

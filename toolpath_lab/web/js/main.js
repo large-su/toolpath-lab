@@ -641,6 +641,17 @@ async function exportGcode() {
 }
 
 // ------------------------------------------------------------------ CAM 加载
+/**
+ * 启动落点：后端有**打开着的**工程才恢复它，否则落进 CAM 的空状态。
+ *
+ * 默认路径是空的——服务启动不再自动打开上次的工程（见 ``server/app.py``），
+ * 所以每次打开都是"没有模型、没有毛坯、没有工序"的界面，模型靠手动导入；
+ * 想接着上次干就去顶栏「工程」里手动打开（历史工程都还在，数据不删）。
+ *
+ * "有工程就恢复"这条分支要保留：**刷新页面**（桌面端按 F5 / 重载）不等于重启程序
+ * ——后端进程还活着、工程还开着，这时得把界面接回去，否则界面是空的、后端却挂着
+ * 一个工程，就成了两边对不上（点"导出 NC"还会导出那个看不见的工程）。
+ */
 async function loadProjectState() {
   try {
     const projects = await fetchProjects();
@@ -648,10 +659,13 @@ async function loadProjectState() {
       setMode("cam");
       await refreshModel({ frame: true });
       showBanner(`已恢复工程「${projects.current.name}」`, "info");
+      return;
     }
   } catch (error) {
-    /* 没有工程是正常情况 */
+    /* 后端没响应时照样落进空界面：空状态本身是安全的 */
   }
+  // 空状态：进 CAM 模式（setMode 会提示"点顶部「导入模型」选择 STEP 文件"）
+  setMode("cam");
 }
 
 /**
