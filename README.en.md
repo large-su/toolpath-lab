@@ -29,6 +29,24 @@ described by parameter declarations, and the parameter panel is generated from t
   the deepest layer instead of gouging it. Coverage sweeps the flat contact on the floor: the full
   radius for a flat mill, `R - Rc` for a bull nose, and a single point for a ball nose, whose real
   surface is a scalloped envelope this model does not simulate.
+- **Tapered tools** (`taper_angle_deg`, half-angle, 0 = straight by default): the flanks open by
+  `tan(angle)` of radius per millimetre of height, and the diameter parameter is then the diameter **at
+  the tip**. The taper feeds into the wall clearance, which grows with the cut depth -- so a tapered
+  tool in a deep pocket is not a contradiction: the whole path is pushed out to
+  `R + (depth - Rc) * tan(angle)` and the flank itself never gouges the wall (a test pins the measured
+  path-to-wall distance to that analytic value). The 3D view draws the same cone.
+- **Holder collision**: the tool is two cylinders - the cutting head (radius R up to
+  `flute_length_mm`, a cone for a tapered tool) and the shank above it (`shank_diameter_mm`), which is
+  exactly what the 3D view draws: the automatic defaults `min(0.65 L, 6 R)` and `1.25 R` are the shapes
+  it has always shown, now supplied by the backend, so what you see is what gets checked. Once a cut is
+  deeper than the flutes the shank is inside the pocket and needs `shank radius` of room to the wall,
+  while the planner only guarantees the *cutter* its own clearance - so a shank wider than the cutter
+  is reported as a collision, with the closest approach, the shortfall and three ways out, and a cut
+  deeper than the tool is reported as a holder that would enter the part. The measurement travels with
+  the response (`holder`, including the widest radius in the pocket and the tightest margin); the
+  statistics grow a clearance row while the shank is engaged. Two deliberate exclusions: entries are
+  not checked (a ramp or helix may leave the region on purpose, which the notes report) and points
+  outside the region do not count (they are not in the pocket).
 - **Regions**: square, rectangle, circle, ellipse, U shape, dumbbell and triangle, all centred at the
   origin and machined on the XY plane. Each one reduces to a single counter-clockwise boundary
   polygon, which is what the toolpath planners clip against and what the 3D workpiece is extruded
@@ -86,7 +104,8 @@ described by parameter declarations, and the parameter panel is generated from t
 - **Notes**: every plan explains its own choices in a collapsible "刀路说明" list (per-round stepover,
   coverage, ring count, cutting length and time for adaptive contouring; the corner slowdown and
   layer counts; the safe height and rapid feed actually used; the length of every ramp or helix entry,
-  which is a cutting move -- 2 mm down at 1° is 114.6 mm of travel before the first pass starts).
+  which is a cutting move -- 2 mm down at 1° is 114.6 mm of travel before the first pass starts; the
+  holder clearance when the shank enters the pocket and still clears the wall).
 - **Export**: NC program (G-code, G21 / G90 / G17 with G0 / G1 and F) and a **CSV point table** (one
   tool point per row). Both explain where they came from: the NC header and a CSV comment block carry
   the echoed request, the toolpath summary (strategy, passes, points, cutting and rapid length,
@@ -113,7 +132,8 @@ The left side is the parameter panel; the right side holds the 3D view, statisti
   (the little gradient dot in front of it is that colour ramp).
 - **Playback bar** (bottom): play / pause (space bar works too), rewind, scrub, current time.
 - **Statistics** (top right): region size, pass count, point count, cutting length, machining time,
-  coverage and uncut area; the collapsible notes sit underneath.
+  coverage and uncut area, plus a holder clearance row while the shank is inside the pocket; the
+  collapsible notes sit underneath.
 
 ![Top view](docs/images/screenshot-top.png)
 
@@ -234,6 +254,9 @@ Dependencies point in one direction: `core` depends on nothing, `planning` / `si
 | Corner minimum feed | `corner_feed_ratio` | 0.35 × | 0.05-1 | every strategy (feed factor at a 180° reversal) |
 | Total depth | `depth_mm` | 0 mm (off) | 0-200 | every strategy (0 = a single layer on the machining plane) |
 | Depth of cut | `stepdown_mm` | 2 mm | 0.1-50 | every strategy (per layer; the last layer takes the remainder) |
+| Entry mode | `entry_mode` | plunge | plunge / ramp / helix | every strategy (how the tool gets down to a layer; ramps and helixes use the cutting feed) |
+| Ramp angle | `ramp_angle_deg` | 10° | 1-45 | every strategy (descent angle of a ramp or helix; the shallower, the longer the entry) |
+| Helix radius | `helix_radius_mm` | 1.5 mm | 0.2-20 | every strategy (clamped to the cutter's wall clearance, a wider helix would cut the wall) |
 | Boundary handling | `boundary_mode` | inset by the tool radius | inset / none | raster (`none` puts the tool centre on the contour) |
 | Stock allowance | `stock_allowance_mm` | 0 mm | 0-20 | raster (leave a ring inside the contour) |
 | Ring direction | `ring_direction` | alternate | alternate / climb / conventional | contour |
@@ -242,11 +265,16 @@ Dependencies point in one direction: `core` depends on nothing, `planning` / `si
 | Maximum rounds | `max_rounds` | 3 | 0-8 | adaptive contour |
 | Tightening factor | `stepover_factor` | 0.7 | 0.3-0.95 | adaptive contour |
 | Stepover floor | `min_stepover_mm` | 1 mm | 0.2-20 | adaptive contour |
+| Flute length | `flute_length_mm` | 0 = auto (`0.65 × length` or `6 × diameter`, whichever is smaller) | 0-300 | the tool (the shank starts at the top of the flutes; a cut deeper than them puts the shank in the pocket) |
+| Taper half-angle | `taper_angle_deg` | 0° (straight flanks) | 0-45 | the tool (how much the flanks open per side; the diameter is the one at the tip, and the cone feeds into the wall clearance) |
+| Shank diameter | `shank_diameter_mm` | 0 = auto (`1.25 × diameter`) | 0-200 | the tool (a shank wider than the cutter needs the pocket to leave that much room, or it is a collision) |
 
 The first six are declared once in `toolpath_lab/planning/base.py` as `MOTION_PARAMETERS` and merged
 into every strategy's `ParameterSet`, so a new strategy gets them by writing `+ MOTION_PARAMETERS`;
-the boundary pair is raster specific, the ring direction contour specific, and the last five sit on
-top of the contour parameters in the adaptive strategy.
+the boundary pair is raster specific, the ring direction contour specific, and the five adaptive rows
+sit on top of the contour parameters. The last three rows are the tool's own parameters
+(`toolpath_lab/core/tool.py`, independent of any strategy; `0` means "use the rule in the default
+column").
 
 **Climb vs conventional**: this project labels them by **geometric winding**. Contouring walks from
 the outside in, so unmachined material is always on the **inner** side of a loop; with an M03 spindle

@@ -24,7 +24,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
-from math import radians, sin
+from math import radians, sin, tan
 from pathlib import Path
 from typing import Any
 
@@ -274,6 +274,48 @@ def check_http_api() -> tuple[bool, str]:
         status, nc = _request(base, "/api/export/gcode", ramped)
         steps += 1
         expect(status == 200 and "(进刀：斜坡" in nc, f"导出的 NC 头部没有带上进刀说明：{status}")
+
+        # Holder collision: a fat shank under a short flute has to be reported, not silently machined.
+        holder_payload = {
+            "tool": {"diameter_mm": 6.0, "length_mm": 30.0,
+                     "flute_length_mm": 2.0, "shank_diameter_mm": 12.0},
+            "region": {"shape": "square"},
+            "planner": {"id": "contour",
+                        "parameters": {"depth_mm": 4.0, "stepdown_mm": 2.0}},
+        }
+        status, body = _request(base, "/api/plan", holder_payload)
+        steps += 1
+        if status != 200:
+            problems.append(f"刀柄碰撞的规划失败：{status} {body[:60]}")
+        else:
+            plan = json.loads(body)
+            holder = plan["holder"]
+            expect(holder is not None and holder["collides"] and holder["shortfall_mm"] == 3.0,
+                   f"刀柄碰撞结果不对：{holder}")
+            expect(any("刀柄碰撞" in warning for warning in plan["warnings"]),
+                   "刀柄碰撞应该给出中文提醒")
+
+        # Tapered tool: the flank widens with the depth, so the whole path has to sit further from the
+        # wall -- here 40 - (3 + 4 * tan 15 deg) = 35.93 mm instead of the straight tool's 37 mm.
+        tapered = {
+            "tool": {"diameter_mm": 6.0, "length_mm": 30.0, "taper_angle_deg": 15.0},
+            "region": {"shape": "square"},
+            "planner": {"id": "raster", "parameters": {"depth_mm": 4.0, "stepdown_mm": 2.0}},
+        }
+        status, body = _request(base, "/api/plan", tapered)
+        steps += 1
+        if status != 200:
+            problems.append(f"锥度刀的规划失败：{status} {body[:60]}")
+        else:
+            plan = json.loads(body)
+            inset = 3.0 + 4.0 * tan(radians(15.0))
+            xs = [point[0] for move in plan["toolpath"]["moves"] if move["kind"] == "cut"
+                  for point in move["points"]]
+            expect(abs(max(xs) - (40.0 - inset)) < 1e-3,
+                   f"锥度刀没有把刀路推离壁：最外刀 x = {max(xs):.4f}，期望 {40.0 - inset:.4f}")
+            expect(plan["holder"]["engaged_points"] == 0
+                   and plan["tool"]["flank_radius_mm"] > plan["tool"]["radius_mm"],
+                   f"锥度刀的刀具几何不对：{plan['tool']['flank_radius_mm']}")
 
         status, page = _request(base, "/index.html")
         steps += 1

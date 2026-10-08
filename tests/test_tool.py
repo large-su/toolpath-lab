@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from math import radians, tan
 
 from toolpath_lab.core.errors import ParameterError
 from toolpath_lab.core.tool import TOOL_KINDS, Tool, ToolKind, tool_parameters
@@ -32,6 +33,62 @@ class ToolGeometryTests(unittest.TestCase):
             Tool(ToolKind.FLAT, diameter_mm=0.0, length_mm=30.0)
         with self.assertRaises(ParameterError):
             Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=-1.0)
+
+
+class TaperTests(unittest.TestCase):
+    """A tapered tool widens above its bottom corner, so its reach depends on the depth of the cut."""
+
+    def test_a_flat_tapered_mill_widens_from_the_bottom_edge(self) -> None:
+        tool = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, taper_angle_deg=10.0)
+        slope = tan(radians(10.0))
+        self.assertAlmostEqual(tool.wall_clearance_mm(0.0), 3.0, places=6)
+        self.assertAlmostEqual(tool.wall_clearance_mm(4.0), 3.0 + 4.0 * slope, places=6)
+        self.assertAlmostEqual(tool.wall_clearance_mm(10.0), 3.0 + 10.0 * slope, places=6)
+        # The flat contact on the floor is untouched by the taper: coverage still sweeps R - Rc.
+        self.assertAlmostEqual(tool.footprint_radius_mm, 3.0, places=6)
+
+    def test_a_tapered_ball_nose_only_opens_above_its_corner(self) -> None:
+        tool = Tool(ToolKind.BALL, diameter_mm=8.0, length_mm=40.0, taper_angle_deg=10.0)
+        slope = tan(radians(10.0))
+        # Up to the corner radius the sphere is unchanged (the existing analytic values).
+        self.assertAlmostEqual(tool.wall_clearance_mm(2.0), 2.0 * (3.0 ** 0.5), places=6)
+        self.assertAlmostEqual(tool.wall_clearance_mm(4.0), 4.0, places=6)
+        self.assertAlmostEqual(tool.wall_clearance_mm(6.0), 4.0 + 2.0 * slope, places=6)
+
+    def test_a_zero_taper_is_the_model_every_earlier_number_used(self) -> None:
+        straight = Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=40.0)
+        self.assertEqual(straight.taper_slope, 0.0)
+        for depth in (0.0, 0.5, 5.0, 50.0):
+            with self.subTest(depth=depth):
+                self.assertAlmostEqual(straight.wall_clearance_mm(depth), 5.0, places=6)
+        ball = Tool(ToolKind.BALL, diameter_mm=8.0, length_mm=40.0)
+        self.assertAlmostEqual(ball.wall_clearance_mm(2.0), 2.0 * (3.0 ** 0.5), places=6)
+        self.assertAlmostEqual(ball.wall_clearance_mm(4.0), 4.0, places=6)
+
+    def test_the_flank_radius_is_the_reach_at_the_top_of_the_flutes(self) -> None:
+        tool = Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, taper_angle_deg=15.0,
+                    flute_length_mm=8.0)
+        self.assertAlmostEqual(tool.flank_radius_mm, 3.0 + 8.0 * tan(radians(15.0)), places=6)
+        self.assertAlmostEqual(tool.flank_radius_mm, tool.wall_clearance_mm(8.0), places=6)
+
+    def test_the_angle_comes_from_the_parameters_and_is_described(self) -> None:
+        tool = Tool.from_parameters(
+            {"kind": "flat", "diameter_mm": 6.0, "length_mm": 30.0, "taper_angle_deg": 15.0}
+        )
+        self.assertAlmostEqual(tool.taper_angle_deg, 15.0, places=6)
+        payload = tool.describe()
+        self.assertEqual(payload["taper_angle_deg"], 15.0)
+        self.assertAlmostEqual(payload["flank_radius_mm"], 3.0 + 18.0 * tan(radians(15.0)), places=6)
+
+    def test_negative_or_impossible_angles_are_rejected(self) -> None:
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, taper_angle_deg=-1.0)
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0, taper_angle_deg=90.0)
+        # The parameter layer caps it at 45 deg...
+        self.assertEqual(tool_parameters().spec("taper_angle_deg").maximum, 45.0)
+        with self.assertRaises(ParameterError):
+            tool_parameters().coerce({"taper_angle_deg": 60.0})
 
 
 class ToolParameterTests(unittest.TestCase):

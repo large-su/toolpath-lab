@@ -82,14 +82,17 @@ function liftPaths(polylines) {
 // (below the toolpath lift of 0.05, so it never covers the toolpath).
 // Exported so this pure function can be checked in Node with the bundled three.js, no browser needed.
 // Profile of a cutting head as [radius, height] pairs, for a lathe revolve: flat bottom out to
-// R - Rc, then the corner radius arc up to the full radius R at height Rc, then the straight flank.
+// R - Rc, then the corner radius arc up to the full radius R at height Rc, then the flank -- straight
+// for a cylindrical tool, opening by tan(taper) of radius per millimetre for a tapered one.
 // One formula covers all three kinds -- flat mills (Rc = 0), ball nose (Rc = R) and bull nose --
 // exactly like Tool.wall_clearance_mm does in the backend. Exported so it can be checked in Node.
-export function toolProfile(radiusMm, cornerRadiusMm, headHeightMm, segments = 16) {
+export function toolProfile(radiusMm, cornerRadiusMm, headHeightMm, segments = 16, taperAngleDeg = 0) {
   const radius = Math.max(radiusMm, 1e-6);
   const corner = Math.min(Math.max(cornerRadiusMm, 0), radius);
   const head = Math.max(headHeightMm, corner + 1e-6);
   const flat = radius - corner;
+  const slope = Math.tan((Math.max(taperAngleDeg, 0) * Math.PI) / 180);
+  const flank = (heightMm) => radius + Math.max(heightMm - corner, 0) * slope;
   const points = [[0, 0]];
   if (flat > 1e-6) {
     points.push([flat, 0]);
@@ -100,7 +103,7 @@ export function toolProfile(radiusMm, cornerRadiusMm, headHeightMm, segments = 1
       points.push([flat + corner * Math.sin(angle), corner * (1 - Math.cos(angle))]);
     }
   }
-  points.push([radius, head]);
+  points.push([flank(head), head]);
   points.push([0, head]);
   return points;
 }
@@ -419,13 +422,20 @@ export class Viewport {
     this._clear(this.toolGroup);
     const radius = Math.max(tool.radius_mm, 0.2);
     const length = tool.length_mm;
-    const flute = Math.min(length * 0.65, radius * 6);
-    const holder = Math.max(length - flute, length * 0.2);
+    // Flute and shank come from the backend, so the drawn tool is exactly the geometry the collision
+    // check measured; the fallbacks keep an older or partial response drawable.
+    const flute = Math.min(
+      tool.flute_mm > 0 ? tool.flute_mm : Math.min(length * 0.65, radius * 6), length
+    );
+    const shankRadius = tool.shank_radius_mm > 0 ? tool.shank_radius_mm : radius * 1.25;
+    // The shank fills the tool between the flutes and its end; a tool that is all flutes has none.
+    const holder = Math.max(length - flute, 0);
 
     // The cutting head is the profile of the real tool, revolved: a ball nose is drawn round and a
     // bull nose really has its corner radius, so the cutter in the view is the tool the plan was
     // computed for. DoubleSide keeps it solid whichever way the revolve winds.
-    const head = toolProfile(radius, tool.corner_radius_mm || 0, flute, 16).map(
+    const head = toolProfile(radius, tool.corner_radius_mm || 0, flute, 16,
+                             tool.taper_angle_deg || 0).map(
       ([r, h]) => new THREE.Vector2(r, h)
     );
     const cutting = new THREE.Mesh(
@@ -434,20 +444,24 @@ export class Viewport {
         color: COLORS.tool, metalness: 0.5, roughness: 0.34, side: THREE.DoubleSide,
       })
     );
-    const shank = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.holder, metalness: 0.92, roughness: 0.24,
-      })
-    );
-    for (const mesh of [cutting, shank]) {
+    cutting.rotation.x = Math.PI / 2; // LatheGeometry revolves around +Y, the app is Z-up
+    const meshes = [cutting];
+    if (holder > 1e-6) {
+      const shank = new THREE.Mesh(
+        new THREE.CylinderGeometry(shankRadius, shankRadius, holder, 48),
+        new THREE.MeshStandardMaterial({
+          color: COLORS.holder, metalness: 0.92, roughness: 0.24,
+        })
+      );
+      shank.rotation.x = Math.PI / 2;
+      shank.position.z = flute + holder / 2;
+      meshes.push(shank);
+    }
+    for (const mesh of meshes) {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.toolGroup.add(mesh);
     }
-    cutting.rotation.x = Math.PI / 2; // LatheGeometry revolves around +Y, the app is Z-up
-    shank.rotation.x = Math.PI / 2;
-    shank.position.z = flute + holder / 2;
     this.toolMesh = this.toolGroup;
     this.toolGroup.visible = this.display.showTool;
   }

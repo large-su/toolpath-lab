@@ -8,6 +8,7 @@ import unittest
 import urllib.error
 import urllib.request
 
+from toolpath_lab.core.region import build_region
 from toolpath_lab.server.app import ToolpathLabHandler, create_server
 
 #: A 60 x 40 outline as a drawing hands it over: counter-clockwise, with the first point repeated at
@@ -115,7 +116,8 @@ class CatalogTests(ApiTestCase):
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
         self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
-                         ["kind", "diameter_mm", "length_mm", "corner_radius_mm"])
+                         ["kind", "diameter_mm", "length_mm", "corner_radius_mm", "taper_angle_deg",
+                          "flute_length_mm", "shank_diameter_mm"])
 
     def test_catalog_reports_the_motion_parameters_instead_of_fixed_values(self) -> None:
         # Safe height and rapid feed used to sit in the catalogue's "fixed" section for display only;
@@ -346,6 +348,53 @@ class PlanTests(ApiTestCase):
         entry = next(note for note in notes if note.startswith("进刀："))
         self.assertIn("斜坡", entry)
         self.assertIn("11.52 mm", entry)
+
+    def test_the_holder_check_travels_with_every_plan(self) -> None:
+        """The check is always measured, so a caller can see the clearance even when it is fine."""
+
+        _, payload, _ = self.plan({})
+        holder = payload["holder"]
+        self.assertIsNotNone(holder)
+        self.assertEqual(holder["engaged_points"], 0)
+        self.assertIsNone(holder["clearance_mm"])
+        self.assertFalse(holder["collides"])
+
+    def test_a_fat_shank_is_reported_as_a_collision(self) -> None:
+        status, payload, _ = self.plan({
+            "tool": {"diameter_mm": 6.0, "length_mm": 30.0,
+                     "flute_length_mm": 2.0, "shank_diameter_mm": 12.0},
+            "planner": {"parameters": {"depth_mm": 4.0, "stepdown_mm": 2.0}},
+        })
+        self.assertEqual(status, 200)
+        holder = payload["holder"]
+        self.assertTrue(holder["collides"])
+        self.assertAlmostEqual(holder["clearance_mm"], 3.0, places=4)  # the cutter's own inset
+        self.assertAlmostEqual(holder["shortfall_mm"], 3.0, places=4)
+        self.assertTrue(any("刀柄碰撞" in warning for warning in payload["warnings"]))
+
+    def test_a_tapered_tool_pushes_the_path_away_from_the_wall(self) -> None:
+        """A taper is not a contradiction in a deep pocket: the inset grows with the depth."""
+
+        from math import radians, tan
+
+        from toolpath_lab.planning.geometry2d import distance_to_boundary
+
+        status, payload, _ = self.plan({
+            "tool": {"diameter_mm": 6.0, "length_mm": 30.0, "taper_angle_deg": 15.0},
+            "planner": {"parameters": {"depth_mm": 4.0, "stepdown_mm": 2.0}},
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["tool"]["taper_angle_deg"], 15.0)
+        inset = 3.0 + 4.0 * tan(radians(15.0))  # 4.0718: the flank's reach at the deepest layer
+        self.assertAlmostEqual(payload["tool"]["flank_radius_mm"],
+                               3.0 + 18.0 * tan(radians(15.0)), places=4)
+        # 18 mm of flutes over a 4 mm cut: nothing above the flutes is in the pocket.
+        self.assertEqual(payload["holder"]["engaged_points"], 0)
+        # The whole path really is that much further from the wall (a straight D6 would be at 3 mm).
+        points = [point[:2] for move in payload["toolpath"]["moves"] if move["kind"] == "cut"
+                  for point in move["points"]]
+        self.assertAlmostEqual(float(distance_to_boundary(points, build_region("square", {}).boundary()).min()),
+                               inset, places=3)
 
     def test_a_plan_without_depth_carries_no_height_map(self) -> None:
         # A single pass on the top face has no depth to colour: the response stays small instead of

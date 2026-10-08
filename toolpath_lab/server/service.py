@@ -13,6 +13,7 @@ from typing import Any
 from toolpath_lab import __version__
 from toolpath_lab.core.path import Toolpath
 from toolpath_lab.planning import Coverage, coverage_warnings, measure_coverage, run_plan
+from toolpath_lab.planning.collision import HolderCheck
 from toolpath_lab.planning.removal import Removal, measure_removal, removal_warnings
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.simulation import Timeline, build_timeline
@@ -30,6 +31,7 @@ class PlanResult:
     timeline: Timeline | None
     coverage: Coverage | None
     removal: Removal | None
+    holder: HolderCheck | None
     warnings: tuple[str, ...]
 
     def result_lines(self) -> list[str]:
@@ -76,6 +78,7 @@ class PlanResult:
             "timeline": None if self.timeline is None else self.timeline.to_payload(),
             "coverage": None if self.coverage is None else self.coverage.describe(),
             "removal": None if self.removal is None else self.removal.describe(),
+            "holder": None if self.holder is None else self.holder.describe(),
             "warnings": list(self.warnings),
         }
 
@@ -120,5 +123,6 @@ def execute_plan(
         timeline=timeline,
         coverage=coverage,
         removal=removal,
+        holder=outcome.holder,
         warnings=warnings,
     )

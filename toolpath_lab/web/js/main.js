@@ -274,6 +274,15 @@ function renderStats(result) {
       rows.push(["剩余余量", removal.remaining_volume_mm3.toFixed(0) + " mm³"]);
     }
   }
+  if (result.holder && result.holder.engaged_points > 0 && result.holder.clearance_mm !== null) {
+    // The tool above the flutes is inside the pocket: how much room is left to the wall.
+    const holder = result.holder;
+    rows.push([
+      "刀柄间隙",
+      holder.clearance_mm.toFixed(2) + " mm"
+        + (holder.shortfall_mm > 0 ? "（差 " + holder.shortfall_mm.toFixed(2) + " mm）" : ""),
+    ]);
+  }
   const list = document.createElement("dl");
   for (const [label, value] of rows) {
     for (const node of statRow(label, value)) list.appendChild(node);

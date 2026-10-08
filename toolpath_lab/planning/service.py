@@ -9,6 +9,7 @@ from toolpath_lab.core.path import Toolpath
 from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import TOOL_KIND_LABELS, Tool, ToolKind
 from toolpath_lab.planning.base import Planner, PlanningContext
+from toolpath_lab.planning.collision import HolderCheck, check_holder, holder_note, holder_warnings
 from toolpath_lab.planning.entry import measure_entry
 from toolpath_lab.planning.feeds import apply_corner_slowdown
 from toolpath_lab.planning.registry import PLANNERS
@@ -21,6 +22,8 @@ class PlanningOutcome:
 
     toolpath: Toolpath
     warnings: tuple[str, ...] = ()
+    #: What the tool geometry above the flutes would do in this pocket (always measured).
+    holder: HolderCheck | None = None
 
 
 def get_planner(planner_id: str) -> Planner:
@@ -59,6 +62,14 @@ def run_plan(
     entries = measure_entry(toolpath, region)
     if entries is not None:
         toolpath = replace(toolpath, notes=toolpath.notes + (entries.note(),))
+    # Whether the tool *above* the flutes fits into the pocket it just machined: the check adds a note
+    # when the shank enters the pocket and still clears the wall, and a warning when it would rub.
+    holder = check_holder(toolpath, region, context.tool)
+    clearance_note = holder_note(holder)
+    if clearance_note is not None:
+        toolpath = replace(toolpath, notes=toolpath.notes + (clearance_note,))
+    for message in holder_warnings(holder):
+        context.warn(message)
     if context.tool.kind is not ToolKind.FLAT:
         # Say out loud how a shaped tool is treated: the offset uses the wall clearance over the whole
         # cut, while coverage still sweeps the (much smaller) flat contact on the floor.
@@ -72,4 +83,6 @@ def run_plan(
                 "实际表面的残留高度取决于切宽，本模型不做表面仿真",
             ),
         )
-    return PlanningOutcome(toolpath=toolpath, warnings=tuple(context.warnings))
+    return PlanningOutcome(
+        toolpath=toolpath, warnings=tuple(context.warnings), holder=holder
+    )
