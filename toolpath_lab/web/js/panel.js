@@ -14,6 +14,15 @@ const FIXED_NOTES = [
   ["快移速度", "fixed.rapid_feed_mm_per_min", "mm/min"],
 ];
 
+// 常用刀具库：一键填入刀具参数（保留未涉及字段）。
+const PRESET_TOOLS = [
+  { label: "D6 平底", values: { kind: "flat", diameter_mm: 6.0 } },
+  { label: "D10 平底", values: { kind: "flat", diameter_mm: 10.0 } },
+  { label: "R3 球头", values: { kind: "ball", diameter_mm: 6.0 } },
+  { label: "D6 R1 圆鼻", values: { kind: "bull", diameter_mm: 6.0, corner_mm: 1.0 } },
+  { label: "D20 平底", values: { kind: "flat", diameter_mm: 20.0 } },
+];
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -78,6 +87,7 @@ export class ParameterPanel {
     this.rows = [];
     this.root.replaceChildren(
       this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
+      this._presetToolSection(),
       this._toolInfoSection(),
       this._regionSection(),
       this._plannerSection(),
@@ -106,6 +116,27 @@ export class ParameterPanel {
       });
       section.appendChild(this._wrapRow(spec, control, capability, values));
     }
+    return section;
+  }
+
+  // ------------------------------------------------------------- 常用刀具库
+  _presetToolSection() {
+    const section = this._section("常用刀具");
+    const row = document.createElement("div");
+    row.className = "preset-row";
+    for (const preset of PRESET_TOOLS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "preset";
+      button.textContent = preset.label;
+      button.addEventListener("click", () => {
+        Object.assign(this.state.tool, preset.values);
+        this.render();
+        this.onChange();
+      });
+      row.appendChild(button);
+    }
+    section.appendChild(row);
     return section;
   }
 

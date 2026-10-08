@@ -317,6 +317,30 @@ input[type="checkbox"] {
   color: var(--orange);
 }
 
+/* ------------------------------------------------------------ 常用刀具库 */
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 0 10px;
+}
+
+.preset {
+  flex: 1 1 auto;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.preset:hover {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
 /* ------------------------------------------------------------ 视图工具条 */
 .view-toolbar {
   position: absolute;

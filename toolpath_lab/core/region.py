@@ -136,6 +136,75 @@ class CircleRegion(RegionShape):
         return np.column_stack((radius * np.cos(angles), radius * np.sin(angles)))
 
 
+@REGION_SHAPES.register
+@dataclass(frozen=True, slots=True)
+class RoundedRectangleRegion(RegionShape):
+    """以原点为中心的圆角矩形区域（四角圆弧过渡）。"""
+
+    width_mm: float = 80.0
+    height_mm: float = 60.0
+    corner_radius_mm: float = 10.0
+
+    id: ClassVar[str] = "rounded_rectangle"
+    label: ClassVar[str] = "圆角矩形"
+    description: ClassVar[str] = "带圆角过渡的矩形型腔，数控加工最常见的型腔形状之一"
+    parameters: ClassVar[ParameterSet] = ParameterSet(
+        (
+            spec("width_mm", "宽度 W", K.FLOAT, 80.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域"),
+            spec("height_mm", "高度 H", K.FLOAT, 60.0, minimum=5.0, maximum=1000.0,
+                 step=5.0, unit="mm", group="区域"),
+            spec("corner_radius_mm", "圆角半径 Rr", K.FLOAT, 10.0, minimum=0.0,
+                 maximum=1000.0, step=1.0, unit="mm", group="区域",
+                 help="四角的过渡圆弧半径，不能超过短边的一半；为 0 时退化为方形"),
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if self.width_mm <= 0 or self.height_mm <= 0:
+            raise ParameterError("圆角矩形宽高必须为正")
+        if self.corner_radius_mm < 0:
+            raise ParameterError("圆角半径必须非负")
+        if 2.0 * self.corner_radius_mm > min(self.width_mm, self.height_mm) + 1e-9:
+            raise ParameterError("圆角半径不能超过短边的一半")
+
+    def boundary(self) -> NDArray[np.float64]:
+        w = self.width_mm / 2.0
+        h = self.height_mm / 2.0
+        r = self.corner_radius_mm
+        if r <= 1e-9:
+            return np.array([(-w, -h), (w, -h), (w, h), (-w, h)], dtype=np.float64)
+
+        # 四个 1/4 圆弧：圆心 + 角度范围（逆时针，从右侧直边转上去）
+        arcs = (
+            ((w - r, h - r), 0.0, 0.5 * pi),
+            ((-w + r, h - r), 0.5 * pi, pi),
+            ((-w + r, -h + r), pi, 1.5 * pi),
+            ((w - r, -h + r), 1.5 * pi, 2.0 * pi),
+        )
+        segments = 16
+        xs: list[float] = []
+        ys: list[float] = []
+        for (cx, cy), a0, a1 in arcs:
+            angles = np.linspace(a0, a1, segments + 1, endpoint=True)
+            arc_x = (cx + r * np.cos(angles)).tolist()
+            arc_y = (cy + r * np.sin(angles)).tolist()
+            if not xs:
+                xs.append(arc_x[0])
+                ys.append(arc_y[0])
+            else:
+                xs.append(arc_x[0])  # 直线段：上一弧终点 → 本弧起点
+                ys.append(arc_y[0])
+            xs.extend(arc_x[1:])
+            ys.extend(arc_y[1:])
+        points = np.column_stack((np.asarray(xs, dtype=np.float64),
+                                  np.asarray(ys, dtype=np.float64)))
+        # 末弧终点回到首点，去掉避免首尾重复
+        if np.linalg.norm(points[-1] - points[0]) <= 1e-9:
+            points = points[:-1]
+        return points
+
+
 def build_region(shape_id: str, raw_parameters: Mapping[str, Any] | None = None) -> RegionShape:
     """由接口参数构造一个已注册的区域形状。"""
 
