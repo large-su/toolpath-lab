@@ -85,7 +85,8 @@ described by parameter declarations, and the parameter panel is generated from t
   reduced: coverage, floor ratio and the volumes always come from the 0.5 mm measurement grid.
 - **Notes**: every plan explains its own choices in a collapsible "刀路说明" list (per-round stepover,
   coverage, ring count, cutting length and time for adaptive contouring; the corner slowdown and
-  layer counts; the safe height and rapid feed actually used).
+  layer counts; the safe height and rapid feed actually used; the length of every ramp or helix entry,
+  which is a cutting move -- 2 mm down at 1° is 114.6 mm of travel before the first pass starts).
 - **Export**: NC program (G-code, G21 / G90 / G17 with G0 / G1 and F) and a **CSV point table** (one
   tool point per row). Both explain where they came from: the NC header and a CSV comment block carry
   the echoed request, the toolpath summary (strategy, passes, points, cutting and rapid length,

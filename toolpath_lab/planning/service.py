@@ -9,6 +9,7 @@ from toolpath_lab.core.path import Toolpath
 from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import TOOL_KIND_LABELS, Tool, ToolKind
 from toolpath_lab.planning.base import Planner, PlanningContext
+from toolpath_lab.planning.entry import measure_entry
 from toolpath_lab.planning.feeds import apply_corner_slowdown
 from toolpath_lab.planning.registry import PLANNERS
 from toolpath_lab.planning.stepdown import apply_stepdown
@@ -52,6 +53,12 @@ def run_plan(
     toolpath = apply_stepdown(
         toolpath, depth_mm=context.depth_mm, stepdown_mm=context.stepdown_mm
     )
+    # How the tool gets down to a layer is a cutting move when it ramps or spirals, and a shallow
+    # angle can make it longer than the pass it leads into, so the notes state the length it built
+    # (measured on the finished path, which is one entry per layer once the layers are stacked).
+    entries = measure_entry(toolpath, region)
+    if entries is not None:
+        toolpath = replace(toolpath, notes=toolpath.notes + (entries.note(),))
     if context.tool.kind is not ToolKind.FLAT:
         # Say out loud how a shaped tool is treated: the offset uses the wall clearance over the whole
         # cut, while coverage still sweeps the (much smaller) flat contact on the floor.

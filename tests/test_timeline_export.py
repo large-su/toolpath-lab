@@ -190,6 +190,16 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(rows[0], ",".join(CSV_COLUMNS))
         self.assertEqual(len(rows) - 1, self.toolpath.point_count)
 
+    def test_the_csv_block_carries_the_notes_too(self) -> None:
+        # The NC header always carries the planner's notes, so the CSV block has to match: otherwise
+        # facts like the entry length would only be readable in one of the two downloads.
+        text = toolpath_to_csv(self.toolpath, provenance=["coverage 98.55 %"])
+        comments = [line for line in text.splitlines() if line.startswith("#")]
+        self.assertTrue(self.toolpath.notes)
+        for note in self.toolpath.notes:
+            with self.subTest(note=note):
+                self.assertIn("# " + note, comments)
+
     def test_the_data_rows_are_identical_with_and_without_the_block(self) -> None:
         plain = toolpath_to_csv(self.toolpath).splitlines()
         with_block = [

@@ -11,11 +11,11 @@ a move may coincide with the last point of the previous one (moves join end to e
 what the toolpath model looks like, so nothing is deduplicated.
 
 Without `provenance` the result is nothing but that table, which is what a library default should be.
-The download from the UI does pass it, and then a `#` comment block carries the toolpath summary plus
-those extra facts (the echoed request, coverage, warnings) while the **data rows stay identical and
-still ASCII**; the block itself is UTF-8 and may contain Chinese, because warnings and planner labels
-are user visible text and therefore Chinese by convention. Read such a file with
-`pandas.read_csv(path, comment="#")`, or skip the `#` lines.
+The download from the UI does pass it, and then a `#` comment block carries the toolpath summary, the
+planner's own notes and those extra facts (the echoed request, coverage, warnings) while the **data
+rows stay identical and still ASCII**; the block itself is UTF-8 and may contain Chinese, because
+warnings and planner labels are user visible text and therefore Chinese by convention. Read such a file
+with `pandas.read_csv(path, comment="#")`, or skip the `#` lines.
 
 The recipe for a new export format is in docs/extending.md section 4: write a pure function here,
 export it in export/__init__.py, and add a branch to _route_api in server/app.py.
@@ -47,8 +47,13 @@ def toolpath_to_csv(
     """Render a toolpath as a CSV point table, one tool point per row."""
 
     extra = provenance_lines(provenance)
-    lines: list[str] = [f"# {chunk}" for chunk in toolpath_summary_lines(toolpath)] if extra else []
-    lines += [f"# {chunk}" for chunk in extra]
+    lines: list[str] = []
+    if extra:
+        # The NC header always carries the summary and the planner's own notes; when the CSV gets a
+        # comment block at all it carries the same facts, so the entry length and the ring layout are
+        # readable in either download (see docs/architecture.md on the two formats).
+        block = [*toolpath_summary_lines(toolpath), *provenance_lines(toolpath.notes), *extra]
+        lines = [f"# {chunk}" for chunk in block]
     number = f"{{:.{decimals}f}}"
     lines.append(",".join(CSV_COLUMNS))
     for move_index, move in enumerate(toolpath.moves):

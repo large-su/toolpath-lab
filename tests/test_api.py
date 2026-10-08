@@ -335,6 +335,18 @@ class PlanTests(ApiTestCase):
         self.assertEqual(max(values), 0.0)  # the top face is still there somewhere
         self.assertLessEqual(min(values), -1.9)  # and the middle reached the floor
 
+    def test_the_notes_state_the_entry_length(self) -> None:
+        """The UI reads the notes from here, so the ramp/helix length has to travel with the response."""
+
+        _, payload, _ = self.plan(
+            {"planner": {"parameters": {"entry_mode": "ramp", "ramp_angle_deg": 10.0,
+                                        "depth_mm": 2.0}}}
+        )
+        notes = payload["toolpath"]["notes"]
+        entry = next(note for note in notes if note.startswith("进刀："))
+        self.assertIn("斜坡", entry)
+        self.assertIn("11.52 mm", entry)
+
     def test_a_plan_without_depth_carries_no_height_map(self) -> None:
         # A single pass on the top face has no depth to colour: the response stays small instead of
         # sending a grid of zeroes with every default request.

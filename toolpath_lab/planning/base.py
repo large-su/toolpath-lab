@@ -28,6 +28,7 @@ from toolpath_lab.core.parameters import (
 from toolpath_lab.core.path import Move, MoveKind, Toolpath, retract_move
 from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import Tool
+from toolpath_lab.planning.entry import ENTRY_LABEL_SUFFIX, ENTRY_MODE_LABELS
 from toolpath_lab.planning.feeds import DEFAULT_CORNER_ANGLE_DEG, DEFAULT_CORNER_FEED_RATIO
 from toolpath_lab.planning.geometry2d import ensure_ccw
 from toolpath_lab.planning.stepdown import DEFAULT_DEPTH_MM, DEFAULT_STEPDOWN_MM
@@ -243,7 +244,6 @@ class PlanningContext:
         step = self._planar_direction(direction)
         if self.entry_mode == "helix":
             points = self._helix_points(target, step, depth)
-            label = "螺旋进刀"
         else:
             travel = depth / max(tan(radians(self.ramp_angle_deg)), 1e-6)
             points = np.array(
@@ -253,7 +253,9 @@ class PlanningContext:
                 ],
                 dtype=np.float64,
             )
-            label = "斜坡进刀"
+        # The label is the shared vocabulary: planning/entry.py reads it back to name the mode in the
+        # plan's notes, so both sides spell it the same way.
+        label = f"{ENTRY_MODE_LABELS[self.entry_mode]}{ENTRY_LABEL_SUFFIX}"
         approach = Move(
             MoveKind.RAPID,
             np.vstack([plane, np.array([points[0][0], points[0][1], depth], dtype=np.float64)]),

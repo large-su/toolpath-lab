@@ -24,6 +24,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+from math import radians, sin
 from pathlib import Path
 from typing import Any
 
@@ -252,6 +253,27 @@ def check_http_api() -> tuple[bool, str]:
                        f"高度图的地面不对：floor {height_map['floor_mm']} min {min(values)}")
             expect(single["removal"]["height_map"] is None,
                    "没有切深的规划不应带高度图")
+
+        # Entry moves: a ramp is a cutting move whose length follows from the depth and the angle, so
+        # the notes (and through them the downloads) have to state it.
+        ramped = {
+            "region": {"shape": "square"},
+            "planner": {"id": "contour",
+                        "parameters": {"entry_mode": "ramp", "ramp_angle_deg": 10.0,
+                                       "depth_mm": 2.0}},
+        }
+        status, body = _request(base, "/api/plan", ramped)
+        steps += 1
+        if status != 200:
+            problems.append(f"斜坡进刀的规划失败：{status} {body[:60]}")
+        else:
+            notes = json.loads(body)["toolpath"]["notes"]
+            entry = next((note for note in notes if note.startswith("进刀：")), "")
+            expect("斜坡" in entry and f"{2.0 / sin(radians(10.0)):.2f} mm" in entry,
+                   f"进刀段长度没有写进「刀路说明」：{entry!r}")
+        status, nc = _request(base, "/api/export/gcode", ramped)
+        steps += 1
+        expect(status == 200 and "(进刀：斜坡" in nc, f"导出的 NC 头部没有带上进刀说明：{status}")
 
         status, page = _request(base, "/index.html")
         steps += 1
