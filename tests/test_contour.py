@@ -65,7 +65,7 @@ class RegistrationTests(unittest.TestCase):
             [item["key"] for item in entry["parameters"]],
             ["stepover_mm", "sample_step_mm", "ring_direction", "feed_mm_per_min",
              "safe_height_mm", "rapid_feed_mm_per_min", "corner_angle_deg", "corner_feed_ratio",
-             "depth_mm", "stepdown_mm"],
+             "depth_mm", "stepdown_mm", "entry_mode", "ramp_angle_deg", "helix_radius_mm"],
         )
         direction = {item["key"]: item for item in entry["parameters"]}["ring_direction"]
         self.assertEqual(direction["default"], "alternate")

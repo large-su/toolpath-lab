@@ -12,7 +12,7 @@ below (third party plugins are therefore not tripped up by this convention).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import isfinite
+from math import ceil, cos, isfinite, pi, radians, sin, tan
 from typing import Any, ClassVar, Mapping
 
 import numpy as np
@@ -20,6 +20,7 @@ from numpy.typing import NDArray
 
 from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.parameters import (
+    Choice,
     ParameterKind as K,
     ParameterSet,
     spec,
@@ -35,6 +36,16 @@ from toolpath_lab.planning.stepdown import DEFAULT_DEPTH_MM, DEFAULT_STEPDOWN_MM
 SAFE_HEIGHT_MM = 5.0
 #: Default feed rate (mm/min) for rapid moves.
 RAPID_FEED_MM_PER_MIN = 5000.0
+
+#: Entry modes: how the tool gets down to the cutting plane of a layer.
+ENTRY_MODES: tuple[Choice, ...] = (
+    Choice("plunge", "直插（默认）"),
+    Choice("ramp", "斜坡"),
+    Choice("helix", "螺旋"),
+)
+DEFAULT_ENTRY_MODE = "plunge"
+DEFAULT_RAMP_ANGLE_DEG = 10.0
+DEFAULT_HELIX_RADIUS_MM = 1.5
 
 #: Motion parameters shared by every strategy: merge them into your ParameterSet to expose them.
 #: Corner feed reduction is in here too, so even a third party strategy gets it for free (see
@@ -59,6 +70,15 @@ MOTION_PARAMETERS: ParameterSet = ParameterSet(
         spec("stepdown_mm", "吃刀深度", K.FLOAT, DEFAULT_STEPDOWN_MM, minimum=0.1,
              maximum=50.0, step=0.5, unit="mm", group="刀路",
              help="每层下刀多少；总深度不是它的整数倍时，最后一层取剩余量"),
+        spec("entry_mode", "进刀方式", K.CHOICE, DEFAULT_ENTRY_MODE, group="刀路",
+             choices=ENTRY_MODES,
+             help="直插最快；斜坡与螺旋是切入材料更常见的做法，两者用切削进给"),
+        spec("ramp_angle_deg", "斜坡角度", K.FLOAT, DEFAULT_RAMP_ANGLE_DEG, minimum=1.0,
+             maximum=45.0, step=1.0, unit="°", group="刀路",
+             help="斜坡与螺旋的下切角度；角度越小，每层需要的引入距离越长"),
+        spec("helix_radius_mm", "螺旋半径", K.FLOAT, DEFAULT_HELIX_RADIUS_MM, minimum=0.2,
+             maximum=20.0, step=0.1, unit="mm", group="刀路",
+             help="螺旋进刀的圆半径；超过刀具贴壁间隙时会被压到该间隙以内"),
     )
 )
 
@@ -124,6 +144,34 @@ class PlanningContext:
 
         return self.tool.wall_clearance_mm(self.depth_mm)
 
+    @property
+    def entry_mode(self) -> str:
+        """How the tool descends to a layer: "plunge", "ramp" or "helix"."""
+
+        return str(self.parameters.get("entry_mode", DEFAULT_ENTRY_MODE))
+
+    @property
+    def ramp_angle_deg(self) -> float:
+        """Descent angle of a ramp or helix entry."""
+
+        return float(self.parameters.get("ramp_angle_deg", DEFAULT_RAMP_ANGLE_DEG))
+
+    @property
+    def helix_radius_mm(self) -> float:
+        """Helix radius, never wider than the wall clearance (a wider helix would cut the wall)."""
+
+        wanted = float(self.parameters.get("helix_radius_mm", DEFAULT_HELIX_RADIUS_MM))
+        limit = max(self.cutting_radius_mm * 0.9, 0.05)
+        return min(wanted, limit)
+
+    @property
+    def entry_depth_mm(self) -> float:
+        """How deep one entry descends: the depth of cut of a single layer."""
+
+        if self.depth_mm <= 0.0:
+            return max(self.stepdown_mm, 0.0)
+        return max(min(self.stepdown_mm, self.depth_mm), 0.0)
+
     # -- geometry ----------------------------------------------------------
     @property
     def boundary(self) -> NDArray[np.float64]:
@@ -164,13 +212,90 @@ class PlanningContext:
     def rapid_between(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> Move:
         return retract_move(start, end, self.safe_height_mm, self.rapid_feed_mm_per_min)
 
-    def approach_move_down(self, point: NDArray[np.float64]) -> Move:
-        """Plunge from the safe height down to this point."""
+    def entry_moves(
+        self,
+        point: NDArray[np.float64],
+        direction: NDArray[np.float64] | None = None,
+    ) -> tuple[Move, ...]:
+        """Moves that bring the tool down to this point: a plunge, a ramp or a helix.
+
+        The entry is built relative to the machining plane of its own layer, so with step-down a ramp
+        or helix spans exactly the depth of cut of that layer once the layer shift is applied: the
+        tool comes down from the previous floor (and, on the top layer, through open air) to the floor
+        it is about to cut.
+
+        The ramp walks backwards along the cutting direction and the helix turns around a centre
+        offset the same way, so both end on the cut start and merge into it. Both use the cutting feed
+        because both remove material, and neither is clipped against the region outline: a shallow
+        angle over a deep cut asks for a long entry, which the plan's notes report so the length is
+        never a surprise.
+        """
 
         target = np.asarray(point, dtype=np.float64).reshape(3)
-        start = np.array([target[0], target[1], self.safe_height_mm], dtype=np.float64)
-        return Move(MoveKind.RAPID, np.vstack([start, target]), self.rapid_feed_mm_per_min,
-                    label="下刀")
+        plane = np.array([target[0], target[1], self.safe_height_mm], dtype=np.float64)
+        depth = self.entry_depth_mm
+        if self.entry_mode not in ("ramp", "helix") or depth <= 1e-9:
+            return (
+                Move(MoveKind.RAPID, np.vstack([plane, target]), self.rapid_feed_mm_per_min,
+                     label="下刀"),
+            )
+
+        step = self._planar_direction(direction)
+        if self.entry_mode == "helix":
+            points = self._helix_points(target, step, depth)
+            label = "螺旋进刀"
+        else:
+            travel = depth / max(tan(radians(self.ramp_angle_deg)), 1e-6)
+            points = np.array(
+                [
+                    [target[0] - step[0] * travel, target[1] - step[1] * travel, depth],
+                    target,
+                ],
+                dtype=np.float64,
+            )
+            label = "斜坡进刀"
+        approach = Move(
+            MoveKind.RAPID,
+            np.vstack([plane, np.array([points[0][0], points[0][1], depth], dtype=np.float64)]),
+            self.rapid_feed_mm_per_min,
+            label="下刀",
+        )
+        return (
+            approach,
+            Move(MoveKind.CUT, points, self.feed_mm_per_min, pass_index=-1, label=label),
+        )
+
+    def _planar_direction(self, direction: NDArray[np.float64] | None) -> NDArray[np.float64]:
+        """Unit direction of the first cutting segment; +X when the caller has none."""
+
+        fallback = np.array([1.0, 0.0], dtype=np.float64)
+        if direction is None:
+            return fallback
+        flat = np.asarray(direction, dtype=np.float64).reshape(-1)[:2]
+        length = float(np.linalg.norm(flat))
+        return fallback if length <= 1e-9 else flat / length
+
+    def _helix_points(
+        self, target: NDArray[np.float64], step: NDArray[np.float64], depth: float
+    ) -> NDArray[np.float64]:
+        """A helix of whole turns ending on the target, descending `depth` on the way.
+
+        Whole turns matter: they bring the tool back to the same XY it started above, so the entry
+        ends exactly where the cut begins. The pitch follows the ramp angle, so both entry modes
+        descend at the same angle.
+        """
+
+        radius = self.helix_radius_mm
+        pitch = 2.0 * pi * radius * max(tan(radians(self.ramp_angle_deg)), 1e-6)
+        turns = max(1.0, ceil(depth / max(pitch, 1e-6)))
+        centre = np.array([target[0] - step[0] * radius, target[1] - step[1] * radius])
+        samples = max(16, int(48 * turns))
+        angles = np.linspace(-2.0 * pi * turns, 0.0, samples + 1)
+        xy = centre + radius * np.column_stack((np.cos(angles), np.sin(angles)))
+        z = depth * (1.0 - np.linspace(0.0, 1.0, samples + 1))
+        points = np.column_stack((xy, z))
+        points[-1] = target
+        return points
 
     def retract_move_up(self, point: NDArray[np.float64]) -> Move:
         """Retract from this point up to the safe height."""

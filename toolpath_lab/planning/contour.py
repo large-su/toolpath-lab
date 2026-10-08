@@ -136,7 +136,9 @@ class ContourPlanner(Planner):
                     closed = closed[::-1]
                 positions = context.to_positions(closed)
                 if previous is None:
-                    moves.append(context.approach_move_down(positions[0]))
+                    moves.extend(
+                        context.entry_moves(positions[0], positions[1] - positions[0])
+                    )
                 elif previous_loop is not None and self._is_nested(loop, previous_loop):
                     moves.append(context.link_move(previous, positions[0]))
                 else:

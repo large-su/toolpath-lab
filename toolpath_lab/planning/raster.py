@@ -117,7 +117,8 @@ class RasterPlanner(Planner):
 
         moves: list[Move] = []
         first = self._to_world(passes[0], frame, reverse=False)
-        moves.append(context.approach_move_down(context.to_positions(first)[0]))
+        entry = context.to_positions(first)
+        moves.extend(context.entry_moves(entry[0], entry[1] - entry[0]))
 
         previous: np.ndarray | None = None
         for index, (start, end, level) in enumerate(passes):

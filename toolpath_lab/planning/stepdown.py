@@ -30,7 +30,7 @@ from dataclasses import replace
 import numpy as np
 from numpy.typing import NDArray
 
-from toolpath_lab.core.path import Move, Toolpath
+from toolpath_lab.core.path import Move, MoveKind, Toolpath
 
 _EPS = 1e-9
 
@@ -57,11 +57,19 @@ def layer_depths(depth_mm: float, stepdown_mm: float) -> list[float]:
     return depths
 
 
-def _shifted_points(points: NDArray[np.float64], depth: float) -> NDArray[np.float64]:
-    """One move's points on a layer: what reaches the machining plane goes down with it."""
+def _shifted_points(
+    points: NDArray[np.float64], depth: float, *, cutting: bool
+) -> NDArray[np.float64]:
+    """One move's points on a layer.
+
+    Cutting and link moves belong to their layer as a whole, so every point of theirs moves down --
+    including the upper end of a ramp or helix entry, which deliberately starts above the layer it
+    descends to. Rapids keep their absolute height (the clearance plane never sinks towards the
+    walls); only the part that reaches the machining plane, the bottom of a plunge, comes down.
+    """
 
     shifted = np.array(points, dtype=np.float64, copy=True)
-    reaches_plane = shifted[:, 2] <= _EPS
+    reaches_plane = (shifted[:, 2] <= _EPS) | cutting
     shifted[reaches_plane, 2] += depth
     return shifted
 
@@ -88,7 +96,9 @@ def apply_stepdown(
             moves.append(
                 replace(
                     move,
-                    points=_shifted_points(move.points, depth),
+                    points=_shifted_points(
+                        move.points, depth, cutting=move.kind is not MoveKind.RAPID
+                    ),
                     pass_index=(
                         move.pass_index + layer_index * layer_pass_count
                         if move.pass_index >= 0
