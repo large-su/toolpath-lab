@@ -187,7 +187,12 @@ export class Viewport {
     const span = Math.max(xMax - xMin, yMax - yMin);
 
     const thickness = this._thickness(span);
-    this.workpieceGroup.add(this._workpiece(region, thickness));
+    const surfaceMesh = payload.surface ? payload.surface.mesh : null;
+    this.workpieceGroup.add(
+      surfaceMesh
+        ? this._surfaceBody(region.boundary, surfaceMesh, thickness)
+        : this._workpiece(region, thickness)
+    );
     this.contourGroup.add(this._contour(region.boundary));
     this._rebuildGrid(span, thickness);
 
@@ -249,17 +254,27 @@ export class Viewport {
     this._clear(this.toolGroup);
     const radius = Math.max(tool.radius_mm, 0.2);
     const length = tool.length_mm;
-    const flute = Math.min(length * 0.65, radius * 6);
+    const flute = Math.min(tool.flute_length_mm || length * 0.65, length);
     const holder = Math.max(length - flute, length * 0.2);
 
-    // 两段都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
-    // 黄色切削段对齐 UGNX 的刀具配色。
-    const cutting = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, flute, 64),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.tool, metalness: 0.5, roughness: 0.34,
-      })
-    );
+    // 切削段直接由后端给的刀尖母线旋成实体：平底刀、球头刀、圆鼻刀共用这一段
+    // 代码，以后再添刀具形态也不用改这里（黄色切削段对齐 UGNX 的刀具配色）。
+    const cuttingMaterial = new THREE.MeshStandardMaterial({
+      color: COLORS.tool, metalness: 0.5, roughness: 0.34,
+    });
+    const profile = Array.isArray(tool.profile) && tool.profile.length >= 2
+      ? tool.profile
+      : null;
+    const cutting = profile
+      ? new THREE.Mesh(
+        new THREE.LatheGeometry(
+          profile.map(([r, z]) => new THREE.Vector2(Math.max(r, 0), z)), 64
+        ),
+        cuttingMaterial
+      )
+      : new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, flute, 64), cuttingMaterial
+      );
     const shank = new THREE.Mesh(
       new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
       new THREE.MeshStandardMaterial({
@@ -272,7 +287,7 @@ export class Viewport {
       this.toolGroup.add(mesh);
     }
     cutting.rotation.x = Math.PI / 2;
-    cutting.position.z = flute / 2;
+    if (!profile) cutting.position.z = flute / 2;
     shank.rotation.x = Math.PI / 2;
     shank.position.z = flute + holder / 2;
     this.toolMesh = this.toolGroup;
@@ -383,12 +398,76 @@ export class Viewport {
   }
 
   _contour(boundary) {
-    const points = boundary.map((point) => new THREE.Vector3(point[0], point[1], PATH_LIFT_MM * 2));
+    // 轮廓点已经带着加工面的高度（后端算好），这里只抬一点点避开 z-fighting。
+    const points = boundary.map(
+      (point) => new THREE.Vector3(point[0], point[1], (point[2] || 0) + PATH_LIFT_MM * 2)
+    );
     const geometry = new THREE.BufferGeometry().setFromPoints(points);
     return new THREE.LineLoop(
       geometry,
       new THREE.LineBasicMaterial({ color: COLORS.contour, transparent: true, opacity: 0.9 })
     );
+  }
+
+  // 加工面：由后端采样好的高度网格重建，顶点只在区域内部生成；再把区域轮廓向下
+  // 封成侧壁，于是曲面毛坯看起来是一个整体，而不是一张悬空的纸。
+  _surfaceBody(boundary, mesh, thickness) {
+    const group = new THREE.Group();
+    const resolution = mesh.resolution;
+    const positions = [];
+    const indices = [];
+    const vertexOf = new Int32Array(resolution * resolution).fill(-1);
+    let lowest = Infinity;
+    for (let row = 0; row < resolution; row += 1) {
+      for (let column = 0; column < resolution; column += 1) {
+        if (!mesh.inside[row][column]) continue;
+        const z = mesh.z[row][column];
+        if (z < lowest) lowest = z;
+        vertexOf[row * resolution + column] = positions.length / 3;
+        positions.push(mesh.x[column], mesh.y[row], z);
+      }
+    }
+    if (!Number.isFinite(lowest)) lowest = 0;
+    for (let row = 0; row + 1 < resolution; row += 1) {
+      for (let column = 0; column + 1 < resolution; column += 1) {
+        const a = vertexOf[row * resolution + column];
+        const b = vertexOf[row * resolution + column + 1];
+        const c = vertexOf[(row + 1) * resolution + column + 1];
+        const d = vertexOf[(row + 1) * resolution + column];
+        if (a < 0 || b < 0 || c < 0 || d < 0) continue;
+        indices.push(a, b, c, a, c, d);
+      }
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    const material = new THREE.MeshStandardMaterial({
+      color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
+      side: THREE.DoubleSide,
+    });
+    const face = new THREE.Mesh(geometry, material);
+    face.castShadow = true;
+    face.receiveShadow = true;
+    group.add(face, this._skirt(boundary, lowest - thickness, material));
+    return group;
+  }
+
+  _skirt(boundary, floorZ, material) {
+    const positions = [];
+    for (let index = 0; index < boundary.length; index += 1) {
+      const [x0, y0, z0] = boundary[index];
+      const [x1, y1, z1] = boundary[(index + 1) % boundary.length];
+      positions.push(x0, y0, z0, x1, y1, z1, x1, y1, floorZ);
+      positions.push(x0, y0, z0, x1, y1, floorZ, x0, y0, floorZ);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    const skirt = new THREE.Mesh(geometry, material);
+    skirt.castShadow = true;
+    skirt.receiveShadow = true;
+    return skirt;
   }
 
   _line(polylines, color, opacity, dashed = false) {
