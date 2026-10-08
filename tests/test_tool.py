@@ -15,6 +15,10 @@ class ToolGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(tool.footprint_radius_mm, 3.0)
         self.assertAlmostEqual(tool.corner_radius_mm, 0.0)
 
+    def test_corner_radius_cannot_exceed_the_tool_radius(self) -> None:
+        with self.assertRaises(ParameterError):
+            Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, corner_radius_mm=6.0)
+
     def test_ball_tool_touches_with_its_tip(self) -> None:
         """球头刀将来启用时，足迹半径为 0（只有刀尖接触）。"""
 
@@ -26,6 +30,12 @@ class ToolGeometryTests(unittest.TestCase):
         tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0)
         self.assertAlmostEqual(tool.corner_radius_mm, 0.0)
         self.assertAlmostEqual(tool.footprint_radius_mm, 5.0)
+
+    def test_bull_tool_footprint_shrinks_by_the_corner_radius(self) -> None:
+        tool = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0, corner_radius_mm=2.0)
+        self.assertAlmostEqual(tool.corner_radius_mm, 2.0)
+        self.assertAlmostEqual(tool.bottom_radius_mm, 3.0)
+        self.assertAlmostEqual(tool.footprint_radius_mm, 3.0)
 
     def test_invalid_geometry_is_rejected(self) -> None:
         with self.assertRaises(ParameterError):
@@ -41,16 +51,19 @@ class ToolParameterTests(unittest.TestCase):
         self.assertEqual(tool.diameter_mm, 6.0)
         self.assertEqual(tool.length_mm, 30.0)
 
-    def test_only_the_flat_kind_is_selectable(self) -> None:
+    def test_all_three_kinds_are_selectable(self) -> None:
         disabled = {choice.value: choice.disabled for choice in TOOL_KINDS}
         self.assertFalse(disabled["flat"])
-        self.assertTrue(disabled["ball"])
-        self.assertTrue(disabled["bull"])
+        self.assertFalse(disabled["ball"])
+        self.assertFalse(disabled["bull"])
 
     def test_parameter_choices_are_published_in_the_catalog(self) -> None:
         kind_spec = tool_parameters().spec("kind")
         self.assertEqual(len(kind_spec.choices), 3)
-        self.assertTrue(kind_spec.to_dict()["choices"][1]["disabled"])
+        self.assertFalse(kind_spec.to_dict()["choices"][1]["disabled"])
+        # 刀尖圆角只在选中圆鼻刀时才有意义，靠 visible_if 让界面自动隐藏。
+        corner_spec = tool_parameters().spec("corner_radius_mm")
+        self.assertEqual(corner_spec.to_dict()["visible_if"], {"kind": "bull"})
 
     def test_describe_exposes_the_geometry(self) -> None:
         payload = Tool.from_parameters(
@@ -61,10 +74,34 @@ class ToolParameterTests(unittest.TestCase):
         self.assertEqual(payload["footprint_radius_mm"], 5.0)
         self.assertEqual(payload["length_mm"], 45.0)
         self.assertIn("kind_label", payload)
+        self.assertIn("corner_radius_mm", payload)
+        self.assertIn("profile", payload)
 
     def test_out_of_range_diameter_is_rejected(self) -> None:
         with self.assertRaises(ParameterError):
             tool_parameters().coerce({"diameter_mm": 0.1})
+
+    def test_effective_corner_radius_is_normalised_per_kind(self) -> None:
+        # 平底刀恒为 0、球头刀恒等于半径，调用方因此不必再按类型分支。
+        flat = Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=40.0, corner_radius_mm=3.0)
+        ball = Tool(ToolKind.BALL, diameter_mm=10.0, length_mm=40.0, corner_radius_mm=1.0)
+        self.assertAlmostEqual(flat.corner_radius_mm, 0.0)
+        self.assertAlmostEqual(ball.corner_radius_mm, 5.0)
+
+    def test_tip_profile_describes_every_kind(self) -> None:
+        flat = Tool(ToolKind.FLAT, diameter_mm=10.0, length_mm=40.0).tip_profile()
+        ball = Tool(ToolKind.BALL, diameter_mm=10.0, length_mm=40.0).tip_profile()
+        bull = Tool(ToolKind.BULL, diameter_mm=10.0, length_mm=40.0,
+                    corner_radius_mm=2.0).tip_profile()
+        self.assertEqual(flat[0], [0.0, 0.0])
+        self.assertAlmostEqual(flat[1][0], 5.0)
+        self.assertAlmostEqual(ball[0][1], 0.0)
+        self.assertAlmostEqual(max(point[0] for point in ball), 5.0)
+        # 圆鼻刀的母线先平底走 3 mm，再用圆弧收到全直径。
+        self.assertAlmostEqual(bull[1][0], 3.0)
+        self.assertAlmostEqual(max(point[0] for point in bull), 5.0)
+        for profile in (flat, ball, bull):
+            self.assertLess(profile[0][1], profile[-1][1])
 
 
 if __name__ == "__main__":
