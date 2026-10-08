@@ -29,7 +29,19 @@ export async function requestPlan(payload) {
 }
 
 export async function downloadGcode(payload) {
-  const response = await fetch("/api/export/gcode", {
+  return downloadFile("/api/export/gcode", payload, "toolpath.nc");
+}
+
+export async function requestComparison(payload) {
+  const response = await fetch("/api/compare", {
+    method: "POST", headers: JSON_HEADERS, body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  return response.json();
+}
+
+export async function downloadFile(endpoint, payload, fallback) {
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
@@ -38,7 +50,7 @@ export async function downloadGcode(payload) {
   const blob = await response.blob();
   const disposition = response.headers.get("Content-Disposition") || "";
   const match = /filename="?([^"]+)"?/.exec(disposition);
-  const name = match ? match[1] : "toolpath.nc";
+  const name = match ? match[1] : fallback;
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;

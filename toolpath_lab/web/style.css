@@ -1,4 +1,24 @@
 /* ToolpathLab —— 深色工业风配色与控件样式。 */
+dialog { max-width: min(900px, 94vw); background: #0a1418; color: #c7d6d4; border: 1px solid #38534f; border-radius: 8px; padding: 26px; }
+dialog::backdrop { background: #0009; }
+dialog table { border-collapse: collapse; width: 100%; margin: 22px 0; }
+dialog th, dialog td { padding: 12px 14px; border-bottom: 1px solid #38534f; text-align: right; }
+dialog th:first-child, dialog td:first-child { text-align: left; }
+dialog p { max-width: 760px; color: #899b99; }
+@media (max-width: 900px) { .brand-sub { display: none; } .topbar-actions { gap: 3px !important; } .topbar-actions .button { padding: 6px; } }
+@media (max-width: 700px) {
+  .topbar { height: 78px !important; flex-direction: column; align-items: flex-start !important; padding: 6px 10px !important; }
+  .topbar-actions { width: 100%; justify-content: space-between; }
+  .topbar-actions .button { white-space: nowrap; font-size: 10px; padding: 5px 4px; }
+  .layout { grid-template-columns: 1fr !important; grid-template-rows: 38% 62%; height: calc(100% - 78px) !important; }
+  .panel { padding: 12px !important; border-right: none !important; border-bottom: 1px solid var(--line); }
+  .stage { min-height: 0; }
+  .view-toolbar { top: 8px !important; }
+  .appearance-toolbar { top: 52px !important; left: 8px !important; }
+  .stats { top: auto !important; bottom: 8px; right: 8px !important; width: 158px !important; padding: 6px !important; }
+  .stats dl { gap: 1px 8px !important; }
+  dialog th, dialog td { padding: 5px; font-size: 10px; }
+}
 :root {
   color-scheme: dark;
   --bg: #071014;

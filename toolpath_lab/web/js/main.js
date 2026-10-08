@@ -1,6 +1,6 @@
 // 应用装配：目录 -> 参数面板 -> 规划请求 -> 视口与播放。
 
-import { downloadGcode, fetchCatalog, requestPlan } from "./api.js";
+import { downloadGcode, downloadFile, fetchCatalog, requestPlan, requestComparison } from "./api.js";
 import { ParameterPanel } from "./panel.js";
 import { Playback } from "./playback.js";
 import { VIEW_BUTTONS, Viewport } from "./viewport.js";
@@ -30,6 +30,7 @@ let queued = false;
 let debounceTimer = 0;
 let scrubbing = false;
 let lastResult = null;
+let comparisonRequest = null;
 
 // ------------------------------------------------------------------ 工具
 function seconds(value) {
@@ -138,6 +139,49 @@ function wireAppearanceToolbar() {
 function wireButtons() {
   dom.generate.addEventListener("click", () => regenerate());
   dom.exportButton.addEventListener("click", exportGcode);
+  document.getElementById("btn-blender").addEventListener("click", async () => {
+    await runAction("btn-blender", async () => {
+      const name = await downloadFile("/api/export/blender", {...panel.payload(), blender: panel.blenderOptions()}, "toolpath_blender.zip");
+      showBanner("已导出 " + name + "；解压后运行 01_create_scene.bat", "info");
+    });
+  });
+  document.getElementById("btn-demo").addEventListener("click", () => {
+    panel.state.tool = {kind: "flat", diameter_mm: 6, length_mm: 30};
+    panel.state.region = {id: "circle", values: {diameter_mm: 80}};
+    panel.state.planner = {id: "spiral", values: {
+      radial_direction: "inward", stepover_mm: 3, feed_mm_per_min: 800, sample_step_mm: 0.5,
+    }};
+    panel.render();
+    regenerate();
+  });
+  document.getElementById("btn-compare").addEventListener("click", () => runAction("btn-compare", async () => {
+    const snapshot = panel.payload();
+    const result = await requestComparison(snapshot);
+    comparisonRequest = snapshot;
+    const table = document.createElement("table");
+    const columns = [["strategy", "策略"], ["cut_length_mm", "切削 / mm"],
+      ["link_length_mm", "连接 / mm"], ["rapid_length_mm", "快移 / mm"],
+      ["estimated_time_s", "工时 / s"], ["move_count", "运动段"]];
+    const header = table.createTHead().insertRow();
+    for (const [, name] of columns) {
+      const cell = document.createElement("th"); cell.textContent = name; header.appendChild(cell);
+    }
+    const body = table.createTBody();
+    for (const row of result.rows) {
+      const tr = body.insertRow();
+      for (const [key] of columns) {
+        const value = row[key];
+        tr.insertCell().textContent = typeof value === "number" && !Number.isInteger(value) ? value.toFixed(2) : String(value);
+      }
+    }
+    document.getElementById("comparison-content").replaceChildren(table);
+    document.getElementById("comparison-note").textContent = result.note;
+    document.getElementById("comparison-dialog").showModal();
+  }));
+  document.getElementById("btn-close-comparison").addEventListener("click", () => document.getElementById("comparison-dialog").close());
+  document.getElementById("btn-csv").addEventListener("click", () => runAction("btn-csv", async () => {
+    if (comparisonRequest) await downloadFile("/api/export/comparison", comparisonRequest, "strategy_comparison.csv");
+  }));
   dom.play.addEventListener("click", () => playback.toggle());
   dom.stop.addEventListener("click", () => playback.stop());
   dom.scrub.addEventListener("input", () => {
@@ -147,6 +191,13 @@ function wireButtons() {
   dom.scrub.addEventListener("change", () => {
     scrubbing = false;
   });
+}
+
+async function runAction(buttonId, action) {
+  const button = document.getElementById(buttonId);
+  button.disabled = true;
+  try { await action(); } catch (error) { showBanner(error.message); }
+  finally { button.disabled = false; }
 }
 
 // ------------------------------------------------------------------ 规划

@@ -19,6 +19,9 @@ from urllib.parse import unquote, urlsplit
 from toolpath_lab import __version__
 from toolpath_lab.core.errors import ParameterError, PlanningError, RegistryError
 from toolpath_lab.export import toolpath_to_gcode
+from toolpath_lab.export.blender import blender_bundle
+from toolpath_lab.core.payload import coerce_group
+from toolpath_lab.server.comparison import compare_strategies, comparison_csv
 from toolpath_lab.server.catalog import catalog_payload
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.server.service import execute_plan
@@ -113,6 +116,19 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             return json_response(result.to_payload())
         if path == "/api/export/gcode" and method == "POST":
             return self._export_gcode(self._read_json())
+        if path == "/api/export/blender" and method == "POST":
+            payload = self._read_json()
+            result = execute_plan(PlanRequest.from_payload(payload))
+            content = blender_bundle(result.request.tool, result.request.region,
+                                     result.toolpath, result.timeline.to_payload(),
+                                     coerce_group(payload, "blender"))
+            return Response(200, content, "application/zip", "toolpath_blender.zip")
+        if path in {"/api/compare", "/api/export/comparison"} and method == "POST":
+            result = compare_strategies(PlanRequest.from_payload(self._read_json()))
+            if path == "/api/compare":
+                return json_response(result)
+            return text_response(comparison_csv(result), content_type="text/csv; charset=utf-8",
+                                 filename="strategy_comparison.csv")
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
 
     def _export_gcode(self, payload: Mapping[str, Any] | None) -> Response:

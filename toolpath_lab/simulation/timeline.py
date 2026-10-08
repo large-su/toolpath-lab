@@ -3,8 +3,8 @@
 刀路是几何，播放需要的是时间。每段运动自带进给速度，所以时间轴就是"各段弧长 / 该段进给"
 的累加：切削段用切削进给，快移段用快移速度，界面上的"预计工时"因此不是总长除以一个进给。
 
-采样会压缩到 max_samples 个点以控制载荷大小，但每段运动的边界一定保留，
-所以播放永远不会跨段插值。
+Original vertices are mandatory. max_samples budgets additional samples; it is
+a soft limit when preserving all polyline corners requires more points.
 """
 
 from __future__ import annotations
@@ -81,11 +81,11 @@ class Timeline:
             progress=float(query / duration),
         )
 
-    def to_payload(self, *, time_decimals: int = 4, position_decimals: int = 3) -> dict[str, Any]:
+    def to_payload(self, *, time_decimals: int = 9, position_decimals: int = 6) -> dict[str, Any]:
         """紧凑的 JSON 形式。"""
 
         return {
-            "duration_s": round(self.duration_s, 6),
+            "duration_s": round(self.duration_s, time_decimals),
             "sample_count": self.sample_count,
             "times": [round(float(value), time_decimals) for value in self.times_s],
             "positions": [
@@ -113,43 +113,46 @@ def _resample_move(move: Move, samples: int) -> NDArray[np.float64]:
 
 
 def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
-    """把一条刀路变成采样时间历史。"""
+    """Preserve corners and original arc-length timing; budget applies to extra samples.
 
-    lengths = np.array([move.length_mm for move in toolpath.moves], dtype=np.float64)
-    total_length = float(lengths.sum())
-    budget = max(2 * len(toolpath.moves), int(max_samples))
-    if total_length <= 1e-9:
-        shares = np.full(len(toolpath.moves), 2, dtype=np.int64)
-    else:
-        shares = np.maximum(2, np.round(budget * lengths / total_length).astype(np.int64))
-    if int(shares.sum()) > budget:
-        shares = np.maximum(2, np.floor(shares * (budget / float(shares.sum()))).astype(np.int64))
-
-    times: list[NDArray[np.float64]] = []
-    positions: list[NDArray[np.float64]] = []
-    kind_codes: list[NDArray[np.int64]] = []
-    move_indices: list[NDArray[np.int64]] = []
-    clock = 0.0
-
+    Mandatory original vertices may exceed max_samples. Dropping those vertices
+    would cut corners and shorten curved moves, so fidelity takes precedence.
+    """
+    prepared = []
     for index, move in enumerate(toolpath.moves):
-        sampled = _resample_move(move, int(shares[index]))
-        steps = np.linalg.norm(np.diff(sampled, axis=0), axis=1)
-        local = np.concatenate(([0.0], np.cumsum(steps))) / move.feed_mm_per_min * 60.0
-        local_times = clock + local
-        clock = float(local_times[-1])
-        if positions and index > 0:
-            # 上一段的终点与本段起点重合，去掉重复采样。
-            sampled = sampled[1:]
-            local_times = local_times[1:]
+        distances = cumulative_lengths(move.points)
+        keep = np.concatenate(([True], np.diff(distances) > 0))
+        prepared.append((index, move, distances[keep], move.points[keep]))
+    active = [item for item in prepared if item[2][-1] > 0]
+    if not active:
+        move = toolpath.moves[-1]
+        return Timeline(np.array([0.0]), move.points[-1:],
+                        np.array([KIND_CODES[move.kind.value]]),
+                        np.array([len(toolpath.moves) - 1]), 0.0)
+    mandatory = sum(len(item[2]) - 1 for item in active) + 1
+    extras = max(0, int(max_samples) - mandatory)
+    total_length = sum(float(item[2][-1]) for item in active)
+    times, positions, kinds, indices = [], [], [], []
+    clock = 0.0
+    for index, move, distances, original in active:
+        extra = int(extras * float(distances[-1]) / total_length)
+        targets = np.unique(np.concatenate((distances,
+                            np.linspace(0, distances[-1], extra + 2)[1:-1])))
+        sampled = np.column_stack([np.interp(targets, distances, original[:, axis])
+                                   for axis in range(3)])
+        local_times = clock + targets / move.feed_mm_per_min * 60.0
+        if positions:
+            if not np.allclose(positions[-1][-1], sampled[0], atol=1e-8, rtol=0):
+                from toolpath_lab.core.errors import ParameterError
+                raise ParameterError("运动段不连续，无法生成连续播放时间轴")
+            # A shared boundary belongs to the outgoing interval.
+            kinds[-1][-1] = KIND_CODES[move.kind.value]
+            indices[-1][-1] = index
+            sampled, local_times = sampled[1:], local_times[1:]
+        clock += move.duration_s
         times.append(local_times)
         positions.append(sampled)
-        kind_codes.append(np.full(local_times.shape[0], KIND_CODES[move.kind.value], dtype=np.int64))
-        move_indices.append(np.full(local_times.shape[0], index, dtype=np.int64))
-
-    return Timeline(
-        times_s=np.concatenate(times),
-        positions=np.vstack(positions),
-        kind_codes=np.concatenate(kind_codes),
-        move_indices=np.concatenate(move_indices),
-        duration_s=clock,
-    )
+        kinds.append(np.full(len(local_times), KIND_CODES[move.kind.value], dtype=np.int64))
+        indices.append(np.full(len(local_times), index, dtype=np.int64))
+    return Timeline(np.concatenate(times), np.vstack(positions),
+                    np.concatenate(kinds), np.concatenate(indices), clock)

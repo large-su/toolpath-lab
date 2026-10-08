@@ -138,6 +138,7 @@ class Toolpath:
             "move_count": len(self.moves),
             "point_count": self.point_count,
             "cut_length_mm": self.cut_length_mm,
+            "link_length_mm": self._length((MoveKind.LINK,)),
             "rapid_length_mm": self.rapid_length_mm,
             "total_length_mm": self.total_length_mm,
             "cutting_time_s": self.cutting_time_s,

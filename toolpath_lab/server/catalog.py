@@ -13,6 +13,7 @@ from toolpath_lab.core.region import REGION_SHAPES, region_catalog
 from toolpath_lab.core.tool import tool_parameters
 from toolpath_lab.planning import RAPID_FEED_MM_PER_MIN, SAFE_HEIGHT_MM
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
+from toolpath_lab.export.blender import BLENDER_OPTIONS
 
 DEFAULT_REGION_ID = "square"
 DEFAULT_PLANNER_ID = "raster"
@@ -39,6 +40,7 @@ def catalog_payload() -> dict[str, Any]:
 
     return {
         "version": __version__,
+        "blender": {"parameters": BLENDER_OPTIONS.to_dicts(), "defaults": BLENDER_OPTIONS.defaults()},
         "tool": {
             "parameters": tool_parameters().to_dicts(),
             "defaults": default_tool_parameters(),

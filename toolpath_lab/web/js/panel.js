@@ -47,6 +47,7 @@ export class ParameterPanel {
     this.onDisplayChange = options.onDisplayChange || (() => {});
     this.state = {
       tool: clone(this.catalog.tool.defaults),
+      blender: clone(this.catalog.blender.defaults),
       region: {
         id: this.catalog.regions.default_id,
         values: clone(this.catalog.regions.defaults),
@@ -73,6 +74,10 @@ export class ParameterPanel {
     return Object.assign({}, this.state.display);
   }
 
+  blenderOptions() {
+    return clone(this.state.blender);
+  }
+
   // ------------------------------------------------------------- 渲染
   render() {
     this.rows = [];
@@ -80,6 +85,7 @@ export class ParameterPanel {
       this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
       this._regionSection(),
       this._plannerSection(),
+      this._capabilitySection("Blender 导出设置", this.catalog.blender.parameters, this.state.blender, "blender"),
       this._displaySection(),
       this._noteSection()
     );
@@ -101,7 +107,7 @@ export class ParameterPanel {
       const control = this._buildControl(spec, values[spec.key], (value) => {
         values[spec.key] = value;
         this.refreshVisibility();
-        this.onChange();
+        if (capability !== "blender") this.onChange();
       });
       section.appendChild(this._wrapRow(spec, control, capability, values));
     }
@@ -158,6 +164,10 @@ export class ParameterPanel {
         this.state.planner.values,
         this._item(planners, value)
       );
+      if (value === "spiral" && this.state.region.id !== "circle") {
+        this.state.region.id = "circle";
+        this.state.region.values = defaultsOf(this._item(this.catalog.regions.shapes, "circle"));
+      }
       this.render();
       this.onChange();
     });

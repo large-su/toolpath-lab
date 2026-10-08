@@ -60,7 +60,7 @@ function orientation(view) {
 
 // 刀路整体抬高一点点画，避免与工件上表面互相穿插（z-fighting）。
 function liftPaths(polylines) {
-  return polylines.map((points) => points.map((point) => [point[0], point[1], PATH_LIFT_MM]));
+  return polylines.map((points) => points.map((point) => [point[0], point[1], point[2] + PATH_LIFT_MM]));
 }
 
 function polylineGeometry(polylines, dashed = false) {

@@ -31,7 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def port_is_free(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # On Windows SO_REUSEADDR can bind an existing listener's address,
+        # falsely reporting it as free and letting two services share a port.
         try:
             probe.bind((host, port))
         except OSError:

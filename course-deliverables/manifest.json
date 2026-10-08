@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-08",
+  "source_branch": "U202310570",
+  "description": "Latest local course artifacts; launcher summary omits the local temporary-directory field and CSV line endings are canonicalized without changing its data.",
+  "files": [
+    {
+      "path": "刀路规划功能开发报告.docx",
+      "bytes": 4048262,
+      "sha256": "ec0cda162e19fa3d1d1a307524bf397f6bd27ff65a3cd356d4f95b4a77956c82"
+    },
+    {
+      "path": "数控课程作业汇报_UG与刀路功能开发整合版.pptx",
+      "bytes": 14086895,
+      "sha256": "1c8eeffa446bfdd1e3463915c0ffd4f4f230167553003cb2da0c56638ab4f613"
+    },
+    {
+      "path": "data/blender-verification.json",
+      "bytes": 14157,
+      "sha256": "bdfd1e2ca18efb509dcaa572a8e58c135a9abc360cd7aad0a6dd5bb0445f2f33"
+    },
+    {
+      "path": "data/comparison.csv",
+      "bytes": 393,
+      "sha256": "3586ffad2c9380c9f952fe9ea888c3ccb2e5e7c08059dc19048d028518df26d5"
+    },
+    {
+      "path": "data/comparison.json",
+      "bytes": 1732,
+      "sha256": "bafa960825ba75bb2f2e5c1e1149c467b3ff8c1342d9a63e9633d43900b36ca8"
+    },
+    {
+      "path": "data/launcher-verification.json",
+      "bytes": 1391,
+      "sha256": "3c3a4255730b1a91ef059d6555a130d72781cfe7fa78fd855607e4e2ee0f287d"
+    },
+    {
+      "path": "data/media.json",
+      "bytes": 224,
+      "sha256": "f5a58c77bf7a24568060e7ac3295a802e31c176c03d87bbf501acad75b04d03d"
+    },
+    {
+      "path": "data/spiral.nc",
+      "bytes": 93423,
+      "sha256": "d7a880c88dcfcd7e34da63ede92d8b1c43383ae70b2943a8ceb266fcb5330584"
+    },
+    {
+      "path": "demo/animation_blender_eevee.mp4",
+      "bytes": 4350414,
+      "sha256": "2e121638ec37477eb446124dcb6eece72dd7d65e9b77a5e9ab80b0d12eb3842f"
+    },
+    {
+      "path": "demo/machining.blend",
+      "bytes": 397156,
+      "sha256": "1fc8c1b3a00668680bfa6fec87739cffc47f98ebaecf98cf3c2c2f1fc47af591"
+    },
+    {
+      "path": "demo/machining.png",
+      "bytes": 2034379,
+      "sha256": "acad8114709d7512e09b5f4da864379c879616c2981cf3943aaf20ec9bdf1f45"
+    },
+    {
+      "path": "demo/overview.png",
+      "bytes": 2024339,
+      "sha256": "5a7df66750754a277567185bf34c94023c4fb65b9034b2f09c40201855ab2730"
+    },
+    {
+      "path": "demo/platform_spiral.png",
+      "bytes": 66931,
+      "sha256": "83d776d54276e49bf94fe7eabe4bc2c8bf973f72ab48b877511f8f006f44b096"
+    },
+    {
+      "path": "demo/top.png",
+      "bytes": 1965254,
+      "sha256": "1e5b3fb540f4c2cf9bb70c585de61bb3590c77be2a2f546fbbdb05ea00b5b441"
+    },
+    {
+      "path": "README.md",
+      "bytes": 4390,
+      "sha256": "3b4b8a333543b3fab8c03ffe0ed944bed60031f76a84d293453723564f91dd09"
+    }
+  ],
+  "presentation": {
+    "basis": "Latest local file after user edits; not overwritten with earlier 16-slide version.",
+    "embedded_video_slide": 11,
+    "slides": 13
+  },
+  "previous_branch": "feature/spiral-blender"
+}

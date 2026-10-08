@@ -12,3 +12,11 @@
 *.jpg binary
 *.ico binary
 *.woff2 binary
+*.pptx binary
+*.docx binary
+*.mp4 binary
+*.blend binary
+
+# Keep verification data and artifact checksums byte-for-byte on clone/download.
+course-deliverables/data/* -text -eol whitespace=cr-at-eol
+course-deliverables/manifest.json -text -eol whitespace=cr-at-eol

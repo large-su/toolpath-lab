@@ -1,0 +1,64 @@
+{
+  "ok": true,
+  "request": {
+    "tool": {
+      "kind": "flat",
+      "diameter_mm": 6.0,
+      "length_mm": 30.0
+    },
+    "region": {
+      "shape": "circle",
+      "parameters": {
+        "diameter_mm": 80.0
+      }
+    },
+    "planner": {
+      "id": "spiral",
+      "parameters": {
+        "radial_direction": "inward",
+        "stepover_mm": 3.0,
+        "feed_mm_per_min": 800.0,
+        "sample_step_mm": 0.5
+      }
+    }
+  },
+  "rows": [
+    {
+      "strategy": "螺旋",
+      "pass_count": 1,
+      "move_count": 3,
+      "point_count": 3408,
+      "cut_length_mm": 1667.359902524308,
+      "link_length_mm": 0.0,
+      "rapid_length_mm": 10.0,
+      "total_length_mm": 1677.359902524308,
+      "cutting_time_s": 125.05199268932309,
+      "estimated_time_s": 125.17199268932309
+    },
+    {
+      "strategy": "往复栅格",
+      "pass_count": 26,
+      "move_count": 53,
+      "point_count": 106,
+      "cut_length_mm": 1518.0526705393877,
+      "link_length_mm": 94.4465511585146,
+      "rapid_length_mm": 10.0,
+      "total_length_mm": 1622.4992216979022,
+      "cutting_time_s": 120.93744162734266,
+      "estimated_time_s": 121.05744162734267
+    },
+    {
+      "strategy": "单向栅格",
+      "pass_count": 26,
+      "move_count": 53,
+      "point_count": 156,
+      "cut_length_mm": 1518.0526705393877,
+      "link_length_mm": 0.0,
+      "rapid_length_mm": 1755.615299438729,
+      "total_length_mm": 3273.6679699781166,
+      "cutting_time_s": 113.85395029045408,
+      "estimated_time_s": 134.92133388371883
+    }
+  ],
+  "note": "恒定进给估算；策略覆盖与边界处理不同，工时不代表切削质量或真实机床效率。"
+}

@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形状的加工区域，生成栅格刀路，
+ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形状的加工区域，生成栅格或圆形连续螺旋刀路，
 在三维窗口中显示工件、刀路与刀具，并按进给速度播放整个加工过程。
 
 后端是纯 Python（只依赖 numpy），前端是原生 ES 模块加 three.js，桌面窗口由 Electron 提供。
@@ -25,8 +25,17 @@ ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形�
 - **参数**：切宽、走刀方向角、进给速度。安全高度、快移速度、边界处理方式等为固定值，见[配置常量](#配置常量)。
 - **三维视图**：工件实体、区域轮廓、刀路（切削 / 连接 / 快移分色）、刀具实体、已走轨迹、实时阴影。
 - **播放**：按每段运动自己的进给速度做时间参数化，支持播放 / 暂停、拖动进度，并给出切削长度与预计工时。
-- **导出**：NC 程序（G-code，G21 / G90 / G17 加 G0 / G1 带 F）。
-- **HTTP 接口**：能力目录、规划、导出三个接口，便于脚本调用与集成。
+- **螺旋策略**：圆形平底刀加工，完整外圈与连续阿基米德螺旋，支持外向内和内向外；默认切宽 3 mm、进给 800 mm/min、采样 0.5 mm。刀具中心范围按刀具半径内缩。
+- **策略对比**：相同圆形区域、刀具、切宽和进给下，比较螺旋、往复与单向栅格的长度、工时和运动段数，导出 CSV。
+- **导出**：NC 程序（G-code，G21 / G90 / G17 加 G0 / G1 带 F）和独立 Blender 动画 ZIP 包。
+- **Blender**：毫米转米、刀尖基准、共享时间轴、线性子帧动画、双相机与 EEVEE / Cycles；演示工件保持固定几何。
+- **HTTP 接口**：能力目录、规划、策略对比及导出，便于脚本调用与集成。
+
+本分支是“刀路规划功能开发训练”的课程扩展。开发与验收记录见 [AI 开发记录](docs/ai-development.md)，
+新功能使用和 Blender 新手操作见 [Blender 使用说明](docs/blender-guide.md)。
+
+课程最新进展与汇报成果见 [课程成果目录](course-deliverables/README.md)：包含当前 13 页 UG 与功能开发整合 PPT、
+功能开发报告、Blender 场景、1080p 演示视频及对比数据。Windows 启动修复已完成，当前 136 项测试通过。
 
 ## 界面
 
@@ -107,6 +116,9 @@ print(outcome.toolpath.statistics())
 | `GET /api/catalog` | 能力目录：区域形状、刀路策略、参数声明、默认值与固定值 |
 | `POST /api/plan` | 生成刀路，返回刀路运动段、统计与播放时间轴 |
 | `POST /api/export/gcode` | 导出 NC 程序 |
+| `POST /api/compare` | 相同圆形工况下生成三种策略统计 |
+| `POST /api/export/comparison` | 以上对比结果的 CSV |
+| `POST /api/export/blender` | 规划请求附加 `blender` 选项，下载独立 ZIP |
 
 ```bash
 curl http://127.0.0.1:8770/api/catalog
@@ -129,9 +141,9 @@ curl -X POST http://127.0.0.1:8770/api/export/gcode \
 ```
 toolpath_lab/
   core/        领域层：参数声明、刀具、区域、刀路与运动段模型
-  planning/    策略层：Planner 基类与注册表、平面多边形几何、栅格刀路
+  planning/    策略层：Planner 基类与注册表、平面多边形几何、栅格与螺旋刀路
   simulation/  时间层：按进给速度把刀路参数化为时间轴
-  export/      G-code 导出
+  export/      G-code 与 Blender ZIP 导出及独立建场景模板
   server/      标准库 HTTP 服务：接口路由、请求校验、能力目录、静态文件
   web/         前端：原生 ES 模块 + three.js（随仓库提供，无打包步骤）
 electron/      桌面壳：拉起 Python 后端并承载窗口

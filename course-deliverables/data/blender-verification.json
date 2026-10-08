@@ -1,0 +1,583 @@
+[
+  {
+    "case": "spiral_inward",
+    "build": {
+      "blender_version": "5.1.2",
+      "probe_count": 312,
+      "max_position_error_mm": 0.00011371644684534865,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 125.171992689,
+      "estimated_time_s": 125.17199268932309,
+      "timeline_samples": 3998,
+      "duration_error_s": 3.2308378195011755e-10,
+      "worst_probe": {
+        "time_s": 106.39619378565001,
+        "frame": 320.18858135695007,
+        "actual_mm": [
+          4.864528775215149,
+          14.614000916481018,
+          0.0
+        ],
+        "expected_mm": [
+          4.864419271310716,
+          14.614031581203372,
+          0.0
+        ]
+      },
+      "keyframe_count": 3998,
+      "nearby_keys": [
+        [
+          320.17108154296875,
+          0.004939245991408825
+        ],
+        [
+          320.28350830078125,
+          0.004458865150809288
+        ],
+        [
+          320.0586242675781,
+          0.005414906889200211
+        ]
+      ]
+    },
+    "reopen": {
+      "blender_version": "5.1.2",
+      "probe_count": 312,
+      "max_position_error_mm": 0.00011371644684534865,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 125.171992689,
+      "estimated_time_s": 125.17199268932309,
+      "timeline_samples": 3998,
+      "duration_error_s": 3.2308378195011755e-10,
+      "worst_probe": {
+        "time_s": 106.39619378565001,
+        "frame": 320.18858135695007,
+        "actual_mm": [
+          4.864528775215149,
+          14.614000916481018,
+          0.0
+        ],
+        "expected_mm": [
+          4.864419271310716,
+          14.614031581203372,
+          0.0
+        ]
+      },
+      "keyframe_count": 3998,
+      "nearby_keys": [
+        [
+          320.17108154296875,
+          0.004939245991408825
+        ],
+        [
+          320.28350830078125,
+          0.004458865150809288
+        ],
+        [
+          320.0586242675781,
+          0.005414906889200211
+        ]
+      ]
+    }
+  },
+  {
+    "case": "spiral_outward",
+    "build": {
+      "blender_version": "5.1.2",
+      "probe_count": 312,
+      "max_position_error_mm": 7.921670263322846e-05,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 125.171992689,
+      "estimated_time_s": 125.17199268932309,
+      "timeline_samples": 3998,
+      "duration_error_s": 3.2308378195011755e-10,
+      "worst_probe": {
+        "time_s": 107.64791371254002,
+        "frame": 6459.874822752401,
+        "actual_mm": [
+          36.99256479740143,
+          0.3781462728511542,
+          0.0
+        ],
+        "expected_mm": [
+          36.99256270192942,
+          0.3782254618338043,
+          0.0
+        ]
+      },
+      "keyframe_count": 3998,
+      "nearby_keys": [
+        [
+          6459.3271484375,
+          0.03699016943573952
+        ],
+        [
+          6461.5771484375,
+          0.03700000047683716
+        ],
+        [
+          6457.07763671875,
+          0.03697358816862106
+        ]
+      ]
+    },
+    "reopen": {
+      "blender_version": "5.1.2",
+      "probe_count": 312,
+      "max_position_error_mm": 7.921670263322846e-05,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 125.171992689,
+      "estimated_time_s": 125.17199268932309,
+      "timeline_samples": 3998,
+      "duration_error_s": 3.2308378195011755e-10,
+      "worst_probe": {
+        "time_s": 107.64791371254002,
+        "frame": 6459.874822752401,
+        "actual_mm": [
+          36.99256479740143,
+          0.3781462728511542,
+          0.0
+        ],
+        "expected_mm": [
+          36.99256270192942,
+          0.3782254618338043,
+          0.0
+        ]
+      },
+      "keyframe_count": 3998,
+      "nearby_keys": [
+        [
+          6459.3271484375,
+          0.03699016943573952
+        ],
+        [
+          6461.5771484375,
+          0.03700000047683716
+        ],
+        [
+          6457.07763671875,
+          0.03697358816862106
+        ]
+      ]
+    }
+  },
+  {
+    "case": "small_circle",
+    "build": {
+      "blender_version": "5.1.2",
+      "probe_count": 311,
+      "max_position_error_mm": 1.0707669716447654e-05,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 2.294142749,
+      "estimated_time_s": 2.294142748641837,
+      "timeline_samples": 3998,
+      "duration_error_s": 3.581632768145937e-10,
+      "worst_probe": {
+        "time_s": 2.2482598940200003,
+        "frame": 68.4477968206,
+        "actual_mm": [
+          0.0,
+          0.0,
+          1.176439574919641
+        ],
+        "expected_mm": [
+          0.0,
+          0.0,
+          1.1764288672499246
+        ]
+      },
+      "keyframe_count": 3998,
+      "nearby_keys": [
+        [
+          68.44695281982422,
+          0.0
+        ],
+        [
+          68.45059967041016,
+          0.0
+        ],
+        [
+          68.44331359863281,
+          0.0
+        ]
+      ]
+    },
+    "reopen": {
+      "blender_version": "5.1.2",
+      "probe_count": 311,
+      "max_position_error_mm": 1.0707669716447654e-05,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 2.294142749,
+      "estimated_time_s": 2.294142748641837,
+      "timeline_samples": 3998,
+      "duration_error_s": 3.581632768145937e-10,
+      "worst_probe": {
+        "time_s": 2.2482598940200003,
+        "frame": 68.4477968206,
+        "actual_mm": [
+          0.0,
+          0.0,
+          1.176439574919641
+        ],
+        "expected_mm": [
+          0.0,
+          0.0,
+          1.1764288672499246
+        ]
+      },
+      "keyframe_count": 3998,
+      "nearby_keys": [
+        [
+          68.44695281982422,
+          0.0
+        ],
+        [
+          68.45059967041016,
+          0.0
+        ],
+        [
+          68.44331359863281,
+          0.0
+        ]
+      ]
+    }
+  },
+  {
+    "case": "near_fit",
+    "build": {
+      "blender_version": "5.1.2",
+      "probe_count": 311,
+      "max_position_error_mm": 0.00026028537567262204,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 0.174655294,
+      "estimated_time_s": 0.17465529400440816,
+      "timeline_samples": 3998,
+      "duration_error_s": 4.4081682748498e-12,
+      "worst_probe": {
+        "time_s": 0.01571897646,
+        "frame": 1.4715692938,
+        "actual_mm": [
+          0.09999999747378752,
+          0.0,
+          3.6898250691592693
+        ],
+        "expected_mm": [
+          0.1,
+          0.0,
+          3.6900853545349297
+        ]
+      },
+      "keyframe_count": 3998,
+      "nearby_keys": [
+        [
+          1.471662998199463,
+          9.999999747378752e-05
+        ],
+        [
+          1.4706783294677734,
+          9.999999747378752e-05
+        ],
+        [
+          1.4726476669311523,
+          9.999999747378752e-05
+        ]
+      ]
+    },
+    "reopen": {
+      "blender_version": "5.1.2",
+      "probe_count": 311,
+      "max_position_error_mm": 0.00026028537567262204,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 0.174655294,
+      "estimated_time_s": 0.17465529400440816,
+      "timeline_samples": 3998,
+      "duration_error_s": 4.4081682748498e-12,
+      "worst_probe": {
+        "time_s": 0.01571897646,
+        "frame": 1.4715692938,
+        "actual_mm": [
+          0.09999999747378752,
+          0.0,
+          3.6898250691592693
+        ],
+        "expected_mm": [
+          0.1,
+          0.0,
+          3.6900853545349297
+        ]
+      },
+      "keyframe_count": 3998,
+      "nearby_keys": [
+        [
+          1.471662998199463,
+          9.999999747378752e-05
+        ],
+        [
+          1.4706783294677734,
+          9.999999747378752e-05
+        ],
+        [
+          1.4726476669311523,
+          9.999999747378752e-05
+        ]
+      ]
+    }
+  },
+  {
+    "case": "pitch_6",
+    "build": {
+      "blender_version": "5.1.2",
+      "probe_count": 311,
+      "max_position_error_mm": 4.5803497278379914e-05,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 71.487786168,
+      "estimated_time_s": 71.48778616796034,
+      "timeline_samples": 3998,
+      "duration_error_s": 3.966249551012879e-11,
+      "worst_probe": {
+        "time_s": 67.19851899792,
+        "frame": 202.59555699376,
+        "actual_mm": [
+          -9.947285987436771,
+          2.3467978462576866,
+          0.0
+        ],
+        "expected_mm": [
+          -9.947291499516782,
+          2.346752375637096,
+          0.0
+        ]
+      },
+      "keyframe_count": 3998,
+      "nearby_keys": [
+        [
+          202.58689880371094,
+          -0.009942768141627312
+        ],
+        [
+          202.58409118652344,
+          -0.00994069967418909
+        ],
+        [
+          202.6890411376953,
+          -0.009996108710765839
+        ]
+      ]
+    },
+    "reopen": {
+      "blender_version": "5.1.2",
+      "probe_count": 311,
+      "max_position_error_mm": 4.5803497278379914e-05,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 71.487786168,
+      "estimated_time_s": 71.48778616796034,
+      "timeline_samples": 3998,
+      "duration_error_s": 3.966249551012879e-11,
+      "worst_probe": {
+        "time_s": 67.19851899792,
+        "frame": 202.59555699376,
+        "actual_mm": [
+          -9.947285987436771,
+          2.3467978462576866,
+          0.0
+        ],
+        "expected_mm": [
+          -9.947291499516782,
+          2.346752375637096,
+          0.0
+        ]
+      },
+      "keyframe_count": 3998,
+      "nearby_keys": [
+        [
+          202.58689880371094,
+          -0.009942768141627312
+        ],
+        [
+          202.58409118652344,
+          -0.00994069967418909
+        ],
+        [
+          202.6890411376953,
+          -0.009996108710765839
+        ]
+      ]
+    }
+  },
+  {
+    "case": "square_raster",
+    "build": {
+      "blender_version": "5.1.2",
+      "probe_count": 310,
+      "max_position_error_mm": 6.907804933481989e-05,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 111.12,
+      "estimated_time_s": 111.12,
+      "timeline_samples": 3991,
+      "duration_error_s": 0.0,
+      "worst_probe": {
+        "time_s": 96.6744,
+        "frame": 291.0232,
+        "actual_mm": [
+          -30.856069177389145,
+          35.00000014901161,
+          0.0
+        ],
+        "expected_mm": [
+          -30.85600009950053,
+          35.0,
+          0.0
+        ]
+      },
+      "keyframe_count": 3991,
+      "nearby_keys": [
+        [
+          291.03704833984375,
+          -0.030809886753559113
+        ],
+        [
+          290.95263671875,
+          -0.031091254204511642
+        ],
+        [
+          291.1214599609375,
+          -0.030528517439961433
+        ]
+      ]
+    },
+    "reopen": {
+      "blender_version": "5.1.2",
+      "probe_count": 310,
+      "max_position_error_mm": 6.907804933481989e-05,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 111.12,
+      "estimated_time_s": 111.12,
+      "timeline_samples": 3991,
+      "duration_error_s": 0.0,
+      "worst_probe": {
+        "time_s": 96.6744,
+        "frame": 291.0232,
+        "actual_mm": [
+          -30.856069177389145,
+          35.00000014901161,
+          0.0
+        ],
+        "expected_mm": [
+          -30.85600009950053,
+          35.0,
+          0.0
+        ]
+      },
+      "keyframe_count": 3991,
+      "nearby_keys": [
+        [
+          291.03704833984375,
+          -0.030809886753559113
+        ],
+        [
+          290.95263671875,
+          -0.031091254204511642
+        ],
+        [
+          291.1214599609375,
+          -0.030528517439961433
+        ]
+      ]
+    }
+  },
+  {
+    "case": "circle_raster",
+    "build": {
+      "blender_version": "5.1.2",
+      "probe_count": 310,
+      "max_position_error_mm": 4.232130803145033e-05,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 87.79352491,
+      "estimated_time_s": 87.79352491000706,
+      "timeline_samples": 3986,
+      "duration_error_s": 7.062794793455396e-12,
+      "worst_probe": {
+        "time_s": 79.8921076681,
+        "frame": 240.6763230043,
+        "actual_mm": [
+          -17.985748127102852,
+          28.999999165534973,
+          0.0
+        ],
+        "expected_mm": [
+          -17.98570581402235,
+          29.0,
+          0.0
+        ]
+      },
+      "keyframe_count": 3986,
+      "nearby_keys": [
+        [
+          240.70249938964844,
+          -0.01807297207415104
+        ],
+        [
+          240.63555908203125,
+          -0.01784984953701496
+        ],
+        [
+          240.76943969726562,
+          -0.018296094611287117
+        ]
+      ]
+    },
+    "reopen": {
+      "blender_version": "5.1.2",
+      "probe_count": 310,
+      "max_position_error_mm": 4.232130803145033e-05,
+      "tolerance_mm": 0.01,
+      "passed": true,
+      "source_duration_s": 87.79352491,
+      "estimated_time_s": 87.79352491000706,
+      "timeline_samples": 3986,
+      "duration_error_s": 7.062794793455396e-12,
+      "worst_probe": {
+        "time_s": 79.8921076681,
+        "frame": 240.6763230043,
+        "actual_mm": [
+          -17.985748127102852,
+          28.999999165534973,
+          0.0
+        ],
+        "expected_mm": [
+          -17.98570581402235,
+          29.0,
+          0.0
+        ]
+      },
+      "keyframe_count": 3986,
+      "nearby_keys": [
+        [
+          240.70249938964844,
+          -0.01807297207415104
+        ],
+        [
+          240.63555908203125,
+          -0.01784984953701496
+        ],
+        [
+          240.76943969726562,
+          -0.018296094611287117
+        ]
+      ]
+    }
+  }
+]

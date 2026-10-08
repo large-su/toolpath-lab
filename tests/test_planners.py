@@ -40,8 +40,8 @@ def _cut_moves(toolpath: Toolpath):
 
 
 class RegistryTests(unittest.TestCase):
-    def test_only_the_raster_strategy_is_registered(self) -> None:
-        self.assertEqual(PLANNERS.ids(), ["raster"])
+    def test_raster_and_spiral_are_registered(self) -> None:
+        self.assertEqual(PLANNERS.ids(), ["raster", "spiral"])
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:
         entry = planner_catalog()[0]

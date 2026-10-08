@@ -24,6 +24,9 @@
       <div class="topbar-actions">
         <button id="btn-generate" class="button primary" type="button">生成刀路</button>
         <button id="btn-export" class="button" type="button">导出 NC</button>
+        <button id="btn-demo" class="button" type="button">螺旋示例</button>
+        <button id="btn-compare" class="button" type="button">策略对比</button>
+        <button id="btn-blender" class="button" type="button">导出 Blender</button>
       </div>
     </header>
 
@@ -51,6 +54,13 @@
       </section>
     </main>
 
+    <dialog id="comparison-dialog">
+      <h2>相同工况策略对比</h2>
+      <div id="comparison-content"></div>
+      <p id="comparison-note"></p>
+      <button id="btn-csv" class="button" type="button">导出 CSV</button>
+      <button id="btn-close-comparison" class="button" type="button">关闭</button>
+    </dialog>
     <script type="module" src="./js/main.js"></script>
   </body>
 </html>

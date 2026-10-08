@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-08",
+  "cmd_checks": [
+    {
+      "codepage": 936,
+      "exit_code": 0
+    },
+    {
+      "codepage": 65001,
+      "exit_code": 0
+    }
+  ],
+  "source_extracted": true,
+  "health": {
+    "ok": true,
+    "version": "0.0.1",
+    "service": "toolpath-lab"
+  },
+  "web_plan_compare_gcode_blender": "passed",
+  "repeat_start": "reused",
+  "occupied_port": "selected_next_free_port",
+  "blender_bat_build_and_reopen": {
+    "blender_version": "5.1.2",
+    "probe_count": 312,
+    "max_position_error_mm": 0.00011371644684534865,
+    "tolerance_mm": 0.01,
+    "passed": true,
+    "source_duration_s": 125.171992689,
+    "estimated_time_s": 125.17199268932309,
+    "timeline_samples": 3998,
+    "duration_error_s": 3.2308378195011755E-10,
+    "worst_probe": {
+      "time_s": 106.39619378565001,
+      "frame": 320.18858135695007,
+      "actual_mm": [
+        4.864528775215149,
+        14.614000916481018,
+        0.0
+      ],
+      "expected_mm": [
+        4.864419271310716,
+        14.614031581203372,
+        0.0
+      ]
+    },
+    "keyframe_count": 3998,
+    "nearby_keys": [
+      [
+        320.17108154296875,
+        0.004939245991408825
+      ],
+      [
+        320.28350830078125,
+        0.004458865150809288
+      ],
+      [
+        320.0586242675781,
+        0.005414906889200211
+      ]
+    ]
+  }
+}

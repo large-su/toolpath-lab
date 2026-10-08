@@ -43,16 +43,21 @@ planning ── simulation ┘
 - `geometry2d.py`：`scanline_intervals`（直线与多边形求交、偶奇配对）与多边形规范化——
   栅格刀路只靠这一个几何操作就能支持任意形状；
 - `raster.py`：往复与单向两种模式。
+- `spiral.py`：解析圆形刀具中心边界、完整外圈与阿基米德螺旋，双向复用同一条折线。
 
 ### simulation —— 时间层
 
-`build_timeline` 把每段运动按自己的进给速度换算成时间（t = 弧长 / 进给），在弧长上重采样并限制
-总采样数（默认 4000），同时保留每段边界，所以播放不会跨段插值。载荷里 `times` / `positions`
+`build_timeline` 把每段运动按自己的进给速度换算成时间（t = 弧长 / 进给），保留全部原始折线顶点，
+以原始累计弧长计时。默认 4000 是补充重采样的预算；原始顶点超过预算时全部保留，避免跨越拐点。
+载荷里 `times` / `positions`
 是逐采样数组，`kind_runs` / `move_runs` 是游程编码。
 
 ### export / server / web / electron
 
 - `export/gcode.py`：G21 / G90 / G17 + G0 / G1 带 F 的最常见 ISO 子集；
+- `export/blender.py`：版本化 JSON 与独立 Python 建场景模板组成 ZIP；主服务不导入 bpy。
+  Blender 自带 Python 执行模板，毫秒精度时间戳映射到子帧，刀尖位置以米保存。
+- `server/comparison.py`：用同一请求中的几何和公共参数重新规划三种策略，生成表格与 CSV。
 - `server`：标准库 `ThreadingHTTPServer`。`schema.py` 是唯一的请求校验入口，`service.py` 组装响应，
   `catalog.py` 生成能力目录，`app.py` 只做路由与错误码映射（400 参数错误 / 422 几何不可行 / 404 / 405）；
   静态文件只从 `web/` 提供并做了路径穿越防护；
