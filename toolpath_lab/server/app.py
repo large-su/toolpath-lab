@@ -124,6 +124,7 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             result.toolpath,
             program_name="TOOLPATH_LAB",
             description="\n".join(result.request.header_lines()),
+            spindle_speed_rpm=result.request.tool.recommended_spindle_speed_rpm(),
         )
         return text_response(
             content,

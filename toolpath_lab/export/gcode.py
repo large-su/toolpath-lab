@@ -19,9 +19,14 @@ def toolpath_to_gcode(
     description: str = "",
     decimals: int = 3,
     extra_header: dict[str, Any] | None = None,
+    spindle_speed_rpm: float | None = None,
 ) -> str:
-    """把一条刀路渲染成 NC 程序。"""
+    """把一条刀路渲染成 NC 程序。
 
+    spindle_speed_rpm 非空时输出 M3 S（主轴正转），程序结尾输出 M5（主轴停止）。
+    """
+
+    number = f"{{:.{decimals}f}}"
     lines: list[str] = [f"({program_name})"]
     if description:
         for chunk in description.splitlines():
@@ -35,8 +40,10 @@ def toolpath_to_gcode(
     lines.append("G90 (absolute)")
     lines.append("G17 (XY plane)")
     lines.append("")
+    if spindle_speed_rpm is not None and spindle_speed_rpm > 0:
+        lines.append(f"M3 S{number.format(spindle_speed_rpm)} (spindle on)")
+        lines.append("")
 
-    number = f"{{:.{decimals}f}}"
     last_feed: float | None = None
     last_kind: MoveKind | None = None
 
@@ -59,5 +66,6 @@ def toolpath_to_gcode(
             last_kind = move.kind
 
     lines.append("")
+    lines.append("M5 (spindle stop)")
     lines.append("M30")
     return "\n".join(lines) + "\n"

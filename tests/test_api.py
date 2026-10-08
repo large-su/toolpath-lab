@@ -100,7 +100,8 @@ class CatalogTests(ApiTestCase):
         status, body, _ = self.get("/api/catalog")
         payload = json.loads(body)
         self.assertEqual(status, 200)
-        self.assertEqual([item["id"] for item in payload["planners"]["list"]], ["raster", "contour"])
+        self.assertEqual([item["id"] for item in payload["planners"]["list"]],
+                         ["raster", "contour", "layered"])
         self.assertEqual(
             sorted(item["id"] for item in payload["regions"]["shapes"]),
             ["circle", "rounded_rectangle", "square"],
@@ -210,6 +211,7 @@ class ExportTests(ApiTestCase):
         self.assertTrue(headers["Content-Disposition"].endswith('.nc"'))
         text = body.decode("utf-8")
         self.assertIn("G21", text)
+        self.assertIn("M3 S", text)
         self.assertIn("M30", text)
 
     def test_other_formats_are_gone(self) -> None:
