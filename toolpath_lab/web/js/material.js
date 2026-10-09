@@ -1,6 +1,7 @@
 const MAX_GRID_CELLS = 30000;
 
-function toolAxis(rotaryAxes) {
+// 刀轴方向：与后端 HeightField 使用的公式完全一致，视口也用同一个函数给刀具网格定向。
+export function toolAxis(rotaryAxes) {
   const a = rotaryAxes[0] * Math.PI / 180;
   const b = rotaryAxes[1] * Math.PI / 180;
   return [Math.sin(b) * Math.cos(a), -Math.sin(a), Math.cos(b) * Math.cos(a)];
@@ -286,9 +287,15 @@ export class MaterialSimulation {
             x, y, segmentPosition, axis, segmentRadius, axialEnd - axialStart
           );
           if (!interval) continue;
-          const [toolLow, toolHigh] = interval;
+          // interval 是这一列上"刀体实体"占据的 Z 区间，toolLow 即刀体在该列的最低点。
+          const [toolLow] = interval;
           const height = this.heights[index];
-          if (toolLow >= height || toolHigh < height) continue;
+          // 只要刀体最低点低于当前料面，这一列毛坯就和刀体体积重叠，必须切掉。
+          // 这里不能加"刀体最高点也低于料面就跳过"的短路：那正是摆轴刀具的侧壁
+          // 已经埋进毛坯、而料面却纹丝不动的原因——渲染时料面会横切过刀体，
+          // 看起来就是刀具与工件互相干涉。后端 HeightField 用的是同一条规则
+          // （只看接触面是否低于料面，不看上方是否还有刀体）。
+          if (toolLow >= height) continue;
           this.heights[index] = Math.max(toolLow, this.bottomZMm);
           changed = true;
         }

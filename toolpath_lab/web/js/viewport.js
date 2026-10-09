@@ -9,7 +9,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "../vendor/OrbitControls.js";
 import { RoomEnvironment } from "../vendor/RoomEnvironment.js";
-import { MaterialSimulation } from "./material.js";
+import { MaterialSimulation, toolAxis } from "./material.js";
 
 const COLORS = {
   background: 0x071014,
@@ -43,6 +43,9 @@ const OPPOSITE_VIEW = {
 };
 
 const Z_UP = new THREE.Vector3(0, 0, 1);
+
+//: 给刀具网格定向时复用的临时向量（刀具是回转体，绕自身轴的滚转角无所谓）。
+const toolAxisVector = new THREE.Vector3();
 
 function orientation(view) {
   const table = {
@@ -366,13 +369,13 @@ export class Viewport {
 
   setPlayhead(position, rotaryAxes, traversedSegments) {
     this.toolGroup.position.set(position[0], position[1], position[2]);
-    const [aAngle, bAngle] = rotaryAxes || [0, 0];
-    this.toolGroup.rotation.set(
-      THREE.MathUtils.degToRad(aAngle),
-      THREE.MathUtils.degToRad(bAngle),
-      0,
-      "XYZ"
-    );
+    // 刀具的朝向必须与材料切除用的刀轴逐位一致：两者都走 material.js 的 toolAxis()。
+    // 不能把 A/B 拆成欧拉角交给 rotation.set(..., "XYZ")——它的复合顺序与刀轴公式
+    // （先绕 X 转 A、再绕 Y 转 B）不同，A、B 同时非零时偏差可达十几度，
+    // 于是画出来的刀会切进仿真认定"已切除"的区域，表现为刀具与工件干涉。
+    const [axisX, axisY, axisZ] = toolAxis(rotaryAxes || [0, 0]);
+    toolAxisVector.set(axisX, axisY, axisZ);
+    this.toolGroup.quaternion.setFromUnitVectors(Z_UP, toolAxisVector);
     if (this.materialSimulation && this.materialSurface
       && this.materialSimulation.update(traversedSegments)) {
       const attribute = this.materialSurface.geometry.getAttribute("position");
