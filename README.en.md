@@ -19,8 +19,10 @@ by parameters, and the parameter panel is generated from the backend's parameter
 
 ## Features
 
-- **Tool**: flat end mill with diameter and length. Its footprint radius on the machining plane
-  defines how far the toolpath is offset from the region contour.
+- **Tool**: flat, ball and bull nose cutters, with diameter and length (bull nose also has a corner
+  radius Rc). The footprint radius on the machining plane decides how far the toolpath is offset
+  from the region contour: R for flat, 0 for ball (the hemisphere only touches at one point),
+  R − Rc for bull nose.
 - **Region**: square (side), circle (diameter), ellipse (semi-major / semi-minor) and rounded
   rectangle (width / height / corner radius), centred at the origin, machined on the XY plane.
   A corner radius of half the short side yields a stadium shape.
@@ -33,13 +35,15 @@ by parameters, and the parameter panel is generated from the backend's parameter
   - **spiral** - one continuous path that shrinks inward from the region contour, with a single plunge
     and a single retract. Selectable CCW / CW winding, an optional leftover pill in the centre, and
     feed rate that can ramp linearly with radius to keep the radial depth of cut constant.
-- **Parameters**: stepover, pass direction and feed rate. Safe height, rapid feed and boundary
-  handling are constants (see "Configuration constants").
+- **Parameters**: stepover, pass direction and feed rate.
+- **Setup**: safe height, rapid feed and boundary handling (inset by tool radius / no offset /
+  outset to leave a rim / custom offset) are all adjustable in the UI and shared by every strategy.
 - **3D view**: workpiece, region contour, toolpath (cut / link / rapid colour coded), cutter solid,
   traversed path and live shadows.
 - **Playback**: time is parameterised by each move's own feed rate; play / pause, scrubbing, cutting
   length and estimated machining time.
-- **Export**: NC program (G-code, G21 / G90 / G17 with G0 / G1 and F).
+- **Export**: NC program (G-code, G21 / G90 / G17 with G0 / G1 and F), a CSV point table, and a
+  JSON snapshot of the toolpath.
 - **HTTP API**: catalog, planning and export endpoints for scripting and integration.
 
 ## Interface
