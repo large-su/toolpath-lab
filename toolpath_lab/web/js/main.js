@@ -1168,6 +1168,27 @@ function simMilesAt(frames, anchor, clock) {
   return s0 + (s1 - s0) * ratio;
 }
 
+/**
+ * 锚帧 ``anchor`` 对应的**重置基准帧**：离它最近的、带全量 height 快照的帧（≤ anchor）。
+ *
+ * 后端按 ``snapshot_every`` 隔几帧才给一张全量高度图（见 /api/simulate），中间帧只有
+ * time/位置/里程这些小字段——因为帧间播放本来就是本文件用 sweepSimulation 沿刀路扫出来
+ * 的，快照只在"整体重置"（换基准、往回拖）时才用得上。于是重置到最近的那张快照，
+ * 再由 renderSimulation 里的扫掠把状态补到目标位置，画面与逐帧全给时逐格一致。
+ */
+function snapshotIndexAt(anchor) {
+  const list = (cam.simulation && cam.simulation._snapshots) || [];
+  if (!list.length) return anchor;   // 老响应没有标记：按"每帧都有快照"处理
+  let low = 0;
+  let high = list.length - 1;
+  while (low < high) {
+    const mid = (low + high + 1) >> 1;
+    if (list[mid] <= anchor) low = mid;
+    else high = mid - 1;
+  }
+  return list[low];
+}
+
 /** 里程 → 刀路位置（二分 move → 二分段 → 段内插值）。 */
 function simStateAt(path, miles) {
   const moves = path.moves;
@@ -1277,10 +1298,14 @@ function renderSimulation(clock) {
   const anchor = low;
   const miles = simMilesAt(frames, anchor, clamped);
 
-  if (anchor !== simAnchor.index || miles < simAnchor.swept - 1e-6) {
-    // 换锚帧 / 往回拖：从帧快照整体重置（前一锚帧上"预扫"的内容在这里被覆盖）
-    viewport.setSimulationFrame(anchor);
-    simAnchor = { index: anchor, swept: frameMiles(frames, anchor) };
+  // 重置基准 = 离锚帧最近的**带全量 height 快照**的帧（≤ anchor）。换基准 / 往回拖时
+  // 整体退回那张快照（上一段"预扫"过的内容在这里被干净覆盖），再由下面的扫掠补到目标
+  // 位置；基准没变就一路扫掠过去。中间帧不带快照正是靠这条撑住的（见 snapshotIndexAt）：
+  // 帧间扫掠与后端切削逐字一致，所以补出来的状态与那张快照严丝合缝。
+  const base = snapshotIndexAt(anchor);
+  if (base !== simAnchor.index || miles < simAnchor.swept - 1e-6) {
+    viewport.setSimulationFrame(base);
+    simAnchor = { index: base, swept: frameMiles(frames, base) };
   }
   if (miles > simAnchor.swept + 1e-9) {
     const segments = simSegmentsBetween(simPath, simAnchor.swept, miles);
@@ -1309,10 +1334,23 @@ async function runSimulation() {
   try {
     // 不写死 cell_mm：后端按毛坯大小自适应（200 mm 的件给 0.5 mm 会变成 40 万格、
     // 响应几十 MB，仿真要几分钟）。默认 max_frames 调大让动画更细。
-    const payload = { operation_id: cam.activeOperationId || undefined, max_frames: 180 };
+    // snapshot_every=10：每 10 帧给一张**全量 height 快照**（首帧与末帧一定给）。帧与帧
+    // 之间的状态是播放器自己沿刀路扫掠出来的，快照只在整体重置时用——180 张全量图等于
+    // 一百多 MB，服务端光序列化五六秒、浏览器解析又是几秒，"点一下切削仿真等半天"就是
+    // 卡在这里。画面质量不变：扫掠与后端切削逐字一致，10 帧一校准也照样严丝合缝。
+    const payload = {
+      operation_id: cam.activeOperationId || undefined,
+      max_frames: 180,
+      snapshot_every: 10,
+    };
     const result = await simulate(payload);
     const frames = result.frames || [];
     result._duration = frames.length ? frames[frames.length - 1].time_s : 0;
+    // 带全量 height 的帧下标表：snapshotIndexAt 靠它找"重置基准帧"
+    result._snapshots = [];
+    frames.forEach((frame, index) => {
+      if (frame.height) result._snapshots.push(index);
+    });
     cam.simulation = result;
     cam.simulationFrame = 0;
     cam.playing = false;

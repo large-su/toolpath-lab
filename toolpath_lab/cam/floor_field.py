@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from typing import Any, Sequence
 
@@ -89,11 +89,13 @@ class FloorField:
     source: str = ""
     #: 网格可能漏掉的小特征提示（例如面片小于一个格子）
     notes: list[str] | None = None
+    #: :attr:`is_flat` 的缓存（不参与构造/比较：几何在构造后不再变化）
+    flat_cache: bool | None = field(default=None, init=False, repr=False, compare=False)
 
     # -- 形态 --------------------------------------------------------------
     @property
     def is_flat(self) -> bool:
-        """整张面是不是水平的。
+        """整张面是不是水平的。**算一次就缓存**（几何构造后不变，见下方实现）。
 
         **不能只看面记录的法向**：圆柱/圆锥/B 样条这类曲面，面记录的法向可能是
         (0,0,1)（例如按参数取到的那个方向），而它的高度场明显有坡度——test1.STEP 里
@@ -101,19 +103,28 @@ class FloorField:
         当成水平底面，层高裁剪、防过切抬升全部失效（底面切不到、刀路还是错的）。
 
         所以网格形式一律以**实际梯度**为准，只有常量场（真正的水平面）才退回法向判断。
+
+        结果**缓存在 :attr:`flat_cache`**：这张场构造之后几何不再变，而规划里要按层、
+        按环反复问"底面平不平"（实测一次型腔规划要问几百次），每次都把整张梯度场
+        过一遍（几十万格的 hypot + 掩码扫描）是纯浪费——占了刀路生成两成多的时间。
         """
 
-        if self.grad is not None and self.values.ndim == 2:
-            grad_x, grad_y = self.grad
-            if grad_x.size == 0 or grad_y.size == 0:
-                return True
-            slope = np.hypot(np.asarray(grad_x, dtype=np.float64),
-                             np.asarray(grad_y, dtype=np.float64))
-            finite = slope[np.isfinite(slope)]
-            if finite.size == 0:
-                return True
-            return bool(float(finite.max()) <= FLAT_SLOPE_TOLERANCE)
-        return bool(abs(float(self.normal[2])) >= 1.0 - FLAT_SLOPE_TOLERANCE)
+        cached = self.flat_cache
+        if cached is None:
+            if self.grad is not None and self.values.ndim == 2:
+                grad_x, grad_y = self.grad
+                if grad_x.size == 0 or grad_y.size == 0:
+                    cached = True
+                else:
+                    slope = np.hypot(np.asarray(grad_x, dtype=np.float64),
+                                     np.asarray(grad_y, dtype=np.float64))
+                    finite = slope[np.isfinite(slope)]
+                    cached = True if finite.size == 0 else bool(
+                        float(finite.max()) <= FLAT_SLOPE_TOLERANCE)
+            else:
+                cached = bool(abs(float(self.normal[2])) >= 1.0 - FLAT_SLOPE_TOLERANCE)
+            self.flat_cache = cached
+        return cached
 
     @property
     def z_min(self) -> float:

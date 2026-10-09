@@ -483,6 +483,12 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         else:
             bounds = stock.bounds
             cell_mm = adaptive_cell_mm(max(bounds.size[0], bounds.size[1]))
+        # 全量 height 快照的抽稀间隔：先校验再跑仿真（写错参数时不必白等一轮计算），
+        # 语义见下面 frames 处的说明。
+        try:
+            snapshot_every = max(1, int(payload.get("snapshot_every") or 1))
+        except (TypeError, ValueError):
+            raise ParameterError("snapshot_every 必须是正整数（每隔几帧给一张全量高度快照）")
         simulation = simulate_toolpath(
             toolpath,
             stock,
@@ -493,6 +499,13 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             target_volume_mm3=target_volume,
         )
         frames = simulation.frames
+        # 帧快照（全量 height 高度图）占响应 99% 的字节：180 帧 × 十几万格 ≈ 一百多 MB，
+        # 服务端光序列化就要五六秒、浏览器解析又是几秒。而播放器只在"重置到某锚帧"时
+        # 用快照——帧与帧之间是它自己沿刀路连续扫掠出来的（web/js 播放器的
+        # sweepSimulation，公式与这里逐字一致），所以每 snapshot_every 帧给一张全量图
+        # 就够，中间帧只带 time/位置/里程这些小字段。首帧（前端建几何要用）与末帧
+        # （拖到底的最终状态）一定给；snapshot_every=1 即逐帧全给（默认，旧行为）。
+        last_index = len(frames) - 1
         payload_out: dict[str, Any] = {
             "ok": True,
             "kind": kind,
@@ -503,7 +516,10 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             "grid": simulation.grid,
             "stock": simulation.stock,
             "summary": simulation.summary(),
-            "frames": [frame.to_payload() for frame in frames],
+            "frames": [
+                frame.to_payload(with_height=index % snapshot_every == 0 or index == last_index)
+                for index, frame in enumerate(frames)
+            ],
             "final_mesh": simulation.final.surface_mesh().to_payload(decimals=3),
         }
         return json_response(payload_out)

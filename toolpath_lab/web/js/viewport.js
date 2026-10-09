@@ -1024,11 +1024,16 @@ export class Viewport {
   /**
    * 重置到锚帧 ``index``：从帧快照恢复整张显示状态。
    * 前一锚帧上"预扫"过的内容在这里被干净覆盖，所以任意拖动都从快照重扫。
+   *
+   * 全量 height 快照可能只隔几帧一张（/api/simulate 的 ``snapshot_every``，中间帧只带
+   * time/位置/里程）：给到的帧没有 height 就退到最近的前一张，调用方随后沿刀路扫掠
+   * 把状态补到目标位置（见 main.js 的 renderSimulation）。
    */
   setSimulationFrame(index) {
     const sim = this._sim;
     if (!sim || !sim.frames || sim.frames.length === 0) return;
-    const clamped = Math.max(0, Math.min(index | 0, sim.frames.length - 1));
+    let clamped = Math.max(0, Math.min(index | 0, sim.frames.length - 1));
+    while (clamped > 0 && !sim.frames[clamped].height) clamped -= 1;
     const source = sim.frames[clamped].height;
     if (source) sim.height.set(source);
     sim.frameIndex = clamped;

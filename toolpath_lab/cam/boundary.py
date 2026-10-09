@@ -1108,7 +1108,11 @@ def _trace_mask_boundaries(mask: NDArray[np.bool_]) -> list[list[tuple[int, int]
     """由栅格掩码构造闭合边界环（坐标为**格点**坐标，不是单元中心）。
 
     先把四种朝向的边界边一次性向量化筛出来，再按端点接链成环：方向统一为
-    "实心格在左"，因此外轮廓逆时针、孔洞顺时针，互不串环，接链本身就是一次哈希查找。
+    "实心格在左"，因此外轮廓逆时针、孔洞顺时针，互不串环。
+
+    接链用**整数顶点号**（``vid = I * (cols + 1) + J``）而不是坐标元组：走的规则与
+    旧实现逐字一致，但每步只剩"一次字典查表 + 一次列表下标"，不再有元组键字典、
+    listcomp 与集合——一次型腔规划要跟踪几百张掩码，接链原先占了刀路生成六成时间。
     """
 
     rows, cols = mask.shape
@@ -1126,44 +1130,94 @@ def _trace_mask_boundaries(mask: NDArray[np.bool_]) -> list[list[tuple[int, int]
         return []
     first = np.vstack(starts)
     second = np.vstack(ends)
-
-    successors: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    predecessors: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    for k in range(int(first.shape[0])):
-        start = (int(first[k, 0]), int(first[k, 1]))
-        end = (int(second[k, 0]), int(second[k, 1]))
-        successors.setdefault(start, []).append(end)
-        predecessors.setdefault(end, []).append(start)
-    return _walk_edge_cycles(successors, predecessors)
+    width = cols + 1
+    start_ids = first[:, 0] * width + first[:, 1]
+    end_ids = second[:, 0] * width + second[:, 1]
+    return _walk_edge_cycles(start_ids, end_ids, width)
 
 
-def _walk_edge_cycles(successors: dict[tuple[int, int], list[tuple[int, int]]],
-                      predecessors: dict[tuple[int, int], list[tuple[int, int]]]
-                      ) -> list[list[tuple[int, int]]]:
-    """把有向边集合分解成闭合环。
+def _walk_edge_cycles(start_ids: NDArray[np.int64], end_ids: NDArray[np.int64],
+                      width: int) -> list[list[tuple[int, int]]]:
+    """把有向边集合分解成闭合环（顶点为整数 ``vid = I * width + J``）。
 
     每个顶点处选择"最靠右"的后继（顺时针优先），因此外轮廓逆时针、孔洞顺时针，
     互不串环。走不到起点时把本轮用掉的边还回去，避免误删其它环的边。
+
+    为什么用整数顶点号：``J < width`` 恒成立，整数大小顺序与 ``(I, J)`` 字典序**完全
+    一致**，``min`` 与排序的结论和按元组逐字相同（转回元组只在真正需要算转角的
+    多后继格点上做一次，见 :func:`_prefer_turn` 的调用处）。
     """
 
+    n_edges = int(start_ids.shape[0])
+    if n_edges == 0:
+        return []
+    # 按起点分组：**稳定**排序让同一顶点的出边保持"方向 0→3、行主序"的原始顺序，
+    # 与旧实现字典的插入顺序一致——循环的枚举顺序（＝返回顺序）因此一模一样。
+    order = np.argsort(start_ids, kind="stable")
+    sorted_starts = start_ids[order]
+    heads = np.empty(n_edges, dtype=bool)
+    heads[0] = True
+    np.not_equal(sorted_starts[1:], sorted_starts[:-1], out=heads[1:])
+    head_index = np.flatnonzero(heads)
+    head_positions = head_index.tolist()
+    head_vertices = sorted_starts[head_index].tolist()
+    edge_at = order.tolist()
+    ends = end_ids.tolist()
+
+    successors: dict[int, int | tuple[int, ...]] = {}
+    for index, vertex in enumerate(head_vertices):
+        begin = head_positions[index]
+        stop = head_positions[index + 1] if index + 1 < len(head_positions) else n_edges
+        # 绝大多数顶点只有一条出边，直接存边号；对角相接处有两条，存小元组
+        successors[vertex] = edge_at[begin] if stop - begin == 1 else tuple(edge_at[begin:stop])
+
+    # 循环的枚举顺序 = 起点在边表里**首次出现**的顺序（唯一一次与旧实现对齐的地方：
+    # 旧实现按字典 key 的插入顺序枚举，而插入顺序就是边表顺序）
+    _, first_positions = np.unique(start_ids, return_index=True)
+    start_order = start_ids[np.sort(first_positions)].tolist()
+
     loops: list[list[tuple[int, int]]] = []
-    used: set[tuple[tuple[int, int], tuple[int, int]]] = set()
-    total_edges = sum(len(item) for item in successors.values())
-    for start in list(successors.keys()):
+    used = bytearray(n_edges)
+    predecessors: dict[tuple[int, int], list[tuple[int, int]]] | None = None
+    for start in start_order:
         while True:
-            candidates = [end for end in successors.get(start, []) if (start, end) not in used]
-            if not candidates:
-                break
             current = start
-            loop: list[tuple[int, int]] = [current]
+            loop: list[int] = [current]
             closed = False
-            for _ in range(total_edges + 8):
-                options = [end for end in successors.get(current, []) if (current, end) not in used]
-                if not options:
+            for _ in range(n_edges + 8):
+                outgoing = successors.get(current)
+                if outgoing is None:
                     break
-                nxt = _prefer_turn(current, options, predecessors)
-                used.add((current, nxt))
-                current = nxt
+                if isinstance(outgoing, int):
+                    if used[outgoing]:
+                        break
+                    edge = outgoing
+                else:
+                    edge = -1
+                    for candidate in outgoing:
+                        if not used[candidate]:
+                            edge = candidate
+                            break
+                    if edge < 0:
+                        break
+                    options = [ends[candidate] for candidate in outgoing
+                               if not used[candidate]]
+                    if len(options) > 1:
+                        # 只剩一个可用后继时等价于旧实现 _prefer_turn 的首行分支，
+                        # 不必算转角；多后继（对角相接的格点）才需要"取最靠右的"
+                        if predecessors is None:
+                            predecessors = _predecessor_dict(start_ids, end_ids, width)
+                        nxt = _prefer_turn(divmod(current, width),
+                                          [divmod(option, width) for option in options],
+                                          predecessors)
+                        # _prefer_turn 给的是 (I, J)，转回整数顶点号再定位那条边
+                        target = nxt[0] * width + nxt[1]
+                        for candidate in outgoing:
+                            if ends[candidate] == target:
+                                edge = candidate
+                                break
+                used[edge] = 1
+                current = ends[edge]
                 if current == start:
                     closed = True
                     break
@@ -1171,12 +1225,31 @@ def _walk_edge_cycles(successors: dict[tuple[int, int], list[tuple[int, int]]],
             if closed and len(loop) >= 4:
                 loops.append(loop)
                 continue
+            # 这条路走不通：把本轮用掉的边还回去（同一条边可能属于别的环）
             for index in range(len(loop)):
-                start_point = loop[index]
-                end_point = loop[index + 1] if index + 1 < len(loop) else current
-                used.discard((start_point, end_point))
+                begin = loop[index]
+                stop = loop[index + 1] if index + 1 < len(loop) else current
+                outgoing = successors.get(begin)
+                if isinstance(outgoing, int):
+                    if ends[outgoing] == stop:
+                        used[outgoing] = 0
+                elif outgoing is not None:
+                    for candidate in outgoing:
+                        if ends[candidate] == stop:
+                            used[candidate] = 0
+                            break
             break
-    return loops
+    return [[divmod(vertex, width) for vertex in loop] for loop in loops]
+
+
+def _predecessor_dict(start_ids: NDArray[np.int64], end_ids: NDArray[np.int64],
+                      width: int) -> dict[tuple[int, int], list[tuple[int, int]]]:
+    """入边表（端点 → 来的顶点）。只在真正出现多后继的掩码上才建一次。"""
+
+    predecessors: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for start, end in zip(start_ids.tolist(), end_ids.tolist()):
+        predecessors.setdefault(divmod(end, width), []).append(divmod(start, width))
+    return predecessors
 
 
 def _prefer_turn(current: tuple[int, int], candidates: list[tuple[int, int]],

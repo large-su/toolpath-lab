@@ -498,6 +498,39 @@ class SimulationAndExportTests(ServerCase):
         self.assertTrue(body["final_mesh"]["indices"])
         self.assertTrue(body["toolpath"]["moves"])
 
+    def test_simulation_height_snapshots_can_be_thinned(self) -> None:
+        """``snapshot_every=N``：只隔 N 帧给一张全量 height，帧数与帧字段一帧不少。
+
+        全量高度图占响应 99% 的字节（几百 KB/帧），而播放器只在整体重置时用它——
+        中间帧只带 time/位置/里程就够了，帧间状态由前端沿刀路扫掠（公式与后端一致）。
+        """
+        status, body = self.post("/api/simulate", {
+            "operation_id": self.operation["id"], "cell_mm": 0.8, "max_frames": 20,
+            "snapshot_every": 5,
+        })
+        self.assertEqual(status, 200, body)
+        frames = body["frames"]
+        self.assertGreater(len(frames), 6)
+        cells = body["grid"]["rows"] * body["grid"]["cols"]
+        for index, frame in enumerate(frames):
+            with self.subTest(index=index):
+                if index % 5 == 0 or index == len(frames) - 1:
+                    self.assertEqual(len(frame["height"]), cells)
+                else:
+                    self.assertNotIn("height", frame)
+                    # 中间帧照样带齐时间/位置/里程：帧节奏与动画时长不受影响
+                    for key in ("time_s", "position", "travelled_mm", "removed_mm3"):
+                        self.assertIn(key, frame)
+        # 不给 snapshot_every 就逐帧全给（旧行为）
+        _, full = self.post("/api/simulate", {
+            "operation_id": self.operation["id"], "cell_mm": 0.8, "max_frames": 20,
+        })
+        self.assertTrue(all("height" in frame for frame in full["frames"]))
+
+    def test_simulation_rejects_a_bad_snapshot_every(self) -> None:
+        status, _ = self.post("/api/simulate", {"cell_mm": 1.0, "snapshot_every": "每帧"})
+        self.assertEqual(status, 400)
+
     def test_simulation_of_the_whole_job(self) -> None:
         status, body = self.post("/api/simulate", {"cell_mm": 1.0, "max_frames": 15})
         self.assertEqual(status, 200, body)
