@@ -169,6 +169,11 @@ input[type="checkbox"] {
 .layout {
   display: grid;
   grid-template-columns: 264px 1fr;
+  /* 必须显式给出**确定**的行高：默认的 auto 行会让 .stage 的高度由内容决定，
+     于是 .viewport 的 height:100% 解析成 auto，画布退回用自身的 height 属性参与布局，
+     而 resize() 又按 clientHeight 去设这个属性 —— 高度每触发一次就放大一倍，
+     相机 aspect 被拉成 0.19，模型被推得极远、屏幕上只剩一角。 */
+  grid-template-rows: minmax(0, 1fr);
   height: calc(100% - 46px);
 }
 
@@ -183,6 +188,8 @@ input[type="checkbox"] {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* 同上：flex 子项默认 min-height:auto，不加这句 .stage 会被画布撑高。 */
+  min-height: 0;
 }
 
 .viewport {
@@ -294,6 +301,51 @@ input[type="checkbox"] {
   font-weight: 500;
 }
 
+/* 参数面板里的辅助件：按钮行、文本输入、参数模板列表。
+   （这几个类名在 cam-panel.js 里一直在用，之前没有样式，按钮是浏览器默认外观。） */
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+
+.text-input {
+  width: 100%;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.text-input:focus {
+  outline: none;
+  border-color: rgba(84, 214, 196, 0.55);
+  background: var(--teal-soft);
+}
+
+.template-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.template-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.template-row .button {
+  flex: 1;
+  text-align: left;
+}
+
 /* ------------------------------------------------------------ 视图工具条 */
 .view-toolbar {
   position: absolute;
@@ -347,10 +399,6 @@ input[type="checkbox"] {
 }
 
 .appearance-toolbar {
-  position: absolute;
-  top: 14px;
-  left: 14px;
-  z-index: 3;
   display: flex;
   gap: 2px;
   padding: 3px;
@@ -378,6 +426,64 @@ input[type="checkbox"] {
   color: var(--teal);
   border-color: rgba(84, 214, 196, 0.32);
   background: var(--teal-soft);
+}
+
+/* 左上角工具条一列：外观开关在上，拾取面在下——分开绝对定位时两者会重叠。 */
+.corner-toolbars {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.pick-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(7, 16, 20, 0.86);
+  backdrop-filter: blur(10px);
+}
+
+/* JS 用 hidden 属性切换显隐（实验台模式下不出现），必须压过上面的 display:flex。 */
+.pick-toolbar[hidden] {
+  display: none;
+}
+
+.pick-toolbar button {
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.pick-toolbar button:hover {
+  color: var(--text);
+}
+
+.pick-toolbar button.active {
+  color: var(--teal);
+  border-color: rgba(84, 214, 196, 0.32);
+  background: var(--teal-soft);
+}
+
+.pick-hint {
+  max-width: 260px;
+  overflow: hidden;
+  padding: 0 6px;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------------------------------------------------------------- 统计 */
@@ -470,6 +576,26 @@ input[type="checkbox"] {
   text-align: right;
 }
 
+/* 速度滑条（1×–64×）：固定宽度，拖动时倍数读数不抖动。 */
+.speed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.speed-slider {
+  width: 132px;
+}
+
+.speed-value {
+  min-width: 38px;
+  color: var(--text);
+  font: 11px var(--mono);
+  text-align: right;
+}
+
 /* -------------------------------------------------------------- 滚动条 */
 .panel::-webkit-scrollbar {
   width: 9px;
@@ -480,3 +606,539 @@ input[type="checkbox"] {
   border-radius: 5px;
   background: #1d3038;
 }
+
+/* ------------------------------------------ 模态框 / 进度条 / 拖放（modal.js） */
+/* class="hidden" 的统一隐藏规则。必须写在下面几条 display 之前：
+   它们和 .modal、.progress 特异性相同，靠先后顺序决定胜负。 */
+.hidden {
+  display: none;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(3, 8, 10, 0.66);
+  backdrop-filter: blur(2px);
+}
+
+/* 显式再写一遍：上面的 .modal 是 grid，不能被它的 display 盖掉。 */
+.modal.hidden {
+  display: none;
+}
+
+.modal-box {
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100%);
+  max-height: min(560px, 86vh);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-head h3 {
+  margin: 0;
+  font: 600 13px var(--mono);
+  letter-spacing: 0.04em;
+}
+
+.modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+  color: var(--text-dim);
+}
+
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.modal-error {
+  min-height: 16px;
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* 拖放区 */
+.drop-zone {
+  padding: 22px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 6px;
+  background: rgba(135, 169, 166, 0.04);
+  color: var(--text-dim);
+  text-align: center;
+  cursor: pointer;
+  /* 文件 input 铺在它上面，所以这里必须是定位上下文 */
+  position: relative;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+/*
+  真正的 file input：铺满整个拖放区、完全透明。
+  这样用户点在拖放区上就是直接点在 input 上，选择框一定带"用户激活"，
+  不会出现 "File chooser dialog can only be shown with a user activation."
+  （不能用 display:none / hidden 再配 input.click()：那条路在拿不到激活时会被拒绝。）
+*/
+.drop-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 0;
+}
+
+.drop-zone:hover,
+.drop-zone.drop-active {
+  border-color: rgba(84, 214, 196, 0.5);
+  background: var(--teal-soft);
+  color: var(--text);
+}
+
+.drop-hint {
+  margin-top: 7px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.drop-file {
+  margin-top: 10px;
+  color: var(--text);
+  font: 11px var(--mono);
+  word-break: break-all;
+}
+
+/* 不确定进度条：细条贴在视口下方（提示条上方），文字浮在它上面（0% 宽度裁不到文字）。 */
+.progress {
+  position: absolute;
+  bottom: 56px;
+  left: 50%;
+  z-index: 4;
+  width: min(320px, 55%);
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line-strong);
+  transform: translateX(-50%);
+}
+
+.progress.hidden {
+  display: none;
+}
+
+.progress .progress-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--teal), var(--cyan));
+  transition: width 0.22s ease-out;
+}
+
+.progress .progress-text {
+  position: absolute;
+  bottom: 9px;
+  left: 0;
+  width: 100%;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------- 工序树 */
+/* 侧栏改成纵向 flex：工序树占上半截、参数面板吃掉剩下的空间并各自滚动，
+   否则两块内容会一起把侧栏撑出可视区。 */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--line);
+}
+
+.tree-panel {
+  display: flex;
+  flex-direction: column;
+  /* 必须是 0 0 auto（**不收缩**）。写成 0 1 auto 时，参数面板内容一高，
+     侧栏空间不够，flex 就会把工序树一起压缩 —— 列表被压成十几像素高，
+     只剩一条被裁掉的行（用户看到的就是"工序树只露出一小条"）。
+     侧栏的溢出交给参数面板自己滚动即可。 */
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: 46%;
+  border-bottom: 1px solid var(--line);
+}
+
+/* 必须显式写：[hidden] 的选择器权重低于 .tree-panel，上面的 display:flex
+   会盖掉浏览器默认的 [hidden]{display:none}，没导入模型时面板也会露出来。 */
+.tree-panel[hidden] {
+  display: none;
+}
+
+.tree-panel .panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 8px;
+}
+
+.tree-panel .panel-head h3 {
+  margin: 0;
+  color: var(--text-faint);
+  font: 600 10px var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.tree-panel .panel-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.tree-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 10px 10px;
+}
+
+/* 列表至少留出一行半的高度，否则空态/单条工序时会被压成一条缝。 */
+.tree-panel:not([hidden]) .tree-body {
+  min-height: 64px;
+}
+
+.tree-body::-webkit-scrollbar {
+  width: 9px;
+}
+
+.tree-body::-webkit-scrollbar-thumb {
+  border: 3px solid var(--bg-panel);
+  border-radius: 5px;
+  background: #1d3038;
+}
+
+.tree-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 8px;
+  margin-bottom: 4px;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-left: 2px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.tree-row:hover {
+  border-color: var(--line-strong);
+  border-left-color: var(--line-strong);
+}
+
+.tree-row.active {
+  border-color: var(--line-strong);
+  border-left-color: var(--teal);
+  background: var(--teal-soft);
+}
+
+.tree-row:focus-visible {
+  outline: none;
+  border-color: var(--teal);
+}
+
+/* 禁用的工序整体压暗，但仍然可点：用户得能把它再启回来。 */
+.tree-row.off {
+  opacity: 0.5;
+}
+
+.tree-seq {
+  min-width: 14px;
+  color: var(--text-faint);
+  font: 10px var(--mono);
+  text-align: right;
+}
+
+.tree-main {
+  min-width: 0;
+}
+
+.tree-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tree-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-kind {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.tree-state {
+  flex: none;
+  font: 10px var(--mono);
+}
+
+.tree-state-draft {
+  color: var(--text-faint);
+}
+
+.tree-state-generated {
+  color: var(--teal);
+}
+
+.tree-state-verified {
+  color: var(--cyan);
+}
+
+.tree-warn {
+  flex: none;
+  color: var(--yellow);
+  font-size: 10px;
+  cursor: help;
+}
+
+.tree-summary {
+  overflow: hidden;
+  color: var(--text-faint);
+  font: 10px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-summary-empty {
+  font-style: italic;
+}
+
+.tree-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tree-enable {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-faint);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.tree-enable-text {
+  min-width: 20px;
+}
+
+.tree-row[data-enabled="true"] .tree-enable-text {
+  color: var(--teal);
+}
+
+.tree-generate {
+  padding: 2px 8px;
+  font-size: 10px;
+}
+
+.tree-rename {
+  min-width: 0;
+  width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--teal);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.tree-rename:focus {
+  outline: none;
+  border-color: var(--teal);
+}
+
+.tree-empty {
+  margin: 8px 2px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 5px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.8;
+}
+
+.tree-empty p {
+  margin: 0;
+}
+
+.tree-empty ol {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.tree-empty li {
+  margin-bottom: 2px;
+}
+
+/* ---------------------------------------------------------------- 刀具库 */
+/* 双栏：左边刀具列表、右边参数表单。对话框整体加宽，否则表单里的数值框摆不下。
+   注意 .modal-box 是 #modal 里的子节点，#modal 本身没有 id（只有 class="modal"），
+   所以要写成 .modal:has(.tool-layout) —— 写成 #modal 会永远匹配不到。 */
+.modal:has(.tool-layout) .modal-box {
+  width: min(820px, 100%);
+  max-height: min(640px, 90vh);
+}
+
+.tool-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 240px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.tool-pane {
+  min-width: 0;
+}
+
+.tool-pane-list {
+  max-height: 52vh;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  padding-right: 8px;
+}
+
+.tool-pane-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.tool-pane-list::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--line-strong);
+}
+
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* 一行一件刀具：名称 + 规格摘要 + 类型标签，密排但留出点击面积。 */
+.tool-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: rgba(135, 169, 166, 0.05);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-row:hover {
+  border-color: var(--line-strong);
+  background: rgba(135, 169, 166, 0.11);
+}
+
+.tool-row.active {
+  border-color: rgba(84, 214, 196, 0.55);
+  background: var(--teal-soft);
+}
+
+.tool-name {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-spec {
+  grid-column: 1 / -1;
+  color: var(--text-dim);
+  font: 10.5px var(--mono);
+}
+
+.tool-kind {
+  color: var(--text-faint);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.tool-editor {
+  max-height: 52vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.tool-editor .group-head {
+  margin: 10px 0 6px;
+  color: var(--text-faint);
+  font: 600 10px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tool-editor .row > input[type="text"] {
+  grid-column: 1 / -1;
+}
+
+/* 对话框底部：左边是"新建/恢复"，右边是保存与关闭。 */
+.tool-foot {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tool-foot-left,
+.tool-foot-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-foot-note {
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+

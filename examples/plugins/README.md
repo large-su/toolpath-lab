@@ -31,3 +31,10 @@ from toolpath_lab.planning import contour as _contour  # noqa: F401
 `context` 提供 `boundary`、`tool`、`region`、`parameters`、`to_positions()`、`cut_move()`、
 `link_move()`、`rapid_between()`、`approach_move_down()`、`retract_move_up()` 与 `warn()`。
 详见 [docs/extending.md](../../docs/extending.md)。
+
+## 上级目录的示例模型
+
+`examples/sample_plate.step` 是一块带矩形型腔的板（120 × 90 × 40，腔深 15，AP214 B-rep），
+用来试 **CAM 加工**模式：导入它 → 拾取顶面或腔底面 → 建毛坯 → 生成刀路 → 跑切削仿真 → 出 NC。
+它同时也是测试夹具：`tests/test_brep.py` 会读它并校验尺寸、体积与边界环。
+

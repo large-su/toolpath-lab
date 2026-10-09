@@ -7,6 +7,7 @@ import socket
 import sys
 import threading
 import webbrowser
+from pathlib import Path
 from typing import Sequence
 
 from toolpath_lab import __version__
@@ -22,6 +23,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8770, help="监听端口 (默认 8770)")
     parser.add_argument(
         "--no-browser", action="store_true", help="启动后不自动打开浏览器"
+    )
+    parser.add_argument(
+        "--data-dir",
+        default="",
+        help="工程数据目录（默认用用户目录下的 ToolpathLab）；"
+             "自动化脚本传一个临时目录，就不会把测试工程混进用户的工程列表",
     )
     parser.add_argument(
         "--version", action="version", version=f"toolpath-lab {__version__}"
@@ -57,7 +64,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if port != args.port:
         print(f"提示: 端口 {args.port} 已被占用，改用 {port}")
     url = f"http://{args.host}:{port}/"
-    server = create_server(args.host, port)
+    server = create_server(args.host, port,
+                           data_dir=Path(args.data_dir) if args.data_dir else None)
     print("=" * 62)
     print(f" ToolpathLab {__version__}  刀路规划实验台")
     print(f" 打开: {url}")

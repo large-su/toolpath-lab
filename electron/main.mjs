@@ -66,6 +66,22 @@ function resetLog() {
   }
 }
 
+/**
+ * 把一行原始日志追加到启动日志（不打印到控制台，避免刷屏）。
+ *
+ * 后端的请求日志与渲染进程的报错都要落盘：用户报"点了没反应"时，
+ * 这两样是判断"请求到底发出去没有、前端有没有抛异常"的唯一依据。
+ * 早先后端输出只攒在一个 4 KB 的内存缓冲里、渲染进程的报错完全不收，
+ * 于是任何前端故障都只能看到一个"没反应"，没法查。
+ */
+function logLine(line) {
+  try {
+    fs.appendFileSync(LOG_FILE, line + "\n");
+  } catch (error) {
+    /* 记不下来就算了，不影响运行 */
+  }
+}
+
 // 窗口先显示的内置加载页：不依赖后端，也不依赖任何外部文件。
 const LOADING_PAGE =
   "data:text/html;charset=utf-8," +
@@ -117,7 +133,11 @@ async function startBackend(python) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const collect = (chunk) => {
-    output = (output + chunk.toString()).slice(-4000);
+    const text = chunk.toString();
+    output = (output + text).slice(-4000);
+    for (const line of text.split(/\r?\n/)) {
+      if (line.trim()) logLine("[后端] " + line);
+    }
   };
   backend.stdout.on("data", collect);
   backend.stderr.on("data", collect);
@@ -172,6 +192,21 @@ function createWindow() {
     window.show();
     report("窗口已显示");
   });
+  // 渲染进程的警告/报错与加载失败也写进日志。Electron 43 起 console-message 传的是
+  // 事件对象（level 是 'error' / 'warning' 这样的字符串），位置参数已废弃。
+  window.webContents.on("console-message", (event) => {
+    const level = String((event && event.level) || "");
+    if (level !== "error" && level !== "warning") return;
+    const message = String((event && event.message) || "");
+    // ResizeObserver 是良性的；CSP 安全提示只在未打包的开发态出现。
+    if (!message || message.includes("ResizeObserver loop")
+        || message.includes("Electron Security Warning")) return;
+    const where = event.sourceId ? " (" + event.sourceId + ":" + event.lineNumber + ")" : "";
+    logLine("[界面 " + level + "] " + message + where);
+  });
+  window.webContents.on("did-fail-load", (event, code, description, url) => {
+    logLine("[界面] 加载失败 " + code + " " + description + " " + url);
+  });
   // 外链一律交给系统浏览器，窗口本身只装本机界面。
   window.webContents.setWindowOpenHandler(({ url: target }) => {
     shell.openExternal(target);
@@ -190,6 +225,20 @@ async function boot() {
     await window.loadURL(url);
     // UI-READY 这个 ASCII 标记是给启动脚本看的（批处理里用中文字符串匹配不可靠）。
     report("界面就绪 UI-READY");
+    // 页面加载完 ≠ 前端装配完：boot() 是异步的，要先取 catalog 再建面板。
+    // 这里轮询几秒再下结论——只查一次会误报（后面那些 /api 请求其实都成功了）。
+    let assembled = false;
+    for (let attempt = 0; attempt < 50 && !assembled; attempt += 1) {
+      assembled = await window.webContents
+        .executeJavaScript(
+          "Boolean(window.toolpathLab && window.toolpathLab.viewport && window.toolpathLab.camPanel)"
+        )
+        .catch(() => false);
+      if (!assembled) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    report(assembled
+      ? "前端装配完成"
+      : "前端没有装配完成：按钮不会响应（多半是 /api/catalog 失败）");
   } catch (error) {
     stopBackend();
     report("启动失败：" + String((error && error.message) || error));

@@ -3,12 +3,46 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from toolpath_lab.server.app import ToolpathLabHandler, create_server
+from toolpath_lab.server.multipart import parse_multipart
+
+
+class CliTests(unittest.TestCase):
+    """命令行入口：参数解析与数据目录。"""
+
+    def test_parser_accepts_a_data_dir(self) -> None:
+        from toolpath_lab.cli import build_parser
+
+        args = build_parser().parse_args(["--port", "8899", "--data-dir", "D:/tmp/x"])
+        self.assertEqual(args.port, 8899)
+        self.assertEqual(args.data_dir, "D:/tmp/x")
+
+    def test_data_dir_defaults_to_empty(self) -> None:
+        """不给就用用户目录，不能变成一个空字符串目录把工程写丢。"""
+
+        from toolpath_lab.cli import build_parser
+
+        self.assertEqual(build_parser().parse_args([]).data_dir, "")
+
+    def test_data_dir_flag_isolates_projects(self) -> None:
+        """`--data-dir` 指向哪，工程就落在哪 —— 自检靠它不污染用户的工程列表。"""
+
+        from toolpath_lab.cli import build_parser
+
+        with tempfile.TemporaryDirectory(prefix="tplab-cli-") as folder:
+            args = build_parser().parse_args(["--data-dir", folder])
+            server = create_server("127.0.0.1", 0, data_dir=Path(args.data_dir))
+            try:
+                self.assertEqual(Path(server.workspace.repository.root), Path(folder))
+            finally:
+                server.server_close()
 
 
 class ApiTestCase(unittest.TestCase):
@@ -45,6 +79,70 @@ class ApiTestCase(unittest.TestCase):
     def plan(self, payload):
         status, body, headers = self.post("/api/plan", payload)
         return status, json.loads(body), headers
+
+
+class MultipartBoundaryTests(unittest.TestCase):
+    """multipart 解析对**浏览器风格**的 boundary 也必须成立。
+
+    Chromium 生成的 boundary 是 ``----WebKitFormBoundaryXXXXXXXX`` —— 它自己就带连字符，
+    于是 ``body.split("--" + boundary)`` 之后，第一段内容正好以 ``--`` 开头。
+    旧实现用 ``chunk.startswith("--")`` 判断结束标记，把唯一的部件当成结束标记丢掉，
+    整个上传返回"没有可用的部件"（400）。
+    """
+
+    QUOTE = '"'
+
+    def _body(self, boundary: str, content: bytes) -> bytes:
+        header = (
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name={self.QUOTE}file{self.QUOTE}"
+            f"; filename={self.QUOTE}model.step{self.QUOTE}\r\n"
+            "Content-Type: application/step\r\n\r\n"
+        ).encode("utf-8")
+        return header + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    def _check(self, boundary: str) -> None:
+        content = b"ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n"
+        parts = parse_multipart(self._body(boundary, content),
+                                f"multipart/form-data; boundary={boundary}")
+        self.assertIn("file", parts)
+        self.assertEqual(parts["file"].data, content)
+        self.assertEqual(parts["file"].filename, "model.step")
+
+    def test_browser_style_boundary_with_leading_dashes(self) -> None:
+        self._check("----WebKitFormBoundaryABC123xyz")
+
+    def test_plain_boundary_still_works(self) -> None:
+        self._check("----toolpathlabtest")
+
+    def test_short_boundary_still_works(self) -> None:
+        self._check("B")
+
+    def test_closing_marker_without_trailing_newline(self) -> None:
+        boundary = "----WebKitFormBoundaryNONEWLINE"
+        content = b"payload"
+        body = self._body(boundary, content).rstrip(b"\r\n")
+        parts = parse_multipart(body, f"multipart/form-data; boundary={boundary}")
+        self.assertEqual(parts["file"].data, content)
+
+    def test_two_fields_are_split_apart(self) -> None:
+        boundary = "----WebKitFormBoundaryTwoFields"
+        body = (
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name={self.QUOTE}payload{self.QUOTE}\r\n"
+            "Content-Type: application/json\r\n\r\n"
+            '{"name":"板件"}\r\n'
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name={self.QUOTE}file{self.QUOTE}"
+            f"; filename={self.QUOTE}model.step{self.QUOTE}\r\n"
+            "Content-Type: application/step\r\n\r\n"
+            "file-bytes\r\n"
+            f"--{boundary}--\r\n"
+        ).encode("utf-8")
+        parts = parse_multipart(body, f"multipart/form-data; boundary={boundary}")
+        self.assertEqual(sorted(parts), ["file", "payload"])
+        self.assertEqual(parts["file"].data, b"file-bytes")
+        self.assertIn("板件", parts["payload"].text)
 
 
 class StaticTests(ApiTestCase):
@@ -124,6 +222,47 @@ class CatalogTests(ApiTestCase):
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.get("/api/nope")
         self.assertEqual(context.exception.code, 404)
+
+
+class GzipResponseTests(ApiTestCase):
+    """大 JSON 响应按客户端能力压缩：仿真帧 payload 是回环传输的大头。
+
+    Chromium 的 fetch 带 ``Accept-Encoding`` 并按 ``Content-Encoding`` 自动解压，
+    前端无感；Python 标准库 urllib 不发这个头，拿到的必须是明文——
+    测试与脚本都依赖这一点。
+    """
+
+    def _get_with_gzip(self, path: str):
+        request = urllib.request.Request(
+            self.base + path, headers={"Accept-Encoding": "gzip, deflate, br"}
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.read(), dict(response.headers)
+
+    def test_small_body_stays_plain_even_when_gzip_is_advertised(self) -> None:
+        """没到阈值不压缩：小响应省不了传输时间，只白耗 CPU。"""
+
+        status, body, headers = self._get_with_gzip("/api/health")
+        self.assertEqual(status, 200)
+        self.assertNotIn("Content-Encoding", headers)
+        self.assertTrue(json.loads(body))  # 仍是明文
+
+    def test_big_json_is_compressed_and_round_trips(self) -> None:
+        import gzip as gzip_module
+
+        from toolpath_lab.server import app as app_module
+
+        plain_status, plain_body, _ = self.get("/api/catalog")
+        original = app_module.GZIP_MIN_BYTES
+        app_module.GZIP_MIN_BYTES = 0  # 放行小响应，走压缩分支
+        try:
+            status, body, headers = self._get_with_gzip("/api/catalog")
+        finally:
+            app_module.GZIP_MIN_BYTES = original
+        self.assertEqual(status, plain_status)
+        self.assertEqual(headers.get("Content-Encoding"), "gzip")
+        self.assertLess(len(body), len(plain_body))  # 真的变小了
+        self.assertEqual(gzip_module.decompress(body), plain_body)
 
 
 class PlanTests(ApiTestCase):
