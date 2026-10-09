@@ -28,9 +28,11 @@ by parameters, and the parameter panel is generated from the backend's parameter
   - **raster** - **zigzag** (every other pass runs in the opposite direction and consecutive passes
     are linked) and **one-way** (all passes run in the same direction, retracting to the safe plane
     between passes);
-  - **spiral** - one continuous outward spiral from near the centre, with few air moves; a ray cast
-    finds the boundary's allowed radius at each angle so the outer lap follows the region shape;
+  - **spiral** - one continuous outward spiral from the centre, with few air moves; inset the convex
+    region by the tool footprint, expand along its shape and finish with a complete boundary lap
+    that retains square corners;
   - **contour** - constant-offset rings walked inward from the boundary, alternating direction.
+- Playback time uses original move lengths and feed rates; reducing playback samples does not shorten the duration.
 - **Parameters**: stepover, pass direction (raster), sample step (spiral / contour) and feed rate.
   Safe height, rapid feed and boundary handling are constants (see "Configuration constants").
 - **3D view**: workpiece, region contour, toolpath (cut / link / rapid colour coded), cutter solid,

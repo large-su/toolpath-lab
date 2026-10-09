@@ -136,6 +136,17 @@ class CatalogTests(ApiTestCase):
 
 
 class PlanTests(ApiTestCase):
+    def test_oversized_spiral_and_contour_return_422(self) -> None:
+        for planner in ("spiral", "contour"):
+            with self.subTest(planner=planner):
+                status, body, _ = self.plan({
+                    "tool": {"diameter_mm": 20.0, "length_mm": 30.0},
+                    "region": {"shape": "square", "parameters": {"side_mm": 10.0}},
+                    "planner": {"id": planner},
+                })
+                self.assertEqual(status, 422)
+                self.assertFalse(body["ok"])
+
     def test_minimal_request_uses_defaults(self) -> None:
         status, payload, _ = self.plan({})
         self.assertEqual(status, 200)

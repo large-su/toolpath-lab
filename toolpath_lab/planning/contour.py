@@ -14,6 +14,7 @@ from typing import ClassVar
 import numpy as np
 from numpy.typing import NDArray
 
+from toolpath_lab.core.errors import PlanningError
 from toolpath_lab.core.parameters import ParameterKind as K, ParameterSet, spec
 from toolpath_lab.core.path import Move, MoveKind, Toolpath
 from toolpath_lab.planning.base import Planner, PlanningContext
@@ -171,7 +172,7 @@ class ContourPlanner(Planner):
             distance += stepover
         if not rings:
             context.warn("没有生成任何环：刀具足迹半径相对区域尺寸过大")
-            raise ValueError("环切未生成任何刀轨")
+            raise PlanningError("环切未生成任何刀轨")
 
         moves: list[Move] = []
         previous: np.ndarray | None = None

@@ -118,12 +118,13 @@ def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
     lengths = np.array([move.length_mm for move in toolpath.moves], dtype=np.float64)
     total_length = float(lengths.sum())
     budget = max(2 * len(toolpath.moves), int(max_samples))
-    if total_length <= 1e-9:
-        shares = np.full(len(toolpath.moves), 2, dtype=np.int64)
-    else:
-        shares = np.maximum(2, np.round(budget * lengths / total_length).astype(np.int64))
-    if int(shares.sum()) > budget:
-        shares = np.maximum(2, np.floor(shares * (budget / float(shares.sum()))).astype(np.int64))
+    shares = np.full(len(toolpath.moves), 2, dtype=np.int64)
+    if total_length > 1e-9:
+        allocation = (budget - int(shares.sum())) * lengths / total_length
+        extra = np.floor(allocation).astype(np.int64)
+        remainder = budget - int(shares.sum()) - int(extra.sum())
+        extra[np.argsort(-(allocation - extra), kind="stable")[:remainder]] += 1
+        shares += extra
 
     times: list[NDArray[np.float64]] = []
     positions: list[NDArray[np.float64]] = []
@@ -133,14 +134,11 @@ def build_timeline(toolpath: Toolpath, *, max_samples: int = 4000) -> Timeline:
 
     for index, move in enumerate(toolpath.moves):
         sampled = _resample_move(move, int(shares[index]))
-        steps = np.linalg.norm(np.diff(sampled, axis=0), axis=1)
-        local = np.concatenate(([0.0], np.cumsum(steps))) / move.feed_mm_per_min * 60.0
-        local_times = clock + local
+        # Sampling changes geometry detail, never the original travel time.
+        local_times = clock + np.linspace(0.0, move.duration_s, len(sampled))
         clock = float(local_times[-1])
-        if positions and index > 0:
-            # 上一段的终点与本段起点重合，去掉重复采样。
-            sampled = sampled[1:]
-            local_times = local_times[1:]
+        # Keep both boundary samples: the new move owns the outgoing interval.
+        # Right-sided lookup selects it at the shared timestamp.
         times.append(local_times)
         positions.append(sampled)
         kind_codes.append(np.full(local_times.shape[0], KIND_CODES[move.kind.value], dtype=np.int64))

@@ -234,7 +234,7 @@ class SpiralPlannerTests(unittest.TestCase):
         self.assertGreater(radii[-1], radii[0])
 
     def test_spiral_respects_tool_footprint(self) -> None:
-        """球头刀足迹为 0：切宽取小值时，起刀更靠中心、收尾更贴边界。"""
+        """球头刀足迹为 0：两者均从中心起刀，球头收尾更贴边界。"""
 
         options = {"stepover_mm": 2.0, "sample_step_mm": 1.0, "feed_mm_per_min": 600.0}
         flat = run_plan(
@@ -248,8 +248,9 @@ class SpiralPlannerTests(unittest.TestCase):
         ).toolpath
         flat_radii = np.linalg.norm(_cut_moves(flat)[0].points[:, :2], axis=1)
         ball_radii = np.linalg.norm(_cut_moves(ball)[0].points[:, :2], axis=1)
-        # 平底刀起刀在足迹半径 3，球头刀在 max(0, ae/2)=1
-        self.assertLess(ball_radii[0], flat_radii[0])
+        # Both tools now start at the centre to avoid a central hole.
+        self.assertAlmostEqual(ball_radii[0], 0.0)
+        self.assertAlmostEqual(flat_radii[0], 0.0)
         self.assertGreater(ball_radii[-1], flat_radii[-1])
 
     def test_spiral_on_a_circle_region(self) -> None:
