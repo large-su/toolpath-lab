@@ -126,15 +126,27 @@ def _cut_pocket_level(builder: MoveBuilder, job: _PocketJob, level_index: int,
         return first_cut
     # 这一层"还能切"的区域：斜面/曲面时层高落到某处底面之下，那一块必须裁掉，
     # 否则刀会平着切过去把高处的底面切掉。水平底面时它与 inside 等价。
-    level_region = region.level_mask(target_z, context.tool)
+    natural_region = region.level_mask(target_z, context.tool)
+    level_region = natural_region
     if exclude_mask is not None:
-        level_region = level_region & ~exclude_mask
+        level_region = natural_region & ~exclude_mask
         if not level_region.any():
             # 整层已被同层先加工的区域覆盖：去重跳过，属预期行为，不报警。
             return first_cut
     if job.mode == "contour":
+        # 环按**原区域**的等距轮廓生成，再把"关在同层已切区里"的刀轨段挖掉：
+        # 等距环靠距离场一圈圈向内推进，而挖进掩码的洞边界不随等距推进——每一圈
+        # 都把同一条洞边原样重描一遍，一层就出现 N 条一模一样的刀轨（且正好压在
+        # 先加工面的第一环上）。先加工区只当"废段筛子"用，不参与等距计算。
         rings, last_offset = _contour_rings(region, job.base_offset, job.stepover,
-                                            mask=level_region)
+                                            mask=natural_region)
+        closes = [True] * len(rings)
+        if exclude_mask is not None and rings:
+            rings, closes = _trim_enclosed_rings(rings, exclude_mask, region,
+                                                 context.tool_radius)
+            if not rings:
+                # 这一层剩下的环全落在同层已切区里：整层让出，与上面的整层跳过同义。
+                return first_cut
         if not rings:
             # 斜/曲面底面：靠近底部时"层高仍高于底面 + 抬升"的区域会自然收缩到没有
             # 环，这是预期的（那部分由最后一道"底面跟随"刀路切出），不再逐层报警。
@@ -148,7 +160,8 @@ def _cut_pocket_level(builder: MoveBuilder, job: _PocketJob, level_index: int,
         wall_ring = _ring_for_transition(context, region, job.base_offset, target_z)
         for ring_index, polygon in enumerate(rings):
             job.ring_count += 1
-            points = _ring_points(region, context, polygon, target_z, close=True)
+            points = _ring_points(region, context, polygon, target_z,
+                                  close=closes[ring_index])
             _emit_ring(builder, context, points, first_cut, level_index, ring_index,
                        region=region, level_mask=level_region,
                        label_prefix=job.prefix, engage_z=previous_z,
@@ -325,8 +338,7 @@ def plan_pocket_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
     def cut_level(job: _PocketJob, level_index: int, target_z: float) -> None:
         nonlocal first_cut, dedup_count
         exclude = coverage.exclude(job.region, target_z)
-        natural = LevelCoverage.cut_mask(job.region, target_z, job.context.tool,
-                                         job.base_offset)
+        natural = LevelCoverage.cut_mask(job.region, target_z, job.context.tool)
         if exclude is not None and natural is not None \
                 and bool((natural & exclude).any()):
             dedup_count += 1
@@ -513,6 +525,141 @@ def _contour_rings(region: MachiningRegion, base_offset: float, stepover: float,
         # 整格下限会在"粗栅格 + 小刀具"时间距超过刀直径，两环之间留下残料。
         offset += max(stepover, 0.5 * region.cell_mm)
     return rings, last_offset
+
+
+def _erode_mask(mask: NDArray[np.bool_], cells: int) -> NDArray[np.bool_]:
+    """方框腐蚀：只保留"上下左右 ``cells`` 格内全是 True"的格（两轴各一次滑窗求与）。"""
+
+    out = mask
+    for axis in (0, 1):
+        pad_width = [(0, 0), (0, 0)]
+        pad_width[axis] = (cells, cells)
+        padded = np.pad(out, pad_width, mode="constant", constant_values=False)
+        window = np.lib.stride_tricks.sliding_window_view(
+            padded, 2 * cells + 1, axis=axis)
+        out = window.all(axis=-1)
+    return out
+
+
+def _sample_coverage(polyline: NDArray[np.float64], step: float,
+                     keepout: NDArray[np.bool_],
+                     x0: float, y0: float, cell: float
+                     ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    """沿折线按 ``step`` 采样，返回 ``(采样点, 每点是否落在收过的已切区里)``。"""
+
+    chunks = []
+    for a, b in zip(polyline[:-1], polyline[1:]):
+        span = float(np.hypot(b[0] - a[0], b[1] - a[1]))
+        count = max(1, int(np.ceil(span / step)))
+        t = np.arange(count + 1, dtype=np.float64) / count
+        chunks.append(a[None, :] + (b - a)[None, :] * t[:, None])
+    samples = np.vstack(chunks)
+    i = np.floor((samples[:, 0] - x0) / cell).astype(np.intp)
+    j = np.floor((samples[:, 1] - y0) / cell).astype(np.intp)
+    inside = ((i >= 0) & (i < int(keepout.shape[0]))
+              & (j >= 0) & (j < int(keepout.shape[1])))
+    covered = np.zeros(len(samples), dtype=bool)
+    covered[inside] = keepout[i[inside], j[inside]]
+    return samples, covered
+
+
+def _dedupe_points(points: NDArray[np.float64]) -> NDArray[np.float64]:
+    """去掉连续重复点（分段采样在顶点处会把同一个点写两遍）。"""
+
+    if points.shape[0] <= 1:
+        return points
+    keep = np.ones(points.shape[0], dtype=bool)
+    keep[1:] = np.any(np.abs(np.diff(points, axis=0)) > 1e-12, axis=1)
+    return points[keep]
+
+
+def _slim_points(points: NDArray[np.float64]) -> NDArray[np.float64]:
+    """直线上密集的采样点收敛回顶点：只保留真正拐弯的点（首尾必留）。
+
+    采样步长是 1/4 格，原样吐出会把刀轨点数放大 4 倍；而采样点本就落在原环的
+    每一条边上，去掉共线点后几何一模一样（容差 1e-9 rad 远高于浮点误差）。
+    """
+
+    if points.shape[0] <= 2:
+        return points
+    v1 = points[1:-1] - points[:-2]
+    v2 = points[2:] - points[1:-1]
+    cross = v1[:, 0] * v2[:, 1] - v1[:, 1] * v2[:, 0]
+    dot = v1[:, 0] * v2[:, 0] + v1[:, 1] * v2[:, 1]
+    scale = np.hypot(v1[:, 0], v1[:, 1]) * np.hypot(v2[:, 0], v2[:, 1])
+    turn = (np.abs(cross) > 1e-9 * np.maximum(scale, 1e-12)) | (dot < 0.0)
+    keep = np.zeros(points.shape[0], dtype=bool)
+    keep[0] = True
+    keep[-1] = True
+    keep[1:-1] = turn
+    return points[keep]
+
+
+def _trim_enclosed_rings(rings: list[NDArray[np.float64]],
+                         exclude_mask: NDArray[np.bool_],
+                         region: MachiningRegion,
+                         radius_mm: float
+                         ) -> tuple[list[NDArray[np.float64]], list[bool]]:
+    """挖掉"刀心关在同层已切区里、扫过去也碰不到未切材料"的**那一段**刀轨。
+
+    判据按**刀半径**把已切区向内收一圈：刀心到已切区边界 ≥ R 时，刀心 ± R 的扫掠
+    带整个落在已切区里，走这一段纯属空切——最刺眼的一种是后加工面的环与先加工面
+    的环贴着同一条 XY 来回走（"同一块区域被来回切两遍"）。反过来，刀心只要探出
+    收完的圈，扫掠带就伸进了未切材料，那一段就必须留着（挖掉 = 漏切），所以判据
+    是"离边界 ≥ R 才挖"。
+
+    一条环往往只有一部分穿过已切区（顶面的等距环会横穿型腔开口），所以按**段**挖
+    而不是整环丢：没被挖到的环照旧整体闭合（``close=True``），被挖过的剩下开弧
+    （``close=False``），整环都落在圈内的才整条去掉。
+
+    收圈按栅格**方框**做：圆盘腐蚀是方框腐蚀的子集，方框收得更少 → 判挖更保守，
+    宁可多走一段也绝不误挖。环上按 1/4 格采样（含闭合边），越出栅格的采样点按
+    "没被收进去"处理，同样保守地留着。
+    """
+
+    cell = float(region.cell_mm)
+    shrink = int(np.ceil(radius_mm / cell)) if cell > 0 else 0
+    if shrink <= 0:
+        return list(rings), [True] * len(rings)
+    keepout = _erode_mask(exclude_mask, shrink)
+    if not bool(keepout.any()):
+        return list(rings), [True] * len(rings)
+    x0, y0 = float(region.bounds[0]), float(region.bounds[1])
+    step = max(0.25 * cell, 1e-9)
+    out_rings: list[NDArray[np.float64]] = []
+    out_close: list[bool] = []
+    for ring in rings:
+        points = np.asarray(ring, dtype=np.float64).reshape(-1, 2)
+        if points.shape[0] < 3:
+            out_rings.append(points)
+            out_close.append(True)
+            continue
+        # offset_outline_polygons 返回开放多边形（首尾不重复），采样时自己补闭合边
+        loop = points
+        if float(np.hypot(points[-1][0] - points[0][0],
+                          points[-1][1] - points[0][1])) > 1e-9:
+            loop = np.vstack([points, points[:1]])
+        dense, covered = _sample_coverage(loop, step, keepout, x0, y0, cell)
+        if not bool(covered.any()):
+            out_rings.append(points)      # 一圈都没被挖：原样闭合走
+            out_close.append(True)
+            continue
+        if bool(covered.all()):
+            continue                      # 整条都关在圈内：纯空切，整环去掉
+        # 从第一个"要挖的点"起轮转，剩下的连续段就不会跨首尾，线性扫一遍即可
+        start = int(np.argmax(covered))
+        covered = np.roll(covered, -start)
+        dense = np.roll(dense, -start, axis=0)
+        run_start = 0
+        for i in range(len(covered) + 1):
+            if i == len(covered) or covered[i]:
+                if run_start < i:
+                    arc = _dedupe_points(dense[run_start:i])
+                    if arc.shape[0] >= 2:
+                        out_rings.append(_slim_points(arc))
+                        out_close.append(False)
+                run_start = i + 1
+    return out_rings, out_close
 
 
 def _zigzag_passes(region: MachiningRegion, mask: NDArray[np.bool_], angle: float,

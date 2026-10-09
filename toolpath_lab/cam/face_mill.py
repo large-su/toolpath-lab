@@ -209,8 +209,7 @@ def plan_face_mill_multi(items: Sequence[tuple[MillingContext, str]], *,
     def cut_level(job: _FaceJob, level_index: int, target_z: float) -> None:
         nonlocal first_cut, dedup_count
         exclude = coverage.exclude(job.region, target_z)
-        natural = LevelCoverage.cut_mask(job.region, target_z, job.context.tool,
-                                         job.offset)
+        natural = LevelCoverage.cut_mask(job.region, target_z, job.context.tool)
         if exclude is not None and natural is not None \
                 and bool((natural & exclude).any()):
             dedup_count += 1

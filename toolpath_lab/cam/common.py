@@ -234,17 +234,20 @@ class LevelCoverage:
         self._entries: dict[float, list[tuple[Any, NDArray[np.bool_]]]] = {}
 
     @staticmethod
-    def cut_mask(region: Any, level_z: float, tool: Any,
-                 offset_mm: float) -> NDArray[np.bool_] | None:
-        """该区域在这一层**实际会切到**的单元：层可切掩码 ∩ 刀心可行区域。
+    def cut_mask(region: Any, level_z: float, tool: Any) -> NDArray[np.bool_] | None:
+        """该区域在这一层**实际会切掉**的单元：层可切掩码整块（一直到腔壁）。
 
-        环切/平行扫描的条带互相盖住（步距 ≤ 刀具直径）、中心清理与轮廓精修也都在
-        这张掩码里，所以它可以保守地当作"这一层已经加工过的面积"。刀心可行区之外
-        的贴壁窄带（靠精修那一刀）故意不登记——宁可重复一小条，也不能漏切材料。
+        为什么不是"层掩码 ∩ 刀心可行区域"（再向内缩 R+余量）：这一层走完之后，
+        环切条带（步距 ≤ 刀径、条带互相盖住）+ 中心清理 + 贴壁精修把可切面积
+        **到壁为止**都切掉了。按刀心可行区登记会在壁边剩一条没登记的窄带，后切的面
+        据此认定"那里还有材料"，它的等距环于是正好压在先加工面的第一环上——同一层
+        同一条 XY 走两遍（用户反馈的"同一块区域被来回切两遍"）。登记整块面积，
+        后切的面才能干净地让出。``finish_pass`` 关掉时贴壁那条余量带属于**故意留的
+        料**，一并登记、被后切的面跳过，正是想要的结果。
         返回 ``None`` 表示这一层什么也切不到，无需登记。
         """
 
-        mask = region.level_mask(level_z, tool) & region.offset_mask(offset_mm)
+        mask = region.level_mask(level_z, tool)
         return mask if bool(mask.any()) else None
 
     def record(self, region: Any, level_z: float,

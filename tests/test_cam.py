@@ -66,6 +66,90 @@ def context_for(region, **overrides):
     )
 
 
+def level_cell_runs(result, cell: float = 0.5):
+    """``{(层高 Z, 面号): [每条刀轨的有序格序列, …]}``（相邻重复格已折叠）。
+
+    只统计非下刀的切削段——下刀是原地扎入，不属于"同一块区域来回切两遍"。
+    """
+
+    runs: dict[tuple[float, int | None], list[list[tuple[int, int]]]] = {}
+    for move in result.toolpath.moves:
+        if move.kind is not MoveKind.CUT or "下刀" in move.label:
+            continue
+        points = np.asarray(move.points, dtype=float)
+        match = re.match(r"^面 #(\d+)：", move.label)
+        key = (round(float(points[0][2]), 3),
+               int(match.group(1)) if match else None)
+        cells: list[tuple[int, int]] = []
+        for a, b in zip(points[:-1], points[1:]):
+            span = float(np.hypot(b[0] - a[0], b[1] - a[1]))
+            count = max(1, int(np.ceil(span / (0.5 * cell))))
+            for k in range(count + 1):
+                p = a + (b - a) * (k / count)
+                item = (int(np.floor(p[0] / cell)), int(np.floor(p[1] / cell)))
+                if not cells or cells[-1] != item:
+                    cells.append(item)
+        runs.setdefault(key, []).append(cells)
+    return runs
+
+
+def _shared_run(cells: list[tuple[int, int]], other: set) -> int:
+    """``cells`` 里**连续**落在 ``other`` 中的最长格数（相交与"沿着同一条线走"的分水岭）。"""
+
+    best = current = 0
+    for item in cells:
+        current = current + 1 if item in other else 0
+        best = max(best, current)
+    return best
+
+
+def longest_shared_run(result, cell: float = 0.5):
+    """跨面同层里"贴着同一条线走"的最长连续重叠段 ``[(Z, 面A, 面B, 格数), …]``。
+
+    量**连续段**而不是总格数：两条刀轨相交（顶面等距环横穿腔口、或者刀轨停在腔壁
+    精修环那一行上）只会在交点附近重叠 1~3 格，交点再多也各自孤立；而"同一块 XY
+    被走两遍"是整段重合，一来就是几百格。
+    """
+
+    runs = level_cell_runs(result, cell)
+    faces = sorted({face for _, face in runs if face is not None})
+    found: list[tuple[float, int, int, int]] = []
+    for z in sorted({z for z, _ in runs}):
+        for i, a in enumerate(faces):
+            for b in faces[i + 1:]:
+                seq_a = runs.get((z, a), [])
+                seq_b = runs.get((z, b), [])
+                if not seq_a or not seq_b:
+                    continue
+                cells_a = {c for seq in seq_a for c in seq}
+                cells_b = {c for seq in seq_b for c in seq}
+                best = max([_shared_run(seq, cells_b) for seq in seq_a]
+                           + [_shared_run(seq, cells_a) for seq in seq_b])
+                if best:
+                    found.append((z, a, b, best))
+    return found
+
+
+def repeated_geometry(result):
+    """同一层里 **XY 完全相同**的刀轨组 ``{(Z, 刀轨): {面号: 条数}}``（只留重复的）。
+
+    多面去重失效有两种典型症状：后加工面把先加工面的环原样重描（跨面同组），
+    或者等距环把掩码上挖出来的洞边一圈圈重复描（同面同组）。两种都必须为空。
+    """
+
+    groups: dict[tuple[float, tuple], Counter] = {}
+    for move in result.toolpath.moves:
+        if move.kind is not MoveKind.CUT or "下刀" in move.label:
+            continue
+        points = np.asarray(move.points, dtype=float)
+        match = re.match(r"^面 #(\d+)：", move.label)
+        key = (round(float(points[0][2]), 3),
+               tuple(map(tuple, np.round(points[:, :2], 4))))
+        groups.setdefault(key, Counter())[int(match.group(1)) if match else -1] += 1
+    return {key: faces for key, faces in groups.items()
+            if sum(faces.values()) > 1}
+
+
 class RegionTests(unittest.TestCase):
     """栅格区域：外轮廓 / 岛屿 / 等距。"""
 
@@ -454,6 +538,39 @@ class MultiFaceCuttingOrderTests(unittest.TestCase):
                         if face == self.floor["face_id"]]
             self.assertAlmostEqual(max(floor_zs), 38.0, places=3)
 
+    def test_reversed_selection_order_does_not_recut_the_same_xy(self) -> None:
+        """腔底先选时，后切的顶面不许把同一块 XY 再走一遍（"同一块区域来回切两遍"）。
+
+        交换选面顺序跑两遍，逐层把刀心折线栅格化（0.5 mm 格）后检查：
+
+        1. 任何一层里都不许出现 **XY 完全相同**的两条刀轨——修复前顶面在 42/40 两
+           层把腔底第一环原样重描了 4 遍（等距环把掩码上挖出的洞边一圈圈重描）；
+        2. 跨面同层只允许刀轨**相交**处的栅格（顶面等距环横穿腔口、或者刀轨停在
+           腔壁精修环那一行上，各只有交点附近 1~3 格），最长**连续**重叠段超过 4 格
+           就是整段贴着同一条线在走。
+        """
+
+        top_id, floor_id = self.top["face_id"], self.floor["face_id"]
+        for faces in ([floor_id, top_id], [top_id, floor_id]):
+            result = self._run("pocket_mill", faces)
+            # 两面都还在切：顶面两层一次不落（只让开已切部分），腔底则把共享层
+            # 让给先选的那一面——谁先选谁切 42/40。
+            seq = self._cuts(result)
+            top_zs = {round(z, 3) for face, z, _ in seq if face == top_id}
+            floor_zs = [z for face, z, _ in seq if face == floor_id]
+            self.assertEqual(top_zs, {42.0, 40.0},
+                             f"选面顺序 {faces}：顶面的切削层高不对：{sorted(top_zs)}")
+            expect_floor_first = 42.0 if faces[0] == floor_id else 38.0
+            self.assertAlmostEqual(max(floor_zs), expect_floor_first, places=3,
+                                   msg=f"选面顺序 {faces}：腔底首层不对")
+            self.assertEqual(repeated_geometry(result), {},
+                             f"选面顺序 {faces}：同层出现了 XY 完全相同的重复刀轨")
+            for z, a, b, n in longest_shared_run(result):
+                self.assertLessEqual(
+                    n, 4,
+                    f"选面顺序 {faces}：z={z} 面 #{a}×#{b} 连续重叠 {n} 格"
+                    f"（>4 格＝整段贴着同一条线走，而不是刀轨相交）")
+
     def test_single_face_is_identical_for_both_orders(self) -> None:
         """只选一个面时层优先 ≡ 深度优先：参数不能改变单面刀路。"""
 
@@ -480,12 +597,11 @@ class MultiFaceCuttingOrderTests(unittest.TestCase):
         floor_region = region_from_face(self.part, self.floor["face_id"],
                                         cell_mm=0.5, ceiling_z=44.0)
         tool = tool_from_cam_parameters(cam_parameters().coerce(dict(BASE_PARAMETERS)))
-        offset = tool.radius_mm + float(BASE_PARAMETERS["stock_allowance_mm"])
         coverage = LevelCoverage()
-        top_mask = LevelCoverage.cut_mask(top_region, 42.0, tool, offset)
+        top_mask = LevelCoverage.cut_mask(top_region, 42.0, tool)
         self.assertIsNotNone(top_mask)
         coverage.record(top_region, 42.0, top_mask)
-        floor_mask = LevelCoverage.cut_mask(floor_region, 42.0, tool, offset)
+        floor_mask = LevelCoverage.cut_mask(floor_region, 42.0, tool)
         exclude = coverage.exclude(floor_region, 42.0)
         self.assertIsNotNone(floor_mask)
         self.assertIsNotNone(exclude)
@@ -493,7 +609,7 @@ class MultiFaceCuttingOrderTests(unittest.TestCase):
         self.assertFalse(bool((floor_mask & ~exclude).any()))
         # 40 层同样成立（顶面的加工底所在层）
         coverage.record(top_region, 40.0, LevelCoverage.cut_mask(top_region, 40.0,
-                                                                 tool, offset))
+                                                                 tool))
         exclude_40 = coverage.exclude(floor_region, 40.0)
         self.assertIsNotNone(exclude_40)
         self.assertFalse(bool((floor_mask & ~exclude_40).any()))
@@ -563,10 +679,10 @@ class MultiPocketCuttingOrderTests(unittest.TestCase):
         self.pockets = [floors[0]["face_id"], floors[1]["face_id"]]
         self.levels = [43.0, 41.0, 39.0, 37.0, 35.0, 33.0, 31.0, 29.0, 27.0, 25.0]
 
-    def _run(self, **overrides):
+    def _run(self, faces=None, **overrides):
         payload = {
             "kind": "pocket_mill",
-            "faces": list(self.pockets),
+            "faces": list(self.pockets if faces is None else faces),
             "cell_mm": 0.5,
             "top_z": 45.0,
             "parameters": {**BASE_PARAMETERS, "cut_mode": "contour",
@@ -638,6 +754,31 @@ class MultiPocketCuttingOrderTests(unittest.TestCase):
         expected = [(face, z) for z in self.levels
                     for face in (self.pockets[1], self.pockets[0])]
         self.assertEqual(self._schedule(result), expected)
+
+    def test_top_face_crossing_the_pockets_does_not_recut_them(self) -> None:
+        """顶面参与多面加工：横穿两个腔口的等距环只许挖掉腔内那段，不许重描腔底的环。
+
+        顶面的环族以**整块板**为基准等距，横穿腔口时会有一段恰好与腔底已切的环
+        贴在同一条线上——而且只重合**一段**（不是整环），所以判据必须按段挖，
+        挖掉的也只能是"扫过去全是已切料"的那一段。
+        """
+
+        top = [f for f in self.part.features
+               if f["horizontal"] and abs(f["plane"][3] - 40.0) < 1e-6][0]
+        top_id = top["face_id"]
+        for faces in ([*self.pockets, top_id], [top_id, *self.pockets]):
+            result = self._run(faces=faces)
+            # 顶面自己那两层一次不落（共享层只让开已切部分，不是整层跳过）
+            top_zs = {z for face, z in self._schedule(result) if face == top_id}
+            self.assertEqual(top_zs, {43.0, 41.0, 40.0},
+                             f"选面顺序 {faces}：顶面的切削层高不对：{sorted(top_zs)}")
+            self.assertEqual(repeated_geometry(result), {},
+                             f"选面顺序 {faces}：同层出现了 XY 完全相同的重复刀轨")
+            for z, a, b, n in longest_shared_run(result):
+                self.assertLessEqual(
+                    n, 4,
+                    f"选面顺序 {faces}：z={z} 面 #{a}×#{b} 连续重叠 {n} 格"
+                    f"（>4 格＝整段贴着同一条线走，而不是刀轨相交）")
 
 
 class LevelTransferTests(unittest.TestCase):
