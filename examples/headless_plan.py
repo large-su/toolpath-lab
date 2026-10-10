@@ -10,13 +10,20 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from toolpath_lab.core.region import build_region
-from toolpath_lab.core.tool import Tool, ToolKind
-from toolpath_lab.export import toolpath_to_gcode
-from toolpath_lab.planning import run_plan
-from toolpath_lab.simulation import build_timeline
+# 直接 `python examples/headless_plan.py` 时，sys.path[0] 是 examples/ 而不是项目根，
+# 于是 import toolpath_lab 会失败。这里把项目根补进去，让脚本按文档说的那样开箱可跑。
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from toolpath_lab.core.region import build_region  # noqa: E402
+from toolpath_lab.core.tool import Tool, ToolKind  # noqa: E402
+from toolpath_lab.export import toolpath_to_gcode  # noqa: E402
+from toolpath_lab.planning import run_plan  # noqa: E402
+from toolpath_lab.simulation import build_timeline  # noqa: E402
 
 
 def main() -> None:

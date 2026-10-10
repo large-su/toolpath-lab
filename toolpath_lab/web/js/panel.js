@@ -3,6 +3,7 @@
 
 const DISPLAY_OPTIONS = [
   { key: "showWorkpiece", label: "工件" },
+  { key: "showMachined", label: "已加工面", color: "var(--teal)" },
   { key: "showPath", label: "刀路", color: "var(--orange)" },
   { key: "showRapid", label: "快移", color: "var(--cyan)" },
   { key: "showTrace", label: "已走轨迹", color: "var(--teal)" },
@@ -47,6 +48,7 @@ export class ParameterPanel {
     this.onDisplayChange = options.onDisplayChange || (() => {});
     this.state = {
       tool: clone(this.catalog.tool.defaults),
+      setup: clone((this.catalog.setup && this.catalog.setup.defaults) || {}),
       region: {
         id: this.catalog.regions.default_id,
         values: clone(this.catalog.regions.defaults),
@@ -55,18 +57,25 @@ export class ParameterPanel {
         id: this.catalog.planners.default_id,
         values: clone(this.catalog.planners.defaults),
       },
-      display: { showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true },
+      display: {
+        showWorkpiece: true, showMachined: true, showPath: true, showRapid: true,
+        showTrace: true, showTool: true,
+      },
     };
     this.rows = [];
     this.render();
   }
 
   payload() {
-    return {
+    const body = {
       tool: clone(this.state.tool),
       region: { shape: this.state.region.id, parameters: clone(this.state.region.values) },
       planner: { id: this.state.planner.id, parameters: clone(this.state.planner.values) },
     };
+    if (this.state.setup && Object.keys(this.state.setup).length) {
+      body.setup = clone(this.state.setup);
+    }
+    return body;
   }
 
   displayOptions() {
@@ -80,8 +89,8 @@ export class ParameterPanel {
       this._capabilitySection("刀具", this.catalog.tool.parameters, this.state.tool, "tool"),
       this._regionSection(),
       this._plannerSection(),
-      this._displaySection(),
-      this._noteSection()
+      this._setupSection(),
+      this._displaySection()
     );
     this.refreshVisibility();
   }
@@ -202,28 +211,14 @@ export class ParameterPanel {
     return section;
   }
 
-  _noteSection() {
-    const section = this._section("固定设置");
-    const note = document.createElement("div");
-    note.className = "note";
-    const fixed = this.catalog.fixed || {};
-    const lines = [
-      ["安全高度", fixed.safe_height_mm, "mm"],
-      ["快移速度", fixed.rapid_feed_mm_per_min, "mm/min"],
-    ];
-    for (const [label, value, unit] of lines) {
-      const line = document.createElement("div");
-      line.append(label + " ");
-      const strong = document.createElement("b");
-      strong.textContent = value + " " + unit;
-      line.appendChild(strong);
-      note.appendChild(line);
-    }
-    const hint = document.createElement("div");
-    hint.textContent = "边界内缩一个刀具半径；想改成可调参数，见 docs/extending.md";
-    note.appendChild(hint);
-    section.appendChild(note);
-    return section;
+  // 工艺设置（安全高度 / 快移速度 / 边界处理）现在是可编辑参数，
+  // 控件同样由 /api/catalog 生成，不再是只读展示。
+  _setupSection() {
+    const setup = this.catalog.setup;
+    if (!setup || !setup.parameters) return document.createDocumentFragment();
+    return this._capabilitySection(
+      "设置", setup.parameters, this.state.setup, "setup"
+    );
   }
 
   // ------------------------------------------------------------- 控件

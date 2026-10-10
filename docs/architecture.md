@@ -32,17 +32,22 @@ planning ── simulation ┘
 | --- | --- |
 | `parameters.py` | `ParameterSpec` / `ParameterSet`：声明式参数（类型、范围、默认值、单位、中文标签、显隐条件、选项的 disabled），同时驱动界面、校验与文档 |
 | `tool.py` | 刀具：类型、直径、长度，以及由类型推出的**足迹半径**（刀路相对轮廓的偏置量） |
-| `region.py` | 区域形状：方形与圆形，统一输出逆时针边界多边形 |
+| `region.py` | 区域形状：方形、圆形、椭圆与圆角矩形，统一输出逆时针边界多边形 |
 | `path.py` | `Move`（切削/连接/快移 + 进给）与 `Toolpath`（统计、载荷） |
 | `registry.py` | 通用能力注册表（区域形状、策略共用） |
 | `payload.py` | 请求字典 → 领域对象的拆解工具 |
 
 ### planning —— 策略层
 
-- `base.py`：`PlanningContext`（刀具 + 区域 + 参数）与 `Planner` 基类；固定的安全高度与快移速度也在这里；
-- `geometry2d.py`：`scanline_intervals`（直线与多边形求交、偶奇配对）与多边形规范化——
-  栅格刀路只靠这一个几何操作就能支持任意形状；
-- `raster.py`：往复与单向两种模式。
+- `base.py`：`PlanningContext`（刀具 + 区域 + 参数 + 工艺设置）与 `Planner` 基类；
+- `setup.py`：工艺设置（安全高度 / 快移速度 / 边界处理）的参数声明与偏置量解析；
+- `geometry2d.py`：`scanline_intervals`（直线与多边形求交、偶奇配对）、多边形规范化，
+  以及 `offset_polygon` / `resample_ring` / `collect_rings`（等距偏置、等弧长重采样、
+  逐圈偏置并区分"材料用尽"与"几何自交"）；
+  栅格刀路只靠扫描线求交就能支持任意形状，螺旋铣与环切共用同一套偏置几何；
+- `raster.py`：往复与单向两种模式；
+- `spiral.py`：沿轮廓逐圈内缩的连续螺旋刀路，含旋向、中心残料圆与进给随半径线性变化；
+- `contour.py`：逐圈等距内缩的环切刀路，每圈一刀，刀间可抬刀或直接连接。
 
 ### simulation —— 时间层
 
@@ -52,12 +57,14 @@ planning ── simulation ┘
 
 ### export / server / web / electron
 
-- `export/gcode.py`：G21 / G90 / G17 + G0 / G1 带 F 的最常见 ISO 子集；
+- `export/`：三个纯函数，`gcode.py`（G21/G90/G17 + G0/G1 带 F）、`csv_points.py`（逐点刀点表）、
+  `json_toolpath.py`（无损快照）；`EXPORT_FORMATS` 是格式 id 与文件后缀的对照表；
 - `server`：标准库 `ThreadingHTTPServer`。`schema.py` 是唯一的请求校验入口，`service.py` 组装响应，
   `catalog.py` 生成能力目录，`app.py` 只做路由与错误码映射（400 参数错误 / 422 几何不可行 / 404 / 405）；
   静态文件只从 `web/` 提供并做了路径穿越防护；
 - `web`：`panel.js` 依据目录生成控件，`viewport.js` 负责 three.js 场景与相机，`playback.js` 是纯逻辑的
-  时间插值器，`main.js` 负责串联；
+  时间插值器，`main.js` 负责串联。毛坯由 `region.boundary` 多边形拉伸而成（`extrudedPrism`），
+  不按形状 id 特判，所以新增形状后毛坯自动跟随；
 - `electron/main.mjs`：挑一个空闲端口 → 拉起 `python -m toolpath_lab` → 轮询 `/api/health` →
   装进原生窗口；关窗时结束后端。前端是普通静态文件，所以不需要打包器。
 
@@ -68,7 +75,7 @@ planning ── simulation ┘
 1. 把区域轮廓旋转到"走刀坐标系"：u 沿走刀方向，v 垂直于它；
 2. 在 v 方向按切宽布刀，两端各内缩一个刀具足迹半径（保证刀不会切出区域）；
 3. 每条刀线用 `scanline_intervals` 求交，得到它在区域内部的区间（方形是整条，圆形是一条弦，
-   凹形状可以是多段）；
+   椭圆与圆角矩形靠近两端会明显收窄，凹形状可以是多段）；
 4. 区间两端就是这一刀的起点和终点——一刀两个点，因为加工面是平面；
 5. 往复模式奇数刀反向、刀间直接连过去；单向模式每刀同向、刀间抬到安全面再回来；
    首尾补"下刀"和"抬刀"。

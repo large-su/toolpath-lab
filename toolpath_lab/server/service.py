@@ -61,6 +61,7 @@ def execute_plan(
         tool=request.tool,
         region=request.region,
         parameters=request.planner_parameters,
+        setup=request.setup_parameters,
     )
     timeline = (
         build_timeline(outcome.toolpath, max_samples=max_samples) if with_timeline else None

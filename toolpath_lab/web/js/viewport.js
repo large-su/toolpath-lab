@@ -14,6 +14,7 @@ const COLORS = {
   background: 0x071014,
   white: 0xffffff,
   workpiece: 0x5b6b7e,
+  machined: 0x8fd4ff,
   contour: 0x54d6c4,
   cut: 0xffa726,
   link: 0xf2c94c,
@@ -25,6 +26,12 @@ const COLORS = {
 
 //: 刀路画在工件上表面之上一点点，避免与上表面 z-fighting。
 const PATH_LIFT_MM = 0.05;
+
+//: 一段线段被扫成"胶囊"时，六个半圆分段产生的顶点数（(6+1)*2 个轮廓点 → 12 个三角 → 36 顶点）。
+const CAPSULE_VERTICES_PER_SEGMENT = 36;
+
+//: 已加工面相对工件上表面（z = 0）的抬高量，仅用于避开 z-fighting。
+const MACHINED_LIFT_MM = 0.02;
 
 //: 视图工具条上的按钮，按常用顺序排列。
 export const VIEW_BUTTONS = [
@@ -58,6 +65,135 @@ function orientation(view) {
   };
 }
 
+// 把一段闭合的 XY 多边形拉伸成棱柱（毛坯）。
+// 三个面组：上端面、下端面、侧壁。用显式三角扇而不是 THREE.ExtrudeGeometry，
+// 因为后端保证轮廓是逆时针的普通多边形（不含孔），扇形三角化对凹形状同样成立。
+function extrudedPrism(points, thickness) {
+  const half = thickness / 2;
+  const count = points.length;
+  const positions = [];
+  const indices = [];
+  const push = (x, y, z) => {
+    positions.push(x, y, z);
+    return positions.length / 3 - 1;
+  };
+
+  // 上下端面各复制一份顶点，法线才能一个朝上一个朝下。
+  const top = points.map(([x, y]) => push(x, y, half));
+  const bottom = points.map(([x, y]) => push(x, y, -half));
+
+  // 逆时针扇形三角化：以 0 号点为扇心。凹多边形这样切仍然有效，
+  // 因为每条边与扇心构成的三角形落在同一条有向边之内。
+  for (let i = 1; i + 1 < count; i += 1) {
+    indices.push(top[0], top[i], top[i + 1]);
+    indices.push(bottom[0], bottom[i + 1], bottom[i]);
+  }
+  // 侧壁：每条边一个四边形，拆成两个三角形；法线朝外。
+  for (let i = 0; i < count; i += 1) {
+    const next = (i + 1) % count;
+    indices.push(top[i], bottom[i], bottom[next]);
+    indices.push(top[i], bottom[next], top[next]);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+// 刀具的刀尖轮廓：把 (半径, 高度) 剖面绕轴旋转成型。
+// 平底刀是"平面 + 直壁"，球头刀是"半球 + 直壁"，圆鼻刀是"平面 + 圆角 + 直壁"。
+// 刀尖在 z = 0（加工面上），往上长。
+function toolProfileGeometry(kind, radius, length, cornerRadius, segments = 64) {
+  const points = [];
+  const push = (r, z) => points.push(new THREE.Vector2(Math.max(r, 0), z));
+
+  if (kind === "ball") {
+    // 半球刀尖：从轴心 (0,0) 沿圆弧到 (R, R)。
+    const steps = Math.max(12, Math.round(segments / 4));
+    for (let i = 0; i <= steps; i += 1) {
+      const angle = (i / steps) * (Math.PI / 2);
+      push(radius * Math.sin(angle), radius - radius * Math.cos(angle));
+    }
+  } else if (kind === "bull") {
+    const rc = Math.min(cornerRadius, radius * 0.999);
+    // 刀尖平面从轴心到 R - Rc，再由圆角过渡到直壁。
+    push(0, 0);
+    push(radius - rc, 0);
+    const steps = Math.max(6, Math.round(segments / 8));
+    for (let i = 1; i <= steps; i += 1) {
+      const angle = (i / steps) * (Math.PI / 2);
+      push(radius - rc + rc * Math.sin(angle), rc - rc * Math.cos(angle));
+    }
+  } else {
+    push(0, 0);
+    push(radius, 0);
+  }
+
+  // 直壁延伸到指定高度。
+  const top = points[points.length - 1];
+  if (top.y < length - 1e-6) push(top.x, length);
+
+  const geometry = new THREE.LatheGeometry(points, segments);
+  // LatheGeometry 绕 Y 轴成型，而本工程 Z 轴朝上。
+  geometry.rotateX(Math.PI / 2);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+// 一段 XY 线段被半径 r 的刀具扫过，形成的"胶囊"区域——平面铣里被切掉的那一条。
+// 返回三角扇用的顶点序列（[中心1, 半径1, 中心2, 半径2] 交替）。
+// 半径 0（球头刀刀尖只在一点接触）时退化成极窄的一条，保证仍有可见痕迹。
+function capsulePoints(from, to, radius, arcSegments = 6) {
+  const points = [];
+  const push = (x, y) => points.push(x, y);
+  if (radius <= 1e-6) {
+    push(from[0], from[1]); push(to[0], to[1]);
+    return points;
+  }
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const length = Math.hypot(dx, dy);
+  const base = Math.atan2(dy, dx);
+  // 起点半圆：从 -90° 绕到 +90°
+  for (let i = 0; i <= arcSegments; i += 1) {
+    const angle = base - Math.PI / 2 + (Math.PI * i) / arcSegments;
+    push(from[0] + radius * Math.cos(angle), from[1] + radius * Math.sin(angle));
+  }
+  // 终点半圆：反向绕回起点方向
+  for (let i = 0; i <= arcSegments; i += 1) {
+    const angle = base + Math.PI / 2 - (Math.PI * i) / arcSegments;
+    push(to[0] + radius * Math.cos(angle), to[1] + radius * Math.sin(angle));
+  }
+  return points;
+}
+
+// 把所有切削段扫过的区域拼成一个三角带几何体。
+// 按"每个三角 3 个顶点"的线性缓冲组织，配合 setDrawRange 就能逐段显影，
+// 因此播放时不需要重建几何。
+function sweptAreaGeometry(polylines, radius, z) {
+  const positions = [];
+  for (const points of polylines) {
+    for (let i = 0; i + 1 < points.length; i += 1) {
+      const outline = capsulePoints(points[i], points[i + 1], radius);
+      const count = outline.length / 2;
+      // 扇形三角化：绕轮廓的第一个点展开。
+      for (let k = 1; k + 1 < count; k += 1) {
+        positions.push(
+          outline[0], outline[1], z,
+          outline[k * 2], outline[k * 2 + 1], z,
+          outline[(k + 1) * 2], outline[(k + 1) * 2 + 1], z
+        );
+      }
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 // 刀路整体抬高一点点画，避免与工件上表面互相穿插（z-fighting）。
 function liftPaths(polylines) {
   return polylines.map((points) => points.map((point) => [point[0], point[1], PATH_LIFT_MM]));
@@ -85,6 +221,7 @@ export class Viewport {
     this.appearance = { shadows: true, white: false, grid: true };
     this.display = {
       showWorkpiece: true, showPath: true, showRapid: true, showTrace: true, showTool: true,
+      showMachined: true,
     };
     this.bounds = null;
     this.activeView = "fit";
@@ -136,12 +273,13 @@ export class Viewport {
 
     this.gridGroup = new THREE.Group();
     this.workpieceGroup = new THREE.Group();
+    this.machinedGroup = new THREE.Group();
     this.contourGroup = new THREE.Group();
     this.pathGroup = new THREE.Group();
     this.traceGroup = new THREE.Group();
     this.toolGroup = new THREE.Group();
     this.scene.add(
-      this.gridGroup, this.workpieceGroup,
+      this.gridGroup, this.workpieceGroup, this.machinedGroup,
       this.contourGroup, this.pathGroup, this.traceGroup, this.toolGroup
     );
 
@@ -149,6 +287,9 @@ export class Viewport {
     this.toolMesh = null;
     this.traceLine = null;
     this.rapidLine = null;
+    this.machinedMesh = null;
+    // 每条切削段在时间轴上结束的采样下标，用于按播放进度显影。
+    this.cutSegmentEnds = [];
 
     this.resize();
     if (typeof ResizeObserver !== "undefined") {
@@ -177,6 +318,7 @@ export class Viewport {
   // ---------------------------------------------------------------- 结果
   setResult(payload) {
     this._clear(this.workpieceGroup);
+    this._clear(this.machinedGroup);
     this._clear(this.contourGroup);
     this._clear(this.pathGroup);
     this._clear(this.traceGroup);
@@ -213,6 +355,9 @@ export class Viewport {
       this.traceLine = null;
     }
 
+    this.machinedMesh = this._buildMachined(payload);
+    if (this.machinedMesh) this.machinedGroup.add(this.machinedMesh);
+
     this.bounds = new THREE.Box3().setFromObject(this.workpieceGroup);
     const pathBounds = new THREE.Box3().setFromObject(this.pathGroup);
     if (!pathBounds.isEmpty()) this.bounds.union(pathBounds);
@@ -245,38 +390,115 @@ export class Viewport {
   }
 
   setTool(tool) {
-    this.tool = tool;
-    this._clear(this.toolGroup);
-    const radius = Math.max(tool.radius_mm, 0.2);
-    const length = tool.length_mm;
-    const flute = Math.min(length * 0.65, radius * 6);
-    const holder = Math.max(length - flute, length * 0.2);
+  this.tool = tool;
+  this._clear(this.toolGroup);
+  const radius = Math.max(tool.radius_mm, 0.2);
+  const length = tool.length_mm;
+  const flute = Math.min(length * 0.65, radius * 6);
+  const holder = Math.max(length - flute, length * 0.2);
+  const cornerRadius = Number(tool.corner_radius_mm) || 0;
 
-    // 两段都用封闭圆柱（端面带封口），所以刀具是实体而不是缺面的壳；
-    // 黄色切削段对齐 UGNX 的刀具配色。
-    const cutting = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, flute, 64),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.tool, metalness: 0.5, roughness: 0.34,
-      })
-    );
-    const shank = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.holder, metalness: 0.92, roughness: 0.24,
-      })
-    );
-    for (const mesh of [cutting, shank]) {
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      this.toolGroup.add(mesh);
+  // 切削段按刀尖类型成型（平底 / 球头 / 圆鼻），刀柄一律是圆柱。
+  // 黄色切削段对齐 UGNX 的刀具配色。
+  const cutting = new THREE.Mesh(
+    toolProfileGeometry(tool.kind, radius, flute, cornerRadius),
+    new THREE.MeshStandardMaterial({
+      color: COLORS.tool, metalness: 0.5, roughness: 0.34,
+    })
+  );
+  const shank = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, holder, 48),
+    new THREE.MeshStandardMaterial({
+      color: COLORS.holder, metalness: 0.92, roughness: 0.24,
+    })
+  );
+  for (const mesh of [cutting, shank]) {
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.toolGroup.add(mesh);
+  }
+  shank.rotation.x = Math.PI / 2;
+  shank.position.z = flute + holder / 2;
+  this.toolMesh = this.toolGroup;
+  this.toolGroup.visible = this.display.showTool;
+}
+
+  // 材料切除（已加工面积）：把所有切削段被刀具扫过的区域预先拼成一个几何体，
+// 再按播放进度用 setDrawRange 逐段显影。这样每帧只改一个数字，不必重建几何。
+_buildMachined(payload) {
+    const timeline = payload.timeline;
+    const tool = payload.tool || {};
+    if (!timeline || !timeline.positions || !timeline.move_runs) return null;
+
+    // 足迹半径决定切掉的宽度。球头刀足迹为 0（刀尖只在一点接触），
+    // 这里给一点下限，否则玩家完全看不到加工痕迹。
+    const footprint = Math.max(Number(tool.footprint_radius_mm) || 0, 0.15 * (Number(tool.radius_mm) || 0));
+    if (footprint <= 1e-6) return null;
+
+    const moves = payload.toolpath.moves;
+    const runs = timeline.move_runs;   // [[起始采样下标, 运动段号], ...]
+    const sampleCount = timeline.sample_count || timeline.positions.length;
+    if (sampleCount <= 0) return null;
+
+    // 每个采样点属于哪一段运动
+    const moveOfSample = new Int32Array(sampleCount);
+    for (let r = 0; r < runs.length; r += 1) {
+      const start = runs[r][0];
+      const end = r + 1 < runs.length ? runs[r + 1][0] : sampleCount;
+      for (let i = start; i < end && i < sampleCount; i += 1) moveOfSample[i] = runs[r][1];
     }
-    cutting.rotation.x = Math.PI / 2;
-    cutting.position.z = flute / 2;
-    shank.rotation.x = Math.PI / 2;
-    shank.position.z = flute + holder / 2;
-    this.toolMesh = this.toolGroup;
-    this.toolGroup.visible = this.display.showTool;
+    // 一次遍历求出每一段运动最后一个采样点的下标
+    const lastSampleOfMove = new Int32Array(moves.length).fill(-1);
+    for (let i = sampleCount - 1; i >= 0; i -= 1) lastSampleOfMove[moveOfSample[i]] = i;
+
+    const cutPolylines = [];
+    this.cutReveal = [];
+    for (let index = 0; index < moves.length; index += 1) {
+      const move = moves[index];
+      if (move.kind !== "cut") continue;
+      cutPolylines.push(move.points);
+      // 该切削段扫过的区域一共占多少顶点，显影时按段累加。
+      const lineCount = Math.max(move.points.length - 1, 0);
+      this.cutReveal.push({
+        end: Math.max(lastSampleOfMove[index], 0),
+        vertices: lineCount * CAPSULE_VERTICES_PER_SEGMENT,
+      });
+    }
+    if (!cutPolylines.length) return null;
+
+    // 平面扫过的区域画在工件上表面略上方，避免 z-fighting
+    // 工件上表面在 z = 0（extrudedPrism 建的棱柱随后整体下移 thickness/2），
+    // 已加工面只抬高一点点避免 z-fighting，不能用 thickness/2 —— 那会浮在半空。
+    const geometry = sweptAreaGeometry(cutPolylines, footprint, MACHINED_LIFT_MM);
+    geometry.setDrawRange(0, 0);
+
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: COLORS.machined,
+        metalness: 0.55,
+        roughness: 0.30,
+        side: THREE.DoubleSide,
+      })
+    );
+    mesh.receiveShadow = true;
+    return mesh;
+  }
+
+  // 按播放进度显影已加工面积。拖动进度条来回拖动也正确，因为只是设一个上界。
+  _revealMachined(traversedSegments) {
+    if (!this.machinedMesh || !this.cutReveal || !this.cutReveal.length) return;
+    let count = 0;
+    let visible = 0;
+    for (const item of this.cutReveal) {
+      if (item.end <= traversedSegments) {
+        count += item.vertices;
+        visible += 1;
+      } else break;
+    }
+    const total = this.machinedMesh.geometry.attributes.position.count;
+    this.machinedMesh.geometry.setDrawRange(0, Math.min(count, total));
+    this.machinedMesh.visible = visible > 0;
   }
 
   setPlayhead(position, traversedSegments) {
@@ -285,11 +507,13 @@ export class Viewport {
       this._lastTraversed = traversedSegments;
       this.traceLine.geometry.setDrawRange(0, Math.max(0, traversedSegments) * 2);
     }
+    this._revealMachined(Math.max(0, traversedSegments));
   }
 
   setDisplayOptions(options) {
     this.display = Object.assign({}, this.display, options || {});
     this.workpieceGroup.visible = this.display.showWorkpiece;
+    this.machinedGroup.visible = this.display.showWorkpiece && this.display.showMachined;
     this.pathGroup.visible = this.display.showPath;
     this.traceGroup.visible = this.display.showPath && this.display.showTrace;
     this.toolGroup.visible = this.display.showTool;
@@ -363,22 +587,19 @@ export class Viewport {
     return Math.min(Math.max(span * 0.09, 4), 24);
   }
 
+  // 把区域轮廓拉伸成毛坯实体：上下两个端面 + 一圈侧壁。
+  // 直接用后端给的 boundary 多边形，而不是按形状 id 特判——这样新增任何形状
+  // （椭圆、圆角矩形、凹多边形）毛坯都自动跟着变，不需要改前端。
   _workpiece(region, thickness) {
     const material = new THREE.MeshStandardMaterial({
       color: COLORS.workpiece, metalness: 0.65, roughness: 0.42,
     });
-    if (region.id === "circle") {
-      const radius = (region.bounds_mm[0][1] - region.bounds_mm[0][0]) / 2;
-      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, thickness, 128), material);
-      mesh.rotation.x = Math.PI / 2;
-      mesh.position.z = -thickness / 2;
-      mesh.receiveShadow = true;
-      return mesh;
-    }
-    const side = region.bounds_mm[0][1] - region.bounds_mm[0][0];
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(side, side, thickness), material);
+    const points = region.boundary.map((p) => [p[0], p[1]]);
+    const geometry = extrudedPrism(points, thickness);
+    const mesh = new THREE.Mesh(geometry, material);
     mesh.position.z = -thickness / 2;
     mesh.receiveShadow = true;
+    mesh.castShadow = true;
     return mesh;
   }
 

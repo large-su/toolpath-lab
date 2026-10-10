@@ -1,6 +1,6 @@
 // 应用装配：目录 -> 参数面板 -> 规划请求 -> 视口与播放。
 
-import { downloadGcode, fetchCatalog, requestPlan } from "./api.js";
+import { downloadExport, fetchCatalog, requestPlan } from "./api.js";
 import { ParameterPanel } from "./panel.js";
 import { Playback } from "./playback.js";
 import { VIEW_BUTTONS, Viewport } from "./viewport.js";
@@ -135,9 +135,46 @@ function wireAppearanceToolbar() {
   }
 }
 
+// 导出格式：标签 -> 后端 /api/export/<fmt>
+const EXPORT_OPTIONS = [
+  { value: "gcode", label: "NC 程序 (.nc)" },
+  { value: "csv", label: "刀点表 CSV (.csv)" },
+  { value: "json", label: "刀路 JSON (.json)" },
+];
+
+function buildExportMenu() {
+  const wrapper = document.createElement("div");
+  wrapper.className = "split-button";
+
+  const select = document.createElement("select");
+  select.id = "export-format";
+  select.title = "选择导出格式";
+  for (const option of EXPORT_OPTIONS) {
+    const element = document.createElement("option");
+    element.value = option.value;
+    element.textContent = option.label;
+    select.appendChild(element);
+  }
+  select.addEventListener("change", () => {
+    dom.exportButton.dataset.format = select.value;
+  });
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "button primary";
+  trigger.textContent = "导出";
+  trigger.title = "按上面选中的格式导出刀路";
+  trigger.addEventListener("click", () => {
+    exportCurrent(select.value);
+  });
+
+  wrapper.append(select, trigger);
+  return wrapper;
+}
+
 function wireButtons() {
   dom.generate.addEventListener("click", () => regenerate());
-  dom.exportButton.addEventListener("click", exportGcode);
+  dom.exportButton.replaceWith(buildExportMenu());
   dom.play.addEventListener("click", () => playback.toggle());
   dom.stop.addEventListener("click", () => playback.stop());
   dom.scrub.addEventListener("input", () => {
@@ -184,9 +221,9 @@ async function regenerate() {
   }
 }
 
-async function exportGcode() {
+async function exportCurrent(format) {
   try {
-    const name = await downloadGcode(panel.payload());
+    const name = await downloadExport(format, panel.payload());
     showBanner("已导出 " + name, "info");
   } catch (error) {
     showBanner("导出失败：" + error.message);

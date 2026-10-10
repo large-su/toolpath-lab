@@ -14,6 +14,7 @@ from toolpath_lab.core.payload import coerce_group, split_capability
 from toolpath_lab.core.region import RegionShape, build_region
 from toolpath_lab.core.tool import Tool, tool_parameters
 from toolpath_lab.planning.registry import PLANNERS
+from toolpath_lab.planning.setup import setup_parameters
 from toolpath_lab.server.catalog import DEFAULT_PLANNER_ID, DEFAULT_REGION_ID
 
 
@@ -28,6 +29,7 @@ class PlanRequest:
     region_id: str = DEFAULT_REGION_ID
     region_parameters: dict[str, Any] = field(default_factory=dict)
     planner_parameters: dict[str, Any] = field(default_factory=dict)
+    setup_parameters: dict[str, Any] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
 
     @classmethod
@@ -39,6 +41,7 @@ class PlanRequest:
 
         tool_values = tool_parameters().coerce(coerce_group(payload, "tool"))
         tool = Tool.from_parameters(tool_values)
+        setup_values = setup_parameters().coerce(coerce_group(payload, "setup"))
 
         region_id, region_parameters = split_capability(
             coerce_group(payload, "region"),
@@ -64,6 +67,7 @@ class PlanRequest:
             region_id=region_id,
             region_parameters=region.parameters.coerce(region_parameters),
             planner_parameters=planner_class.parameters.coerce(planner_parameters),
+            setup_parameters=setup_values,
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -71,6 +75,7 @@ class PlanRequest:
 
         return {
             "tool": dict(self.tool_parameters),
+            "setup": dict(self.setup_parameters),
             "region": {"shape": self.region_id, "parameters": dict(self.region_parameters)},
             "planner": {"id": self.planner_id, "parameters": dict(self.planner_parameters)},
         }
@@ -83,6 +88,9 @@ class PlanRequest:
             f"tool: {self.tool.kind.value} D{self.tool.diameter_mm:g} mm L{self.tool.length_mm:g} mm",
             f"region: {self.region_id} - {_format(self.region_parameters)}",
             f"strategy: {self.planner_id} ({planner_label}) - {_format(self.planner_parameters)}",
+            f"setup: safe_height={self.setup_parameters['safe_height_mm']:g} mm, "
+            f"rapid={self.setup_parameters['rapid_feed_mm_per_min']:g} mm/min, "
+            f"boundary={self.setup_parameters['boundary_mode']}",
         ]
 
 
