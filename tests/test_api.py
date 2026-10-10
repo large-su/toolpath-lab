@@ -96,18 +96,22 @@ class CatalogTests(ApiTestCase):
         self.assertTrue(payload["ok"])
         self.assertIn("version", payload)
 
-    def test_catalog_exposes_the_simplified_scope(self) -> None:
+    def test_catalog_exposes_the_extended_scope(self) -> None:
+        """本分支扩展后的能力范围：策略多了 spiral，区域多了圆角矩形，刀具参数多了圆角半径。"""
+
         status, body, _ = self.get("/api/catalog")
         payload = json.loads(body)
         self.assertEqual(status, 200)
-        self.assertEqual([item["id"] for item in payload["planners"]["list"]], ["raster"])
+        self.assertEqual([item["id"] for item in payload["planners"]["list"]],
+                         ["raster", "spiral"])
         self.assertEqual(
-            sorted(item["id"] for item in payload["regions"]["shapes"]), ["circle", "square"]
+            sorted(item["id"] for item in payload["regions"]["shapes"]),
+            ["circle", "rounded_rect", "square"],
         )
         self.assertNotIn("surfaces", payload)
         self.assertNotIn("presets", payload)
         self.assertEqual([item["key"] for item in payload["tool"]["parameters"]],
-                         ["kind", "diameter_mm", "length_mm"])
+                         ["kind", "diameter_mm", "length_mm", "corner_radius_mm"])
 
     def test_catalog_reports_the_fixed_settings(self) -> None:
         _, body, _ = self.get("/api/catalog")
@@ -115,10 +119,12 @@ class CatalogTests(ApiTestCase):
         self.assertEqual(fixed["safe_height_mm"], 5.0)
         self.assertEqual(fixed["rapid_feed_mm_per_min"], 5000.0)
 
-    def test_disabled_tool_kinds_are_published(self) -> None:
+    def test_tool_kinds_are_all_enabled(self) -> None:
+        """本分支启用球头刀与圆鼻刀后，三种刀具都是可选状态。"""
+
         _, body, _ = self.get("/api/catalog")
         kinds = json.loads(body)["tool"]["parameters"][0]["choices"]
-        self.assertEqual([item["disabled"] for item in kinds], [False, True, True])
+        self.assertEqual([item["disabled"] for item in kinds], [False, False, False])
 
     def test_unknown_endpoint(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -164,9 +170,9 @@ class PlanTests(ApiTestCase):
         self.assertEqual(parameters["feed_mm_per_min"], 600.0)
 
     def test_unknown_planner_is_a_bad_request(self) -> None:
-        status, payload, _ = self.plan({"planner": {"id": "spiral"}})
+        status, payload, _ = self.plan({"planner": {"id": "trochoidal"}})
         self.assertEqual(status, 400)
-        self.assertIn("spiral", payload["error"])
+        self.assertIn("trochoidal", payload["error"])
 
     def test_unknown_region_shape_is_a_bad_request(self) -> None:
         status, payload, _ = self.plan({"region": {"shape": "hexagon"}})

@@ -20,8 +20,10 @@ from toolpath_lab.planning.geometry2d import ensure_ccw, signed_area
 
 
 class RegionCatalogTests(unittest.TestCase):
-    def test_only_square_and_circle_are_registered(self) -> None:
-        self.assertEqual(sorted(REGION_SHAPES.ids()), ["circle", "square"])
+    def test_expected_shapes_are_registered(self) -> None:
+        """方形、圆形，以及本分支新增的圆角矩形。"""
+
+        self.assertEqual(sorted(REGION_SHAPES.ids()), ["circle", "rounded_rect", "square"])
 
     def test_catalog_publishes_labels_and_parameters(self) -> None:
         entries = {entry["id"]: entry for entry in region_catalog()}
