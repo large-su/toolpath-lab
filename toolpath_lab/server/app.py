@@ -18,9 +18,10 @@ from urllib.parse import unquote, urlsplit
 
 from toolpath_lab import __version__
 from toolpath_lab.core.errors import ParameterError, PlanningError, RegistryError
+from toolpath_lab.evaluation import evaluate_strategies
 from toolpath_lab.export import toolpath_to_gcode
 from toolpath_lab.server.catalog import catalog_payload
-from toolpath_lab.server.schema import PlanRequest
+from toolpath_lab.server.schema import EvaluateRequest, PlanRequest
 from toolpath_lab.server.service import execute_plan
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
@@ -111,9 +112,30 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         if path == "/api/plan" and method == "POST":
             result = execute_plan(PlanRequest.from_payload(self._read_json()))
             return json_response(result.to_payload())
+        if path == "/api/evaluate" and method == "POST":
+            return self._evaluate(self._read_json())
         if path == "/api/export/gcode" and method == "POST":
             return self._export_gcode(self._read_json())
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
+
+    def _evaluate(self, payload: Mapping[str, Any] | None) -> Response:
+        """多策略对比：规划 + 材料切除仿真 + 评分（新增接口）。"""
+
+        request = EvaluateRequest.from_payload(payload)
+        report = evaluate_strategies(
+            tool=request.tool,
+            region=request.region,
+            candidates=request.candidates,
+            resolution_mm=request.resolution_mm,
+            axial_depth_mm=request.axial_depth_mm,
+            weights=request.weights,
+        )
+        return json_response({
+            "ok": True,
+            "version": __version__,
+            "request": request.to_payload(),
+            **report.to_payload(),
+        })
 
     def _export_gcode(self, payload: Mapping[str, Any] | None) -> Response:
         result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
