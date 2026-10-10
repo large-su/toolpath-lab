@@ -17,15 +17,28 @@ ToolpathLab 是一个刀路规划基座：给定一把刀具和一块规则形�
 
 ## 功能
 
-- **刀具**：平底刀，可设置直径与长度。刀具在加工面上的足迹半径决定刀路相对区域轮廓的偏置量。
-- **区域**：方形（边长）与圆形（直径），以原点为中心，加工面为 XY 平面。
-- **刀路**：栅格刀路的两种模式
-  - **往复 Zigzag**：奇数刀反向，相邻两刀在端头直接连过去；
-  - **单向 One-way**：每刀同向，刀与刀之间抬刀到安全面再回到起点。
-- **参数**：切宽、走刀方向角、进给速度。安全高度、快移速度、边界处理方式等为固定值，见[配置常量](#配置常量)。
+- **刀具**：平底刀、球头刀与圆鼻刀，可设置直径与长度（圆鼻刀另有刀尖圆角 Rc）。
+  刀具在加工面上的足迹半径决定刀路相对区域轮廓的偏置量：平底刀为 R，球头刀为 0
+  （半球刀尖只在一点接触），圆鼻刀为 R − Rc。
+- **区域**：方形（边长）、圆形（直径）、椭圆（长 / 短半轴）与圆角矩形（宽 / 高 / 圆角半径），
+  以原点为中心，加工面为 XY 平面。圆角半径取到短边一半时就是跑道形。
+- **毛坯**：三维视图里的工件实体由区域轮廓直接拉伸而成，因此任何形状的毛坯都与刀路一致。
+- **刀路**：
+  - **栅格刀路 raster**：平行扫描线的两种模式
+    - **往复 Zigzag**：奇数刀反向，相邻两刀在端头直接连过去；
+    - **单向 One-way**：每刀同向，刀与刀之间抬刀到安全面再回到起点。
+  - **螺旋铣 spiral**：沿区域轮廓逐圈向内收缩，形成一条连续不断的螺旋线，全程只下一次刀、
+    一次抬刀。可选逆/顺时针旋向，中心可留一块残料圆；进给速度能随半径线性变化
+    （外圈快、内圈慢），使径向切深保持恒定。
+  - **环切 contour**：逐圈等距向内偏置，一圈一刀，每刀独立成闭合刀轨。刀间可抬刀返回
+    或直接连接，旋向可选。适合精修轮廓或留出台阶；凹形状每层只保留面积最大的一块环，
+    窄颈区域会被跳过。
+- **参数**：切宽、走刀方向角、进给速度。
+- **工艺设置**：安全高度、快移速度与边界处理方式（内缩刀具半径 / 不偏置 / 外扩留边 /
+  自定义偏置量）都可以在界面上调整，所有刀路策略共用。
 - **三维视图**：工件实体、区域轮廓、刀路（切削 / 连接 / 快移分色）、刀具实体、已走轨迹、实时阴影。
 - **播放**：按每段运动自己的进给速度做时间参数化，支持播放 / 暂停、拖动进度，并给出切削长度与预计工时。
-- **导出**：NC 程序（G-code，G21 / G90 / G17 加 G0 / G1 带 F）。
+- **导出**：NC 程序（G-code，G21 / G90 / G17 加 G0 / G1 带 F）、刀点表 CSV、刀路 JSON 快照。
 - **HTTP 接口**：能力目录、规划、导出三个接口，便于脚本调用与集成。
 
 ## 界面
@@ -95,6 +108,7 @@ outcome = run_plan(
     tool=Tool(ToolKind.FLAT, diameter_mm=6.0, length_mm=30.0),
     region=build_region("square", {"side_mm": 80.0}),
     parameters={"mode": "zigzag", "stepover_mm": 6.0, "feed_mm_per_min": 800.0},
+    setup={"safe_height_mm": 8.0, "boundary_mode": "outside"},
 )
 print(outcome.toolpath.statistics())
 ```
@@ -104,9 +118,13 @@ print(outcome.toolpath.statistics())
 | 接口 | 说明 |
 | --- | --- |
 | `GET /api/health` | 健康检查与版本号 |
-| `GET /api/catalog` | 能力目录：区域形状、刀路策略、参数声明、默认值与固定值 |
+| `GET /api/catalog` | 能力目录：区域形状、刀路策略、刀具与工艺设置的参数声明、默认值 |
 | `POST /api/plan` | 生成刀路，返回刀路运动段、统计与播放时间轴 |
 | `POST /api/export/gcode` | 导出 NC 程序 |
+| `POST /api/export/csv` | 导出刀点表（逐点一行） |
+| `POST /api/export/json` | 导出刀路 JSON 快照 |
+
+请求体分成五组：`tool`、`setup`、`region`、`planner`，以及导出专用的 `export`：
 
 ```bash
 curl http://127.0.0.1:8770/api/catalog
@@ -114,11 +132,17 @@ curl http://127.0.0.1:8770/api/catalog
 curl -X POST http://127.0.0.1:8770/api/plan \
   -H "Content-Type: application/json" \
   -d '{"tool":{"diameter_mm":6,"length_mm":30},
+       "setup":{"safe_height_mm":8,"boundary_mode":"outside"},
        "region":{"shape":"circle","parameters":{"diameter_mm":80}},
        "planner":{"id":"raster","parameters":{"mode":"one_way","stepover_mm":6}}}'
 
 curl -X POST http://127.0.0.1:8770/api/export/gcode \
   -H "Content-Type: application/json" -d '{}' -o toolpath.nc
+
+# 只要切削轨迹（不含抬刀/横移/下刀）
+curl -X POST http://127.0.0.1:8770/api/export/csv \
+  -H "Content-Type: application/json" \
+  -d '{"export":{"exclude_rapid":true}}' -o toolpath.csv
 ```
 
 参数非法返回 `400`；参数合法但几何上无法加工（例如刀具直径大于区域尺寸）返回 `422`，
@@ -146,16 +170,24 @@ docs/          架构与扩展文档
 
 ## 配置常量
 
-以下数值定义在代码中，不在界面上暴露：
+安全高度、快移速度与边界处理方式现在是**「设置」分组里的可调参数**
+（`toolpath_lab/planning/setup.py`），默认值如下，请求里不写就用这些：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| 安全高度 | 5 mm | 快速移动时相对工件上表面抬起的高度 |
+| 快移速度 | 5000 mm/min | 抬刀、横移、下刀这些不切削的定位 |
+| 边界处理 | 内缩一个刀具半径 | 另有「不偏置 / 外扩留边 / 自定义偏置量」三种 |
+
+仍固定在代码里、不在界面上的量：
 
 | 常量 | 值 | 位置 |
 | --- | --- | --- |
-| 安全高度 | 5 mm | `toolpath_lab/planning/base.py` |
-| 快移速度 | 5000 mm/min | `toolpath_lab/planning/base.py` |
-| 边界处理 | 刀路相对区域轮廓内缩一个刀具足迹半径 | `toolpath_lab/planning/raster.py` |
 | 每刀采样 | 两个端点（加工面为平面） | `toolpath_lab/planning/raster.py` |
+| 圆的多边形分段 | 180 段 | `toolpath_lab/core/region.py` |
+| 圆角每角分段 | 46 段 | `toolpath_lab/core/region.py` |
 
-把它们改成可在界面上调整的参数，做法见 [docs/extending.md](docs/extending.md)。
+想做更多扩展，见 [docs/extending.md](docs/extending.md)。
 
 ## 扩展
 

@@ -113,6 +113,32 @@ input {
   cursor: progress;
 }
 
+/* 「格式下拉 + 导出按钮」组合成一个视觉上的按钮。 */
+.split-button {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.split-button select {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-right: none;
+  border-radius: 5px 0 0 5px;
+  background: rgba(135, 169, 166, 0.06);
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.split-button select:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.split-button .button {
+  border-radius: 0 5px 5px 0;
+}
+
 .button.round {
   width: 28px;
   height: 28px;

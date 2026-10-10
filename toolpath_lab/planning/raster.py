@@ -39,6 +39,14 @@ from toolpath_lab.planning.registry import PLANNERS
 
 _MODE_LABELS = {"zigzag": "往复", "one_way": "单向"}
 
+#: 边界处理方式在刀路备注里的说法。
+_BOUNDARY_NOTES = {
+    "tool_radius": "边界内缩一个刀具半径",
+    "none": "边界不偏置",
+    "outside": "边界外扩一个刀具半径",
+    "custom": "边界按自定义偏置量",
+}
+
 #: 末刀余量小于切宽的多少倍时补一刀，保证区域被切满。
 _ALIGN_TOLERANCE = 0.05
 
@@ -70,7 +78,7 @@ class RasterPlanner(Planner):
         stepover = self.require_positive(
             float(context.parameters["stepover_mm"]), "切宽 stepover_mm"
         )
-        offset = context.tool.footprint_radius_mm
+        offset = context.boundary_offset_mm
         self._warn_if_stepover_too_large(context, stepover)
 
         boundary = context.boundary
@@ -167,6 +175,7 @@ class RasterPlanner(Planner):
         return (
             f"{_MODE_LABELS[mode]}走刀，共 {pass_count} 刀，"
             f"切宽 {stepover:g} mm，走刀方向 {direction:g}°",
-            f"边界内缩一个刀具半径（本刀 R{context.tool.footprint_radius_mm:g} mm），"
-            "安全高度 5 mm、快移 5000 mm/min 为固定值",
+            f"{_BOUNDARY_NOTES.get(str(context.setup.get('boundary_mode', 'tool_radius')), _BOUNDARY_NOTES['tool_radius'])}"
+            f"（偏置量 {context.boundary_offset_mm:g} mm）；"
+            f"安全高度 {context.safe_height_mm:g} mm、快移 {context.rapid_feed_mm_per_min:g} mm/min",
         )

@@ -22,11 +22,17 @@ from toolpath_lab.core.path import Move, MoveKind, Toolpath, retract_move
 from toolpath_lab.core.region import RegionShape
 from toolpath_lab.core.tool import Tool
 from toolpath_lab.planning.geometry2d import ensure_ccw
+from toolpath_lab.planning.setup import (
+    DEFAULT_RAPID_FEED_MM_PER_MIN,
+    DEFAULT_SAFE_HEIGHT_MM,
+    boundary_offset,
+)
 
-#: 快速移动时相对工件上表面抬起的距离（mm）。
-SAFE_HEIGHT_MM = 5.0
-#: 快速移动的进给速度（mm/min）。
-RAPID_FEED_MM_PER_MIN = 5000.0
+#: 快速移动时相对工件上表面抬起的距离（mm）。默认值来自工艺设置，这里保留
+#: 模块级别的名字是为了兼容既有引用；PlanningContext 会优先读请求里的设置。
+SAFE_HEIGHT_MM = DEFAULT_SAFE_HEIGHT_MM
+#: 快速移动的进给速度（mm/min）。同上。
+RAPID_FEED_MM_PER_MIN = DEFAULT_RAPID_FEED_MM_PER_MIN
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,11 +43,28 @@ class PlanningContext:
     region: RegionShape
     parameters: Mapping[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    #: 工艺设置（安全高度 / 快移速度 / 边界处理）。留空时下面的属性退回模块常量，
+    #: 所以直接构造 PlanningContext 的旧代码与测试不需要改动。
+    setup: Mapping[str, Any] = field(default_factory=dict)
 
     # -- 参数 --------------------------------------------------------------
     @property
     def feed_mm_per_min(self) -> float:
         return float(self.parameters["feed_mm_per_min"])
+
+    @property
+    def safe_height_mm(self) -> float:
+        return float(self.setup.get("safe_height_mm", SAFE_HEIGHT_MM))
+
+    @property
+    def rapid_feed_mm_per_min(self) -> float:
+        return float(self.setup.get("rapid_feed_mm_per_min", RAPID_FEED_MM_PER_MIN))
+
+    @property
+    def boundary_offset_mm(self) -> float:
+        """刀路相对区域轮廓的有符号偏置量（正值往里让）。"""
+
+        return boundary_offset(self.setup, self.tool.footprint_radius_mm)
 
     # -- 几何 --------------------------------------------------------------
     @property
@@ -81,23 +104,25 @@ class PlanningContext:
         )
 
     def rapid_between(self, start: NDArray[np.float64], end: NDArray[np.float64]) -> Move:
-        return retract_move(start, end, SAFE_HEIGHT_MM, RAPID_FEED_MM_PER_MIN)
+        return retract_move(
+            start, end, self.safe_height_mm, self.rapid_feed_mm_per_min
+        )
 
     def approach_move_down(self, point: NDArray[np.float64]) -> Move:
         """从安全高度下刀到该点。"""
 
         target = np.asarray(point, dtype=np.float64).reshape(3)
-        start = np.array([target[0], target[1], SAFE_HEIGHT_MM], dtype=np.float64)
-        return Move(MoveKind.RAPID, np.vstack([start, target]), RAPID_FEED_MM_PER_MIN,
-                    label="下刀")
+        start = np.array([target[0], target[1], self.safe_height_mm], dtype=np.float64)
+        return Move(MoveKind.RAPID, np.vstack([start, target]),
+                    self.rapid_feed_mm_per_min, label="下刀")
 
     def retract_move_up(self, point: NDArray[np.float64]) -> Move:
         """从该点抬刀到安全高度。"""
 
         start = np.asarray(point, dtype=np.float64).reshape(3)
-        end = np.array([start[0], start[1], SAFE_HEIGHT_MM], dtype=np.float64)
-        return Move(MoveKind.RAPID, np.vstack([start, end]), RAPID_FEED_MM_PER_MIN,
-                    label="抬刀")
+        end = np.array([start[0], start[1], self.safe_height_mm], dtype=np.float64)
+        return Move(MoveKind.RAPID, np.vstack([start, end]),
+                    self.rapid_feed_mm_per_min, label="抬刀")
 
 
 class Planner:

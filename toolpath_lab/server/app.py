@@ -18,13 +18,21 @@ from urllib.parse import unquote, urlsplit
 
 from toolpath_lab import __version__
 from toolpath_lab.core.errors import ParameterError, PlanningError, RegistryError
-from toolpath_lab.export import toolpath_to_gcode
+from toolpath_lab.core.payload import coerce_group
+from toolpath_lab.export import (
+    EXPORT_FORMATS,
+    toolpath_to_csv,
+    toolpath_to_gcode,
+    toolpath_to_json,
+)
 from toolpath_lab.server.catalog import catalog_payload
 from toolpath_lab.server.schema import PlanRequest
 from toolpath_lab.server.service import execute_plan
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 MAX_BODY_BYTES = 4 * 1024 * 1024
+#: 请求体超限时仍然会先抽干的字节数上限；超过这个量才真的断开连接。
+DRAIN_LIMIT_BYTES = 64 * 1024 * 1024
 
 CONTENT_TYPES: dict[str, str] = {
     ".html": "text/html; charset=utf-8",
@@ -81,6 +89,11 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
     def _dispatch(self, method: str) -> None:
         path = unquote(urlsplit(self.path).path)
         try:
+            # 请求体必须**先读完再路由**，哪怕这个路由压根不关心它。
+            # 否则在 HTTP/1.1 保持连接下，没被读掉的字节会留在 socket 缓冲里，
+            # 被下一个请求当成开头来解析，把这条连接彻底搞乱（客户端表现为
+            # ConnectionAbortedError / ConnectionResetError）。
+            self._read_body()
             response = self._route(method, path)
         except (ParameterError, RegistryError, ValueError) as error:
             response = error_response(str(error), HTTPStatus.BAD_REQUEST)
@@ -112,22 +125,61 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
             result = execute_plan(PlanRequest.from_payload(self._read_json()))
             return json_response(result.to_payload())
         if path == "/api/export/gcode" and method == "POST":
-            return self._export_gcode(self._read_json())
+            return self._export(self._read_json(), "gcode")
+        if path == "/api/export/csv" and method == "POST":
+            return self._export(self._read_json(), "csv")
+        if path == "/api/export/json" and method == "POST":
+            return self._export(self._read_json(), "json")
         return error_response(f"未知接口 {path}", HTTPStatus.NOT_FOUND)
 
-    def _export_gcode(self, payload: Mapping[str, Any] | None) -> Response:
-        result = execute_plan(PlanRequest.from_payload(payload), with_timeline=False)
+    def _export(self, payload: Mapping[str, Any] | None, fmt: str) -> Response:
+        """按格式导出。每种格式一个分支，都是纯函数调用。"""
+
+        if fmt not in EXPORT_FORMATS:
+            raise ParameterError(f"未实现的导出格式 {fmt!r}")
+        request = PlanRequest.from_payload(payload)
+        result = execute_plan(request, with_timeline=False)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        content = toolpath_to_gcode(
-            result.toolpath,
-            program_name="TOOLPATH_LAB",
-            description="\n".join(result.request.header_lines()),
-        )
-        return text_response(
-            content,
-            content_type="text/plain; charset=utf-8",
-            filename=f"toolpath_{result.request.planner_id}_{stamp}.nc",
-        )
+        extension = EXPORT_FORMATS[fmt][1]
+        stem = f"toolpath_{request.planner_id}_{stamp}"
+
+        if fmt == "gcode":
+            content = toolpath_to_gcode(
+                result.toolpath,
+                program_name="TOOLPATH_LAB",
+                description="\n".join(request.header_lines()),
+            )
+            return text_response(
+                content,
+                content_type="text/plain; charset=utf-8",
+                filename=f"{stem}.nc",
+            )
+
+        if fmt == "csv":
+            # 逐点刀点表。exclude_rapid 让调用方只要切削轨迹。
+            exclude_rapid = bool(coerce_group(payload, "export").get("exclude_rapid", False))
+            content = toolpath_to_csv(result.toolpath, include_rapid=not exclude_rapid)
+            return text_response(
+                content,
+                content_type="text/csv; charset=utf-8",
+                filename=f"{stem}.csv",
+            )
+
+        if fmt == "json":
+            content = toolpath_to_json(
+                result.toolpath,
+                tool=request.tool,
+                region=request.region,
+                request=request.to_payload(),
+            )
+            return text_response(
+                content,
+                content_type="application/json; charset=utf-8",
+                filename=f"{stem}.json",
+            )
+
+        # EXPORT_FORMATS 里登记了、但这里忘了写分支。
+        raise ParameterError(f"导出格式 {fmt!r} 登记了但没有实现")
 
     # -- 静态文件 ----------------------------------------------------------
     def _serve_static(self, path: str) -> Response:
@@ -155,13 +207,42 @@ class ToolpathLabHandler(BaseHTTPRequestHandler):
         return candidate if candidate.is_file() else None
 
     # -- 工具 --------------------------------------------------------------
-    def _read_json(self) -> Mapping[str, Any] | None:
+    def _read_body(self) -> bytes:
+        """把请求体整个读出来，只做一次。`_dispatch` 一定会先调用它。"""
+
+        body = getattr(self, "_body", None)
+        if body is not None:
+            return body
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
-            return None
+            self._body = b""
+            return self._body
         if length > MAX_BODY_BYTES:
+            # 超过上限也要**先把数据抽干**：客户端此刻可能还在往这条连接里写，
+            # 我们抢先回 400 又直接断开的话，客户端会在写的时候收到 RST，
+            # 报出来的是 ConnectionAbortedError 而不是它期望的 400。
+            self._drain(length)
             raise ParameterError(f"请求体 {length} 字节，超过 {MAX_BODY_BYTES} 字节上限")
-        raw = self.rfile.read(length)
+        self._body = self.rfile.read(length)
+        return self._body
+
+    def _drain(self, length: int) -> None:
+        """丢弃 length 字节请求体，最多读 DRAIN_LIMIT 字节。"""
+
+        remaining = min(length, DRAIN_LIMIT_BYTES)
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 64 * 1024))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+        if length > DRAIN_LIMIT_BYTES:
+            # 太大了，真的读不动：只能断开。
+            self.close_connection = True
+
+    def _read_json(self) -> Mapping[str, Any] | None:
+        raw = self._read_body()
+        if not raw:
+            return None
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:

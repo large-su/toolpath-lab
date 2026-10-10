@@ -28,8 +28,15 @@ export async function requestPlan(payload) {
   return response.json();
 }
 
-export async function downloadGcode(payload) {
-  const response = await fetch("/api/export/gcode", {
+// 各格式的默认文件名兜底（正常情况下用后端 Content-Disposition 给的名字）。
+const FALLBACK_NAMES = {
+  gcode: "toolpath.nc",
+  csv: "toolpath.csv",
+  json: "toolpath.json",
+};
+
+export async function downloadExport(format, payload) {
+  const response = await fetch(`/api/export/${format}`, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
@@ -38,7 +45,7 @@ export async function downloadGcode(payload) {
   const blob = await response.blob();
   const disposition = response.headers.get("Content-Disposition") || "";
   const match = /filename="?([^"]+)"?/.exec(disposition);
-  const name = match ? match[1] : "toolpath.nc";
+  const name = match ? match[1] : FALLBACK_NAMES[format] || "toolpath.dat";
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -49,3 +56,6 @@ export async function downloadGcode(payload) {
   URL.revokeObjectURL(url);
   return name;
 }
+
+// 保留旧名字，外部脚本或旧代码可能还在引用。
+export const downloadGcode = (payload) => downloadExport("gcode", payload);

@@ -13,6 +13,7 @@ from toolpath_lab.core.region import REGION_SHAPES, region_catalog
 from toolpath_lab.core.tool import tool_parameters
 from toolpath_lab.planning import RAPID_FEED_MM_PER_MIN, SAFE_HEIGHT_MM
 from toolpath_lab.planning.registry import PLANNERS, planner_catalog
+from toolpath_lab.planning.setup import setup_parameters
 
 DEFAULT_REGION_ID = "square"
 DEFAULT_PLANNER_ID = "raster"
@@ -43,6 +44,11 @@ def catalog_payload() -> dict[str, Any]:
             "parameters": tool_parameters().to_dicts(),
             "defaults": default_tool_parameters(),
         },
+        # 工艺设置现在是可编辑参数（安全高度 / 快移速度 / 边界处理）。
+        "setup": {
+            "parameters": setup_parameters().to_dicts(),
+            "defaults": setup_parameters().defaults(),
+        },
         "regions": {
             "shapes": region_catalog(),
             "default_id": DEFAULT_REGION_ID,
@@ -53,7 +59,7 @@ def catalog_payload() -> dict[str, Any]:
             "default_id": DEFAULT_PLANNER_ID,
             "defaults": default_planner_parameters(),
         },
-        # 这些量在主程序里是固定的，界面上只做展示；想变成参数就在 planning/base.py 里改。
+        # 兼容旧客户端：这些值现在是 setup 分组的默认值。
         "fixed": {
             "safe_height_mm": SAFE_HEIGHT_MM,
             "rapid_feed_mm_per_min": RAPID_FEED_MM_PER_MIN,
