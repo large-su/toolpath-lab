@@ -41,16 +41,18 @@ class ToolParameterTests(unittest.TestCase):
         self.assertEqual(tool.diameter_mm, 6.0)
         self.assertEqual(tool.length_mm, 30.0)
 
-    def test_only_the_flat_kind_is_selectable(self) -> None:
+    def test_all_tool_kinds_are_selectable(self) -> None:
+        """三种刀具都已实现（本分支启用球头刀与圆鼻刀）。"""
+
         disabled = {choice.value: choice.disabled for choice in TOOL_KINDS}
-        self.assertFalse(disabled["flat"])
-        self.assertTrue(disabled["ball"])
-        self.assertTrue(disabled["bull"])
+        self.assertEqual(disabled, {"flat": False, "ball": False, "bull": False})
 
     def test_parameter_choices_are_published_in_the_catalog(self) -> None:
         kind_spec = tool_parameters().spec("kind")
         self.assertEqual(len(kind_spec.choices), 3)
-        self.assertTrue(kind_spec.to_dict()["choices"][1]["disabled"])
+        self.assertFalse(any(choice.disabled for choice in kind_spec.choices))
+        corner = tool_parameters().spec("corner_radius_mm").to_dict()
+        self.assertEqual(corner["visible_if"], {"kind": "bull"})
 
     def test_describe_exposes_the_geometry(self) -> None:
         payload = Tool.from_parameters(

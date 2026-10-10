@@ -1,0 +1,194 @@
+test_catalog_exposes_the_extended_scope (test_api.CatalogTests.test_catalog_exposes_the_extended_scope)
+本分支扩展后的能力范围：策略多了 spiral，区域多了圆角矩形，刀具参数多了圆角半径。 ... [toolpath-lab] 127.0.0.1 "GET /api/catalog HTTP/1.1" 200 -
+ok
+test_catalog_reports_the_fixed_settings (test_api.CatalogTests.test_catalog_reports_the_fixed_settings) ... [toolpath-lab] 127.0.0.1 "GET /api/catalog HTTP/1.1" 200 -
+ok
+test_health (test_api.CatalogTests.test_health) ... [toolpath-lab] 127.0.0.1 "GET /api/health HTTP/1.1" 200 -
+ok
+test_tool_kinds_are_all_enabled (test_api.CatalogTests.test_tool_kinds_are_all_enabled)
+本分支启用球头刀与圆鼻刀后，三种刀具都是可选状态。 ... [toolpath-lab] 127.0.0.1 "GET /api/catalog HTTP/1.1" 200 -
+ok
+test_unknown_endpoint (test_api.CatalogTests.test_unknown_endpoint) ... [toolpath-lab] 127.0.0.1 "GET /api/nope HTTP/1.1" 404 -
+C:\Users\22173\AppData\Local\Python\pythoncore-3.14-64\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 404: 'Not Found'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+ok
+test_gcode_download (test_api.ExportTests.test_gcode_download) ... [toolpath-lab] 127.0.0.1 "POST /api/export/gcode HTTP/1.1" 200 -
+ok
+test_other_formats_are_gone (test_api.ExportTests.test_other_formats_are_gone) ... [toolpath-lab] 127.0.0.1 "POST /api/export/csv HTTP/1.1" 404 -
+[toolpath-lab] 127.0.0.1 "POST /api/export/json HTTP/1.1" 404 -
+[toolpath-lab] 127.0.0.1 "POST /api/export/step HTTP/1.1" 404 -
+ok
+test_impossible_geometry_is_unprocessable (test_api.PlanTests.test_impossible_geometry_is_unprocessable) ... [toolpath-lab] 127.0.0.1 "POST /api/plan HTTP/1.1" 422 -
+C:\Users\22173\AppData\Local\Python\pythoncore-3.14-64\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 422: 'Unprocessable Content'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+ok
+test_invalid_value_is_a_bad_request (test_api.PlanTests.test_invalid_value_is_a_bad_request) ... [toolpath-lab] 127.0.0.1 "POST /api/plan HTTP/1.1" 400 -
+C:\Users\22173\AppData\Local\Python\pythoncore-3.14-64\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 400: 'Bad Request'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+ok
+test_malformed_body_is_a_bad_request (test_api.PlanTests.test_malformed_body_is_a_bad_request) ... [toolpath-lab] 127.0.0.1 "POST /api/plan HTTP/1.1" 400 -
+ok
+test_minimal_request_uses_defaults (test_api.PlanTests.test_minimal_request_uses_defaults) ... [toolpath-lab] 127.0.0.1 "POST /api/plan HTTP/1.1" 200 -
+ok
+test_parameters_are_echoed_back_normalised (test_api.PlanTests.test_parameters_are_echoed_back_normalised) ... [toolpath-lab] 127.0.0.1 "POST /api/plan HTTP/1.1" 200 -
+ok
+test_response_carries_everything_the_viewer_needs (test_api.PlanTests.test_response_carries_everything_the_viewer_needs) ... [toolpath-lab] 127.0.0.1 "POST /api/plan HTTP/1.1" 200 -
+ok
+test_unknown_planner_is_a_bad_request (test_api.PlanTests.test_unknown_planner_is_a_bad_request) ... [toolpath-lab] 127.0.0.1 "POST /api/plan HTTP/1.1" 400 -
+ok
+test_unknown_region_shape_is_a_bad_request (test_api.PlanTests.test_unknown_region_shape_is_a_bad_request) ... [toolpath-lab] 127.0.0.1 "POST /api/plan HTTP/1.1" 400 -
+ok
+test_warnings_are_returned (test_api.PlanTests.test_warnings_are_returned) ... [toolpath-lab] 127.0.0.1 "POST /api/plan HTTP/1.1" 200 -
+ok
+test_application_icon_is_served (test_api.StaticTests.test_application_icon_is_served) ... [toolpath-lab] 127.0.0.1 "GET /icon.png HTTP/1.1" 200 -
+ok
+test_favicon_route_returns_the_icon (test_api.StaticTests.test_favicon_route_returns_the_icon) ... [toolpath-lab] 127.0.0.1 "GET /favicon.ico HTTP/1.1" 200 -
+ok
+test_index_is_served (test_api.StaticTests.test_index_is_served) ... [toolpath-lab] 127.0.0.1 "GET / HTTP/1.1" 200 -
+ok
+test_missing_file_is_a_404 (test_api.StaticTests.test_missing_file_is_a_404) ... [toolpath-lab] 127.0.0.1 "GET /js/nope.js HTTP/1.1" 404 -
+ok
+test_modules_and_vendor_files_are_served (test_api.StaticTests.test_modules_and_vendor_files_are_served) ... [toolpath-lab] 127.0.0.1 "GET /js/main.js HTTP/1.1" 200 -
+[toolpath-lab] 127.0.0.1 "GET /js/viewport.js HTTP/1.1" 200 -
+[toolpath-lab] 127.0.0.1 "GET /style.css HTTP/1.1" 200 -
+[toolpath-lab] 127.0.0.1 "GET /vendor/three.module.js HTTP/1.1" 200 -
+[toolpath-lab] 127.0.0.1 "GET /vendor/RoomEnvironment.js HTTP/1.1" 200 -
+ok
+test_path_traversal_is_refused (test_api.StaticTests.test_path_traversal_is_refused) ... [toolpath-lab] 127.0.0.1 "GET /%2e%2e/requirements.txt HTTP/1.1" 404 -
+ok
+test_bad_weights_are_rejected (test_development_features.EvaluateApiTests.test_bad_weights_are_rejected) ... [toolpath-lab] 127.0.0.1 "POST /api/evaluate HTTP/1.1" 400 -
+ok
+test_evaluate_returns_a_ranked_table (test_development_features.EvaluateApiTests.test_evaluate_returns_a_ranked_table) ... [toolpath-lab] 127.0.0.1 "POST /api/evaluate HTTP/1.1" 200 -
+ok
+test_unknown_candidate_is_reported (test_development_features.EvaluateApiTests.test_unknown_candidate_is_reported) ... [toolpath-lab] 127.0.0.1 "POST /api/evaluate HTTP/1.1" 400 -
+ok
+test_default_candidates_cover_the_registered_planners (test_development_features.EvaluationTests.test_default_candidates_cover_the_registered_planners) ... ok
+test_evaluation_ranks_by_total_score (test_development_features.EvaluationTests.test_evaluation_ranks_by_total_score) ... ok
+test_repeated_evaluation_is_deterministic (test_development_features.EvaluationTests.test_repeated_evaluation_is_deterministic) ... ok
+test_scores_are_bounded_and_table_renders (test_development_features.EvaluationTests.test_scores_are_bounded_and_table_renders) ... ok
+test_suggest_stepover_shrinks_for_ball_tools (test_development_features.EvaluationTests.test_suggest_stepover_shrinks_for_ball_tools) ... ok
+test_weights_must_sum_to_one (test_development_features.EvaluationTests.test_weights_must_sum_to_one) ... ok
+test_ball_tool_coverage_drops_with_shallow_depth (test_development_features.RemovalSimulationTests.test_ball_tool_coverage_drops_with_shallow_depth)
+球头刀在平面上的咬入半径随 ap 迅速变小，同样切宽下覆盖率显著低于平底刀。 ... ok
+test_ball_tool_path_can_cut_outside_the_boundary (test_development_features.RemovalSimulationTests.test_ball_tool_path_can_cut_outside_the_boundary)
+球头刀足迹半径为 0（刀路走到边界上），实际咬入半径却大于 0，于是边界外被切到。 ... ok
+test_generous_stepover_cleans_the_face (test_development_features.RemovalSimulationTests.test_generous_stepover_cleans_the_face) ... ok
+test_invalid_parameters_are_rejected (test_development_features.RemovalSimulationTests.test_invalid_parameters_are_rejected) ... ok
+test_large_stepover_leaves_residual_ridges (test_development_features.RemovalSimulationTests.test_large_stepover_leaves_residual_ridges) ... ok
+test_payload_is_json_friendly_and_downsampled (test_development_features.RemovalSimulationTests.test_payload_is_json_friendly_and_downsampled) ... ok
+test_raster_keeps_a_flat_tool_inside_the_boundary (test_development_features.RemovalSimulationTests.test_raster_keeps_a_flat_tool_inside_the_boundary)
+平底刀按足迹半径内缩，刀路不会切到区域外——这是"无过切"的正向验证。 ... ok
+test_radius_larger_than_half_of_the_short_side_is_rejected (test_development_features.RoundedRectangleRegionTests.test_radius_larger_than_half_of_the_short_side_is_rejected) ... ok
+test_registered_and_has_expected_area (test_development_features.RoundedRectangleRegionTests.test_registered_and_has_expected_area) ... ok
+test_stadium_shape_is_allowed (test_development_features.RoundedRectangleRegionTests.test_stadium_shape_is_allowed) ... ok
+test_zero_radius_is_a_plain_rectangle (test_development_features.RoundedRectangleRegionTests.test_zero_radius_is_a_plain_rectangle) ... ok
+test_circle_spiral_is_one_continuous_cut (test_development_features.SpiralPlannerTests.test_circle_spiral_is_one_continuous_cut) ... ok
+test_circle_spiral_stepover_is_capped (test_development_features.SpiralPlannerTests.test_circle_spiral_stepover_is_capped) ... ok
+test_registered_in_the_catalog (test_development_features.SpiralPlannerTests.test_registered_in_the_catalog) ... ok
+test_square_region_uses_the_ring_branch (test_development_features.SpiralPlannerTests.test_square_region_uses_the_ring_branch) ... ok
+test_tiny_region_is_reported_as_a_planning_error (test_development_features.SpiralPlannerTests.test_tiny_region_is_reported_as_a_planning_error) ... ok
+test_ball_tool_cutting_footprint_grows_with_depth (test_development_features.ToolShapeTests.test_ball_tool_cutting_footprint_grows_with_depth) ... ok
+test_bull_tool_splits_bottom_and_corner (test_development_features.ToolShapeTests.test_bull_tool_splits_bottom_and_corner) ... ok
+test_corner_radius_must_be_smaller_than_radius (test_development_features.ToolShapeTests.test_corner_radius_must_be_smaller_than_radius) ... ok
+test_profile_describes_the_tip (test_development_features.ToolShapeTests.test_profile_describes_the_tip) ... ok
+test_zero_depth_cuts_nothing (test_development_features.ToolShapeTests.test_zero_depth_cuts_nothing) ... ok
+test_bounding_box (test_geometry2d.HelperTests.test_bounding_box) ... ok
+test_signed_area_of_a_circle_approximation (test_geometry2d.HelperTests.test_signed_area_of_a_circle_approximation) ... ok
+test_degenerate_polygon_is_rejected (test_geometry2d.OrientationTests.test_degenerate_polygon_is_rejected) ... ok
+test_ensure_ccw_drops_a_repeated_closing_point (test_geometry2d.OrientationTests.test_ensure_ccw_drops_a_repeated_closing_point) ... ok
+test_ensure_ccw_drops_repeated_neighbours (test_geometry2d.OrientationTests.test_ensure_ccw_drops_repeated_neighbours) ... ok
+test_ensure_ccw_flips_clockwise_input (test_geometry2d.OrientationTests.test_ensure_ccw_flips_clockwise_input) ... ok
+test_a_concave_polygon_yields_several_intervals (test_geometry2d.ScanlineTests.test_a_concave_polygon_yields_several_intervals)
+凹形状是保留能力：新增形状不需要改裁剪代码。 ... ok
+test_circle_chord_length_follows_the_geometry (test_geometry2d.ScanlineTests.test_circle_chord_length_follows_the_geometry) ... ok
+test_intervals_are_ordered (test_geometry2d.ScanlineTests.test_intervals_are_ordered) ... ok
+test_line_outside_the_region_yields_nothing (test_geometry2d.ScanlineTests.test_line_outside_the_region_yields_nothing) ... ok
+test_square_yields_one_interval_per_line (test_geometry2d.ScanlineTests.test_square_yields_one_interval_per_line) ... ok
+test_addition_concatenates (test_parameters.ParameterSetTests.test_addition_concatenates) ... ok
+test_coerce_fills_defaults_and_ignores_unknown (test_parameters.ParameterSetTests.test_coerce_fills_defaults_and_ignores_unknown) ... ok
+test_coerce_none_returns_defaults (test_parameters.ParameterSetTests.test_coerce_none_returns_defaults) ... ok
+test_defaults (test_parameters.ParameterSetTests.test_defaults) ... ok
+test_duplicate_keys_rejected (test_parameters.ParameterSetTests.test_duplicate_keys_rejected) ... ok
+test_null_value_falls_back_to_default (test_parameters.ParameterSetTests.test_null_value_falls_back_to_default) ... ok
+test_bool_kind (test_parameters.ParameterSpecTests.test_bool_kind) ... ok
+test_choice_kind (test_parameters.ParameterSpecTests.test_choice_kind) ... ok
+test_coerce_accepts_numbers_and_strings (test_parameters.ParameterSpecTests.test_coerce_accepts_numbers_and_strings) ... ok
+test_coerce_rejects_garbage (test_parameters.ParameterSpecTests.test_coerce_rejects_garbage) ... ok
+test_coerce_rejects_out_of_range (test_parameters.ParameterSpecTests.test_coerce_rejects_out_of_range) ... ok
+test_int_kind_requires_whole_numbers (test_parameters.ParameterSpecTests.test_int_kind_requires_whole_numbers) ... ok
+test_to_dict_is_json_ready (test_parameters.ParameterSpecTests.test_to_dict_is_json_ready) ... ok
+test_coordinates_must_be_finite (test_path.MoveTests.test_coordinates_must_be_finite) ... ok
+test_cutting_flag (test_path.MoveTests.test_cutting_flag) ... ok
+test_length_and_duration (test_path.MoveTests.test_length_and_duration) ... ok
+test_payload_rounds_and_labels (test_path.MoveTests.test_payload_rounds_and_labels) ... ok
+test_points_are_immutable (test_path.MoveTests.test_points_are_immutable) ... ok
+test_requires_a_positive_feed (test_path.MoveTests.test_requires_a_positive_feed) ... ok
+test_requires_two_points (test_path.MoveTests.test_requires_two_points) ... ok
+test_retract_lifts_across_and_plunges (test_path.RetractTests.test_retract_lifts_across_and_plunges) ... ok
+test_retract_never_dips_below_the_endpoints (test_path.RetractTests.test_retract_never_dips_below_the_endpoints) ... ok
+test_lengths_are_split_by_kind (test_path.ToolpathTests.test_lengths_are_split_by_kind) ... ok
+test_pass_count_counts_distinct_indices (test_path.ToolpathTests.test_pass_count_counts_distinct_indices) ... ok
+test_payload_includes_notes_and_moves (test_path.ToolpathTests.test_payload_includes_notes_and_moves) ... ok
+test_requires_at_least_one_move (test_path.ToolpathTests.test_requires_at_least_one_move) ... ok
+test_statistics_snapshot (test_path.ToolpathTests.test_statistics_snapshot) ... ok
+test_time_accounts_for_each_feed_rate (test_path.ToolpathTests.test_time_accounts_for_each_feed_rate) ... ok
+test_circle_first_and_last_passes_are_short (test_planners.CircleRegionTests.test_circle_first_and_last_passes_are_short) ... ok
+test_circle_passes_are_shorter_than_the_square (test_planners.CircleRegionTests.test_circle_passes_are_shorter_than_the_square) ... ok
+test_ninety_degrees_runs_along_y (test_planners.DirectionTests.test_ninety_degrees_runs_along_y) ... ok
+test_oblique_direction_keeps_the_cut_length (test_planners.DirectionTests.test_oblique_direction_keeps_the_cut_length) ... ok
+test_zero_degrees_runs_along_x (test_planners.DirectionTests.test_zero_degrees_runs_along_x) ... ok
+test_one_way_keeps_a_single_direction_and_retracts (test_planners.ModeTests.test_one_way_keeps_a_single_direction_and_retracts) ... ok
+test_one_way_takes_longer_than_zigzag (test_planners.ModeTests.test_one_way_takes_longer_than_zigzag) ... ok
+test_zigzag_alternates_direction (test_planners.ModeTests.test_zigzag_alternates_direction) ... ok
+test_zigzag_links_passes_without_retracting (test_planners.ModeTests.test_zigzag_links_passes_without_retracting) ... ok
+test_each_pass_has_two_points_on_the_machining_plane (test_planners.PassLayoutTests.test_each_pass_has_two_points_on_the_machining_plane) ... ok
+test_larger_stepover_needs_fewer_passes (test_planners.PassLayoutTests.test_larger_stepover_needs_fewer_passes) ... ok
+test_pass_count_follows_stepover_and_tool_radius (test_planners.PassLayoutTests.test_pass_count_follows_stepover_and_tool_radius) ... ok
+test_passes_are_inside_the_contour_by_the_tool_radius (test_planners.PassLayoutTests.test_passes_are_inside_the_contour_by_the_tool_radius) ... ok
+test_stepover_is_respected (test_planners.PassLayoutTests.test_stepover_is_respected) ... ok
+test_catalog_exposes_the_expected_parameters (test_planners.RegistryTests.test_catalog_exposes_the_expected_parameters) ... ok
+test_expected_strategies_are_registered (test_planners.RegistryTests.test_expected_strategies_are_registered)
+基础策略 raster + 本分支新增的 spiral（环切插件需手动启用，不在默认列表里）。 ... ok
+test_large_stepover_is_warned_about (test_planners.SafetyTests.test_large_stepover_is_warned_about) ... ok
+test_notes_describe_the_configuration (test_planners.SafetyTests.test_notes_describe_the_configuration) ... ok
+test_oversized_tool_is_reported_as_unprocessable (test_planners.SafetyTests.test_oversized_tool_is_reported_as_unprocessable) ... ok
+test_rapid_moves_use_the_fixed_rapid_feed (test_planners.SafetyTests.test_rapid_moves_use_the_fixed_rapid_feed) ... ok
+test_rapid_moves_use_the_fixed_safe_height (test_planners.SafetyTests.test_rapid_moves_use_the_fixed_safe_height) ... ok
+test_statistics_are_consistent (test_planners.SafetyTests.test_statistics_are_consistent) ... ok
+test_boundary_area_matches_the_analytic_value (test_region.CircleRegionTests.test_boundary_area_matches_the_analytic_value) ... ok
+test_boundary_stays_inside_the_nominal_radius (test_region.CircleRegionTests.test_boundary_stays_inside_the_nominal_radius) ... ok
+test_catalog_publishes_labels_and_parameters (test_region.RegionCatalogTests.test_catalog_publishes_labels_and_parameters) ... ok
+test_expected_shapes_are_registered (test_region.RegionCatalogTests.test_expected_shapes_are_registered)
+方形、圆形，以及本分支新增的圆角矩形。 ... ok
+test_unknown_shape_raises (test_region.RegionCatalogTests.test_unknown_shape_raises) ... ok
+test_boundary_is_a_counter_clockwise_square (test_region.SquareRegionTests.test_boundary_is_a_counter_clockwise_square) ... ok
+test_describe_reports_area (test_region.SquareRegionTests.test_describe_reports_area) ... ok
+test_too_small_side_is_rejected (test_region.SquareRegionTests.test_too_small_side_is_rejected) ... ok
+test_every_point_becomes_a_motion (test_timeline_export.GcodeTests.test_every_point_becomes_a_motion) ... ok
+test_feed_is_written_before_each_cutting_block (test_timeline_export.GcodeTests.test_feed_is_written_before_each_cutting_block) ... ok
+test_header_and_footer (test_timeline_export.GcodeTests.test_header_and_footer) ... ok
+test_notes_are_written_as_comments (test_timeline_export.GcodeTests.test_notes_are_written_as_comments) ... ok
+test_rapid_and_feed_moves_are_distinguished (test_timeline_export.GcodeTests.test_rapid_and_feed_moves_are_distinguished) ... ok
+test_duration_matches_the_toolpath_estimate (test_timeline_export.TimelineTests.test_duration_matches_the_toolpath_estimate) ... ok
+test_kind_runs_cover_every_sample (test_timeline_export.TimelineTests.test_kind_runs_cover_every_sample) ... ok
+test_positions_stay_on_the_machining_plane_or_above_it (test_timeline_export.TimelineTests.test_positions_stay_on_the_machining_plane_or_above_it) ... ok
+test_rapid_moves_are_slower_to_play_than_cutting (test_timeline_export.TimelineTests.test_rapid_moves_are_slower_to_play_than_cutting) ... ok
+test_samples_are_capped (test_timeline_export.TimelineTests.test_samples_are_capped) ... ok
+test_state_interpolates_between_samples (test_timeline_export.TimelineTests.test_state_interpolates_between_samples) ... ok
+test_times_start_at_zero_and_never_decrease (test_timeline_export.TimelineTests.test_times_start_at_zero_and_never_decrease) ... ok
+test_ball_tool_touches_with_its_tip (test_tool.ToolGeometryTests.test_ball_tool_touches_with_its_tip)
+球头刀将来启用时，足迹半径为 0（只有刀尖接触）。 ... ok
+test_bull_tool_uses_its_flat_bottom (test_tool.ToolGeometryTests.test_bull_tool_uses_its_flat_bottom) ... ok
+test_flat_tool_footprint_is_the_radius (test_tool.ToolGeometryTests.test_flat_tool_footprint_is_the_radius) ... ok
+test_invalid_geometry_is_rejected (test_tool.ToolGeometryTests.test_invalid_geometry_is_rejected) ... ok
+test_all_tool_kinds_are_selectable (test_tool.ToolParameterTests.test_all_tool_kinds_are_selectable)
+三种刀具都已实现（本分支启用球头刀与圆鼻刀）。 ... ok
+test_defaults_are_a_flat_end_mill (test_tool.ToolParameterTests.test_defaults_are_a_flat_end_mill) ... ok
+test_describe_exposes_the_geometry (test_tool.ToolParameterTests.test_describe_exposes_the_geometry) ... ok
+test_out_of_range_diameter_is_rejected (test_tool.ToolParameterTests.test_out_of_range_diameter_is_rejected) ... ok
+test_parameter_choices_are_published_in_the_catalog (test_tool.ToolParameterTests.test_parameter_choices_are_published_in_the_catalog) ... ok
+
+----------------------------------------------------------------------
+Ran 142 tests in 4.498s
+
+OK

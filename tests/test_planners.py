@@ -40,8 +40,10 @@ def _cut_moves(toolpath: Toolpath):
 
 
 class RegistryTests(unittest.TestCase):
-    def test_only_the_raster_strategy_is_registered(self) -> None:
-        self.assertEqual(PLANNERS.ids(), ["raster"])
+    def test_expected_strategies_are_registered(self) -> None:
+        """基础策略 raster + 本分支新增的 spiral（环切插件需手动启用，不在默认列表里）。"""
+
+        self.assertEqual(PLANNERS.ids(), ["raster", "spiral"])
 
     def test_catalog_exposes_the_expected_parameters(self) -> None:
         entry = planner_catalog()[0]
